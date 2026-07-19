@@ -240,7 +240,7 @@ const InteractiveSession = struct {
 
         try self.refreshHistoryCurrentDirectory();
         // ziglint-ignore: Z026 best-effort terminal metadata; the next directory change or prompt reports it again
-        self.reportCurrentDirectory(terminal) catch {};
+        self.reportTerminalLocation(terminal) catch {};
         try self.command_cache.refresh(self.allocator, self.sh);
 
         return terminal.readLine(.{
@@ -296,10 +296,17 @@ const InteractiveSession = struct {
         self.command_history.current_cwd = "";
     }
 
-    fn reportCurrentDirectory(self: *InteractiveSession, terminal: *editor.driver.TerminalSession) !void {
+    fn reportTerminalLocation(self: *InteractiveSession, terminal: *editor.driver.TerminalSession) !void {
         const cwd = try self.currentDirectoryForReporting();
         defer self.allocator.free(cwd);
         try terminal.reportCurrentDirectory(cwd, self.command_history.hostname);
+        try self.reportWindowTitle(terminal, cwd);
+    }
+
+    fn reportWindowTitle(self: *InteractiveSession, terminal: *editor.driver.TerminalSession, cwd: []const u8) !void {
+        const title = try extensions.rush.formatPromptPwdForShell(self.allocator, self.sh, cwd, .{ .dir_length = 1 });
+        defer self.allocator.free(title);
+        try terminal.reportWindowTitle(title);
     }
 
     fn currentDirectoryForReporting(self: *InteractiveSession) ![]const u8 {
@@ -572,6 +579,8 @@ fn onDirectoryChange(context: *anyopaque, old_pwd: []const u8, new_pwd: []const 
 
     // ziglint-ignore: Z026 best-effort terminal metadata; the next prompt reports it again
     terminal.reportCurrentDirectory(new_pwd, session.command_history.hostname) catch {};
+    // ziglint-ignore: Z026 best-effort terminal metadata; the next prompt reports it again
+    session.reportWindowTitle(terminal, new_pwd) catch {};
 
     if (session.dispatching_directory_change) return;
     session.dispatching_directory_change = true;

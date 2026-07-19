@@ -945,11 +945,19 @@ fn evalPromptPwd(sh: anytype, args: []const []const u8) !result.EvalResult {
     };
     if (!@hasDecl(HostType, "currentDir")) return .{ .status = 1 };
     const cwd = try promptDirectory(sh);
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
-    const display = try formatPromptPwd(sh.scratchAllocator(), cwd, if (sh.state.getVariable("HOME")) |home| home.value else shellEnvValue(sh, "HOME"), options);
+    const display = try formatPromptPwdForShell(sh.scratchAllocator(), sh, cwd, options);
     try sh.host.writeAll(.stdout, display);
     try sh.host.writeAll(.stdout, "\n");
     return .{};
+}
+
+pub fn formatPromptPwdForShell(
+    allocator: std.mem.Allocator,
+    sh: anytype,
+    cwd: []const u8,
+    options: PromptPwdOptions,
+) ![]const u8 {
+    return formatPromptPwd(allocator, cwd, shellValue(sh, "HOME"), options);
 }
 
 fn promptDirectory(sh: anytype) ![]const u8 {
@@ -959,7 +967,7 @@ fn promptDirectory(sh: anytype) ![]const u8 {
     };
 }
 
-const PromptPwdOptions = struct {
+pub const PromptPwdOptions = struct {
     dir_length: ?usize = null,
     full_length_dirs: usize = 1,
 };
