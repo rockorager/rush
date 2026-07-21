@@ -104,7 +104,7 @@ const PromptMetadata = struct {
         if (self.username) |value_text| allocator.free(value_text);
         if (self.hostname) |value_text| allocator.free(value_text);
         if (self.terminal_name) |value_text| allocator.free(value_text);
-        self.* = .{};
+        self.* = undefined;
     }
 };
 

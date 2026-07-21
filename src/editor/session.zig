@@ -160,25 +160,10 @@ pub const MouseClick = struct {
     menu_presentation: MenuPresentation = .{},
 };
 
-/// Readline uses SOH/STX to bracket non-printing prompt bytes. The editor
-/// parses terminal escapes itself, so those markers must not reach either its
-/// width calculations or the terminal output stream.
+/// Keeps Readline's SOH/STX regions available to the renderer for width
+/// calculation. Serialization removes the marker bytes before terminal output.
 fn copyPromptBytes(allocator: std.mem.Allocator, bytes: []const u8) ![]const u8 {
-    var marker_count: usize = 0;
-    for (bytes) |byte| if (prompt_markers.isMarker(byte)) {
-        marker_count += 1;
-    };
-    if (marker_count == 0) return allocator.dupe(u8, bytes);
-
-    const copy = try allocator.alloc(u8, bytes.len - marker_count);
-    var index: usize = 0;
-    for (bytes) |byte| {
-        if (prompt_markers.isMarker(byte)) continue;
-        copy[index] = byte;
-        index += 1;
-    }
-    std.debug.assert(index == copy.len);
-    return copy;
+    return allocator.dupe(u8, bytes);
 }
 
 /// Owns editable state, copied prompts, queued requests, accepted history and
@@ -4660,15 +4645,20 @@ test "line session renders with its prompt" {
     try std.testing.expectEqualStrings("\r\x1b[2Krush> x\r\x1b[7C", rendered);
 }
 
-test "line session removes Readline non-printing markers from prompt surfaces" {
+test "line session preserves prompt markers for layout but not terminal output" {
     const marked = "\x01\x1b[31m\x02red\x01\x1b[0m\x02";
     const expected = "\x1b[31mred\x1b[0m";
     var session = try LineSession.init(std.testing.allocator, marked);
     defer session.deinit();
     try session.replaceRightPrompt(.{ .bytes = marked });
 
-    try std.testing.expectEqualStrings(expected, session.prompt.bytes);
-    try std.testing.expectEqualStrings(expected, session.right_prompt.bytes);
+    try std.testing.expectEqualStrings(marked, session.prompt.bytes);
+    try std.testing.expectEqualStrings(marked, session.right_prompt.bytes);
+    const rendered = try session.render(std.testing.allocator, .{ .synchronized_output = false });
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, expected) != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, rendered, prompt_markers.nonprinting_start) == null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, rendered, prompt_markers.nonprinting_end) == null);
 }
 
 test "line session renders right prompt flush right" {

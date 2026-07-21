@@ -1017,7 +1017,19 @@ fn conditionalArrayParameterIsSet(shell: anytype, parameter: ast.ArrayParameter)
 
     if (shell.state.getVariable(parameter.name) == null) return false;
     return switch (parameter.subscript) {
-        .index => |word| (try expandArrayIndexForName(shell, parameter.name, word)) == 0,
+        .index => |word| scalar: {
+            const index = try expandArrayIndexValue(shell, word);
+            if (index < 0) {
+                const diagnostic = try std.fmt.allocPrint(
+                    shell.scratchAllocator(),
+                    "{s}: bad array subscript\n",
+                    .{parameter.name},
+                );
+                try shell.host.writeAll(.stderr, diagnostic);
+                break :scalar false;
+            }
+            break :scalar index == 0;
+        },
         .all => true,
     };
 }
@@ -1315,6 +1327,13 @@ fn appendQuotedArrayAtPartsFields(
         try appendTextToLastField(shell, fields, try expandWordParts(shell, quoted[segment_start..index], null));
         if (try arrayExpansionElements(shell, expansion.parameter)) |elements| if (elements.len != 0) {
             expanded_array = true;
+            const prompt_values = if (expansion.transform_prompt) values: {
+                const values = try allocator.alloc([]const u8, elements.len);
+                for (elements, 0..) |element, element_index| {
+                    values[element_index] = try allocator.dupe(u8, element.value);
+                }
+                break :values values;
+            } else null;
             if (expansion.indices) {
                 try appendTextToLastField(
                     shell,
@@ -1323,6 +1342,18 @@ fn appendQuotedArrayAtPartsFields(
                 );
                 for (elements[1..]) |element| {
                     try fields.append(allocator, try std.fmt.allocPrint(allocator, "{}", .{element.index}));
+                }
+            } else if (prompt_values) |values| {
+                try appendTextToLastField(
+                    shell,
+                    fields,
+                    try expandPromptValue(shell, values[0], expansion.parameter.span, .parameter),
+                );
+                for (values[1..]) |value| {
+                    try fields.append(
+                        allocator,
+                        try expandPromptValue(shell, value, expansion.parameter.span, .parameter),
+                    );
                 }
             } else {
                 try appendTextToLastField(shell, fields, elements[0].value);
@@ -1356,18 +1387,23 @@ fn wordPartsContainArrayAtParameter(parts: []const ast.WordPart) bool {
 const ArrayAtExpansion = struct {
     parameter: ast.ParameterExpansion,
     indices: bool,
+    transform_prompt: bool,
 };
 
 fn wordPartArrayAtExpansion(part: ast.WordPart) ?ArrayAtExpansion {
     return switch (part) {
         .parameter => |parameter| {
             if (parameter.length or parameter.parameter != .array) return null;
-            if (parameter.op != null and parameter.op.? != .substring) return null;
+            if (parameter.op) |operator| switch (operator) {
+                .substring, .transform_prompt => {},
+                else => return null,
+            };
             const array = parameter.parameter.array;
             return switch (array.subscript) {
                 .all => |special| if (special == .at) .{
                     .parameter = parameter,
                     .indices = parameter.array_indices,
+                    .transform_prompt = parameter.op == .transform_prompt,
                 } else null,
                 else => null,
             };
@@ -7073,13 +7109,21 @@ fn expandParameterPrompt(shell: anytype, parameter: ast.ParameterExpansion) Eval
         }
         return "";
     };
-    return expandPromptValue(shell, value, parameter.span);
+    return expandPromptValue(shell, value, parameter.span, .parameter);
 }
 
 /// Expands a Bash prompt value, including prompt escapes and the optional
 /// second expansion controlled by `shopt -s promptvars`.
-pub fn expandPromptValue(shell: anytype, value: []const u8, span: source_mod.Span) EvalError![]const u8 {
-    const decoded = try prompt_mod.decode(shell, value);
+pub fn expandPromptValue(
+    shell: anytype,
+    value: []const u8,
+    span: source_mod.Span,
+    mode: prompt_mod.DecodeMode,
+) EvalError![]const u8 {
+    // Prompt expansion may assign to the parameter supplying `value`. Keep the
+    // source independent from persistent variable storage before evaluating it.
+    const source = try shell.scratchAllocator().dupe(u8, value);
+    const decoded = try prompt_mod.decode(shell, source, mode);
     if (!shell.state.options.promptvars) return decoded;
     if (std.mem.indexOfAny(u8, decoded, "$\\`") == null) return decoded;
 
@@ -7329,7 +7373,7 @@ fn arrayExpansionElements(shell: anytype, expansion: ast.ParameterExpansion) Eva
         .all => array.elements,
         .index => return null,
     };
-    if (expansion.op == null) return elements;
+    if (expansion.op == null or expansion.op.? == .transform_prompt) return elements;
     std.debug.assert(expansion.op.? == .substring);
     const offset = try parameterArithmeticValue(shell, expansion.word.?);
     const maybe_length = if (expansion.second_word) |word| try parameterArithmeticValue(shell, word) else null;

@@ -459,7 +459,15 @@ pub fn visibleWidth(bytes: []const u8, method: vaxis.gwidth.Method) u16 {
     var plain_start: usize = 0;
     var i: usize = 0;
     while (i < bytes.len) {
-        if (prompt_markers.isMarker(bytes[i])) {
+        if (bytes[i] == prompt_markers.nonprinting_start) {
+            width += vaxis.gwidth.gwidth(bytes[plain_start..i], method);
+            i += 1;
+            while (i < bytes.len and bytes[i] != prompt_markers.nonprinting_end) : (i += 1) {}
+            if (i < bytes.len) i += 1;
+            plain_start = i;
+            continue;
+        }
+        if (bytes[i] == prompt_markers.nonprinting_end) {
             width += vaxis.gwidth.gwidth(bytes[plain_start..i], method);
             i += 1;
             plain_start = i;
@@ -498,6 +506,7 @@ pub fn visibleWidth(bytes: []const u8, method: vaxis.gwidth.Method) u16 {
 
 test "visible width ignores Readline non-printing markers" {
     try std.testing.expectEqual(@as(u16, 3), visibleWidth("\x01\x1b[31m\x02red\x01\x1b[0m\x02", .unicode));
+    try std.testing.expectEqual(@as(u16, 3), visibleWidth("\x01not-an-escape\x02red", .unicode));
 }
 
 fn escapeSequenceEnd(bytes: []const u8, index: usize) ?usize {

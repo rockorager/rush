@@ -5,6 +5,7 @@ const vaxis = @import("vaxis");
 
 const completion = @import("completion.zig");
 const menu = @import("menu.zig");
+const prompt_markers = @import("../prompt_markers.zig");
 
 pub const UnderlineStyle = menu.UnderlineStyle;
 pub const UiStyle = menu.UiStyle;
@@ -505,10 +506,10 @@ pub fn serializeFullFrame(allocator: std.mem.Allocator, frame: Frame, synchroniz
     if (synchronized_output) try output.appendSlice(allocator, "\x1b[?2026h");
     if (frame.cursor_shape != .default) try output.appendSlice(allocator, cursorShapeSequence(frame.cursor_shape));
     try output.appendSlice(allocator, "\r\x1b[2K");
-    if (frame.lines.len != 0) try output.appendSlice(allocator, frame.lines[0]);
+    if (frame.lines.len != 0) try appendSerializedLine(allocator, &output, frame.lines[0]);
     for (frame.lines[1..]) |line| {
         try output.appendSlice(allocator, "\r\n\x1b[2K");
-        try output.appendSlice(allocator, line);
+        try appendSerializedLine(allocator, &output, line);
     }
     const cursor_sequence = try cursorMoveFrom(allocator, frame.lines.len -| 1, frame.cursor_row, frame.cursor_col);
     defer allocator.free(cursor_sequence);
@@ -548,7 +549,7 @@ fn serializeFrameDiff(
         defer allocator.free(move);
         try output.appendSlice(allocator, move);
         try output.appendSlice(allocator, "\x1b[2K");
-        if (new_line) |line| try output.appendSlice(allocator, line);
+        if (new_line) |line| try appendSerializedLine(allocator, &output, line);
         current_row = row;
     }
 
@@ -557,6 +558,16 @@ fn serializeFrameDiff(
     try output.appendSlice(allocator, cursor_sequence);
     if (synchronized_output) try output.appendSlice(allocator, "\x1b[?2026l");
     return output.toOwnedSlice(allocator);
+}
+
+fn appendSerializedLine(allocator: std.mem.Allocator, output: *std.ArrayList(u8), line: []const u8) !void {
+    var start: usize = 0;
+    for (line, 0..) |byte, index| {
+        if (!prompt_markers.isMarker(byte)) continue;
+        try output.appendSlice(allocator, line[start..index]);
+        start = index + 1;
+    }
+    try output.appendSlice(allocator, line[start..]);
 }
 
 fn cursorShapeSequence(shape: CursorShape) []const u8 {
@@ -605,7 +616,31 @@ fn appendWrappedLine(
     defer active_sgr.deinit(allocator);
     var row_width: u16 = 0;
     var i: usize = 0;
+    var nonprinting = false;
     while (i < bytes.len) {
+        if (bytes[i] == prompt_markers.nonprinting_start) {
+            nonprinting = true;
+            try row.append(allocator, bytes[i]);
+            i += 1;
+            continue;
+        }
+        if (bytes[i] == prompt_markers.nonprinting_end) {
+            nonprinting = false;
+            try row.append(allocator, bytes[i]);
+            i += 1;
+            continue;
+        }
+        if (nonprinting) {
+            if (escapeSequenceEnd(bytes, i)) |end| {
+                try row.appendSlice(allocator, bytes[i..end]);
+                try updateActiveSgr(allocator, &active_sgr, bytes[i..end]);
+                i = end;
+            } else {
+                try row.append(allocator, bytes[i]);
+                i += 1;
+            }
+            continue;
+        }
         if (bytes[i] == '\n') {
             try lines.append(allocator, try row.toOwnedSlice(allocator));
             row = .empty;
@@ -673,7 +708,22 @@ fn wrappedPosition(bytes: []const u8, width: u16, method: vaxis.gwidth.Method) W
     var row: usize = 0;
     var col: u16 = 0;
     var i: usize = 0;
+    var nonprinting = false;
     while (i < bytes.len) {
+        if (bytes[i] == prompt_markers.nonprinting_start) {
+            nonprinting = true;
+            i += 1;
+            continue;
+        }
+        if (bytes[i] == prompt_markers.nonprinting_end) {
+            nonprinting = false;
+            i += 1;
+            continue;
+        }
+        if (nonprinting) {
+            i += 1;
+            continue;
+        }
         if (bytes[i] == '\n') {
             row += 1;
             col = 0;
@@ -718,4 +768,38 @@ fn escapeSequenceEnd(bytes: []const u8, index: usize) ?usize {
         return bytes.len;
     }
     return index + 2;
+}
+
+test "marked arbitrary prompt bytes render without affecting layout" {
+    var frame = try frameFromInput(std.testing.allocator, .{ .text = "x", .cursor_byte = 1 }, .{
+        .prompt = .{ .bytes = "\x01arbitrary-control\x02> " },
+        .synchronized_output = false,
+    });
+    defer frame.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), frame.cursor_row);
+    try std.testing.expectEqual(@as(u16, 3), frame.cursor_col);
+    const rendered = try serializeFullFrame(std.testing.allocator, frame, false);
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "arbitrary-control> x") != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, rendered, prompt_markers.nonprinting_start) == null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, rendered, prompt_markers.nonprinting_end) == null);
+}
+
+test "marked prompt regions do not displace a right prompt" {
+    var frame = try frameFromInput(std.testing.allocator, .{ .text = "", .cursor_byte = 0 }, .{
+        .prompt = .{ .bytes = "\x01left-control\x02> " },
+        .right_prompt = .{ .bytes = "\x01right-control\x02R" },
+        .width = 10,
+        .synchronized_output = false,
+    });
+    defer frame.deinit(std.testing.allocator);
+
+    const rendered = try serializeFullFrame(std.testing.allocator, frame, false);
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        rendered,
+        "left-control>        right-controlR",
+    ) != null);
 }

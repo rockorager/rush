@@ -210,6 +210,24 @@
             .status = 0,
         },
         .{
+            .name = "conditional variable test accepts negative array indexes but rejects them for scalars",
+            .script =
+            \\array=(zero one)
+            \\[[ -v 'array[-1]' ]]
+            \\printf 'array=<%s>\n' "$?"
+            \\scalar=value
+            \\[[ -v 'scalar[-1]' ]]
+            \\printf 'scalar=<%s>\n' "$?"
+            ,
+            .stdout =
+            \\array=<0>
+            \\scalar=<1>
+            \\
+            ,
+            .stderr_match = .nonempty,
+            .status = 0,
+        },
+        .{
             .name = "conditional command evaluates file unary primaries",
             .script =
             \\: >package.json

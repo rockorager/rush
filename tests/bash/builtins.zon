@@ -561,6 +561,47 @@
             .status = 0,
         },
         .{
+            .name = "shopt option combinations follow Bash query and selection rules",
+            .script =
+            \\shopt -s | grep '^promptvars.*on$' >/dev/null
+            \\printf 'selected-on=<%s>\n' "$?"
+            \\shopt -u | grep '^expand_aliases.*off$' >/dev/null
+            \\printf 'selected-off=<%s>\n' "$?"
+            \\shopt -p -q promptvars
+            \\printf 'print-query=<%s>\n' "$?"
+            \\shopt -uq promptvars
+            \\printf 'unset-query=<%s>\n' "$?"
+            \\shopt -q promptvars
+            \\printf 'unset-applied=<%s>\n' "$?"
+            \\shopt -sq promptvars
+            \\printf 'set-query=<%s>\n' "$?"
+            \\shopt -s promptvars
+            \\shopt -su promptvars
+            \\printf 'set-unset=<%s>\n' "$?"
+            \\shopt -q promptvars
+            \\printf 'unchanged=<%s>\n' "$?"
+            \\shopt no_such_rush_option
+            \\printf 'invalid-query=<%s>\n' "$?"
+            \\shopt -s no_such_rush_option
+            \\printf 'invalid-set=<%s>\n' "$?"
+            ,
+            .stdout =
+            \\selected-on=<0>
+            \\selected-off=<0>
+            \\print-query=<0>
+            \\unset-query=<0>
+            \\unset-applied=<1>
+            \\set-query=<0>
+            \\set-unset=<1>
+            \\unchanged=<0>
+            \\invalid-query=<1>
+            \\invalid-set=<1>
+            \\
+            ,
+            .stderr_match = .nonempty,
+            .status = 0,
+        },
+        .{
             .name = "type supports path kind and all-match options",
             .script =
             \\type -t cd

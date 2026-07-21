@@ -1,0 +1,50 @@
+.{
+    .name = "Bash interactive prompts",
+    .mode = .bash,
+    .cases = .{
+        .{
+            .name = "PROMPT_COMMAND and PS1 receive the preceding command status",
+            .script = "",
+            .stdin =
+            \\PROMPT_COMMAND='printf "hook:%s\n" "$?"'; PS1='P[$?]> '
+            \\true
+            \\false
+            \\printf 'seen:%s\n' "$?"
+            \\exit
+            \\
+            ,
+            .stdout =
+            \\hook:0
+            \\hook:0
+            \\hook:1
+            \\seen:1
+            \\hook:0
+            \\
+            ,
+            .stderr_match = .any,
+        },
+        .{
+            .name = "PS1 expansion may mutate PS1 without invalidating the prompt source",
+            .script = "",
+            .stdin =
+            \\PS1='$((PS1=7))safe> '
+            \\printf 'after:<%s>\n' "$PS1"
+            \\exit
+            \\
+            ,
+            .stdout = "after:<7>\n",
+            .stderr_match = .any,
+        },
+        .{
+            .name = "PROMPT_COMMAND arrays survive mutation during the prompt cycle",
+            .script = "",
+            .stdin =
+            \\PROMPT_COMMAND=('printf "first\n"; PROMPT_COMMAND=:' 'printf "second\n"')
+            \\exit
+            \\
+            ,
+            .stdout = "first\nsecond\n",
+            .stderr_match = .any,
+        },
+    },
+}

@@ -524,10 +524,10 @@
             \\PWD=/home/rush/project
             \\prompt='\[\e[31m\]$USER'
             \\shopt -u promptvars
-            \\expected=$'\x01\e[31m\x02$USER'
+            \\expected=$'\e[31m$USER'
             \\[[ ${prompt@P} == "$expected" ]] && printf 'literal-vars\n'
             \\shopt -s promptvars
-            \\expected=$'\x01\e[31m\x02rush'
+            \\expected=$'\e[31mrush'
             \\[[ ${prompt@P} == "$expected" ]] && printf 'expanded-vars\n'
             \\prompt='\w|\W|\101'
             \\[[ ${prompt@P} == '~/project|project|A' ]] && printf 'standard-escapes\n'
@@ -537,6 +537,16 @@
             \\[[ ${prompt@P} == "it's" ]] && printf 'literal-apostrophe\n'
             \\prompt='\\w'
             \\[[ ${prompt@P} == '\w' ]] && printf 'escaped-backslash\n'
+            \\prompt='\400X\401X\402X'
+            \\[[ ${prompt@P} == $'XX\002X' ]] && printf 'nul-and-marker-omitted\n'
+            \\prompt='$((prompt=0)) y'
+            \\printf 'self-mutation=<%s> value=<%s>\n' "${prompt@P}" "$prompt"
+            \\prompts=('$USER' '\w')
+            \\printf 'array=<%s>\n' "${prompts[@]@P}"
+            \\printf 'array-star=<%s>\n' "${prompts[*]@P}"
+            \\printf 'array-index=<%s>\n' "${prompts[1]@P}"
+            \\prompts=('$((prompts=7)) first' 'second')
+            \\printf 'mutating-array=<%s>\n' "${prompts[@]@P}"
             ,
             .stdout =
             \\literal-vars
@@ -545,10 +555,29 @@
             \\literal-quotes
             \\literal-apostrophe
             \\escaped-backslash
+            \\nul-and-marker-omitted
+            \\self-mutation=<0 y> value=<0>
+            \\array=<rush>
+            \\array=<~/project>
+            \\array-star=<rush ~/project>
+            \\array-index=<~/project>
+            \\mutating-array=<7 first>
+            \\mutating-array=<second>
             \\
             ,
             .stderr = "",
             .status = 0,
+        },
+        .{
+            .name = "prompt parameter transformation honors nounset",
+            .script =
+            \\set -u
+            \\printf '<%s>\n' "${missing@P}"
+            \\printf 'unreachable\n'
+            ,
+            .stdout = "",
+            .stderr_match = .nonempty,
+            .status = 127,
         },
     },
 }

@@ -418,10 +418,7 @@ test "Shell initializes exported PWD instead of preserving a stale environment v
 }
 
 test "Shell counts parsed interactive commands at the evaluation boundary" {
-    const TestHost = struct {
-        fn writeAll(_: @This(), _: host_mod.Fd, _: []const u8) !void {}
-    };
-    var shell = Shell(TestHost).init(std.testing.allocator, .{}, .{});
+    var shell = Shell(host_mod.RealHost).init(std.testing.allocator, .{}, .{});
     defer shell.deinit();
 
     const malformed_src: source.Source = .{

@@ -80,10 +80,6 @@ pub fn run(
     sh.setCommandHistory(history_service.commandHistory(io));
     sh.state.prompt_history_number = history_service.nextCommandNumber() catch 1;
 
-    if (!stdin_terminal) {
-        return runPromptedStdin(allocator, &sh, &source_id);
-    }
-
     var session: InteractiveSession = .{
         .allocator = allocator,
         .io = io,
@@ -94,6 +90,10 @@ pub fn run(
         .events = .{ .sh = &sh },
         .last_command_status = sh.state.last_status,
     };
+    if (!stdin_terminal) {
+        session.bash_prompt_mode = .parameter;
+        return session.runPromptedStdin();
+    }
     return session.runTerminal();
 }
 
@@ -177,9 +177,7 @@ const InteractiveSession = struct {
     // command substitutions while the user is editing the same line.
     bash_prompt_cache: ?[]const u8 = null,
     bash_prompt_active: ?bool = null,
-    // A cache-miss redraw must expand PS1 with the status left by this cycle's
-    // PROMPT_COMMAND, not with status from an unrelated async hook.
-    bash_prompt_expansion_status: ?shell.result.ExitStatus = null,
+    bash_prompt_mode: shell.prompt.DecodeMode = .editor,
 
     fn runTerminal(self: *InteractiveSession) !u8 {
         var terminal = editor.driver.TerminalSession.init(self.allocator, self.io) catch {
@@ -226,6 +224,52 @@ const InteractiveSession = struct {
             const tty_fd = self.sh.state.controlling_tty orelse .stdin;
             // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
             self.sh.host.setTerminalProcessGroup(tty_fd, process_group) catch {};
+        }
+    }
+
+    fn runPromptedStdin(self: *InteractiveSession) !u8 {
+        defer self.clearBashPromptCache();
+
+        while (true) {
+            self.clearBashPromptCache();
+            if (try self.runBashPromptCommand()) |status| return self.exit(status);
+
+            const prompt_text = self.renderPrompt() catch try promptedStdinPrompt(self.allocator, self.sh);
+            defer self.allocator.free(prompt_text);
+            try self.sh.host.writeAll(.stderr, prompt_text);
+
+            const line = try readInteractiveStdinLine(self.allocator, self.sh) orelse return self.exitWithLastStatus();
+            defer self.allocator.free(line);
+
+            const src: shell.source.Source = .{
+                .id = self.source_id.*,
+                .kind = .interactive,
+                .name = "interactive",
+                .text = line,
+            };
+            self.source_id.* +%= 1;
+
+            const started_at = unixTimestamp(self.io);
+            const history_handle = self.startHistoryCommand(line, started_at) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => null,
+            };
+            const evaluated = self.sh.evalSource(src) catch |err| {
+                self.last_command_status = 2;
+                self.sh.state.last_status = 2;
+                // ziglint-ignore: Z026 history updates remain best effort when evaluation fails
+                self.history_service.completeCommand(history_handle, 2, 0) catch {};
+                if (!shell.parser.isParseError(err)) try self.sh.host.writeAll(.stderr, "rush: shell error\n");
+                continue;
+            };
+            const duration_ms = @max(unixTimestamp(self.io) - started_at, 0) * 1000;
+            // ziglint-ignore: Z026 history updates remain best effort after command completion
+            self.history_service.completeCommand(history_handle, evaluated.status, duration_ms) catch {};
+            self.last_command_status = evaluated.status;
+            switch (evaluated.flow) {
+                .exit => |status| return self.exit(status),
+                else => {},
+            }
         }
     }
 
@@ -343,7 +387,7 @@ const InteractiveSession = struct {
         defer self.sh.state.last_status = prompt_status;
 
         if (self.usesBashPrompt()) {
-            self.sh.state.last_status = self.bash_prompt_expansion_status orelse prompt_status;
+            self.sh.state.last_status = prompt_status;
             return self.renderBashPrompt();
         }
         self.sh.state.last_status = prompt_status;
@@ -404,14 +448,14 @@ const InteractiveSession = struct {
     fn bashPromptCommands(self: InteractiveSession) ?BashPromptCommands {
         if (self.sh.state.getVariable("PROMPT_COMMAND")) |variable| return .{ .scalar = variable.value };
         if (self.sh.state.getArray("PROMPT_COMMAND")) |array| return .{ .array = array.elements };
-        return null;
+        const value = startup.envValue(self.sh.env, "PROMPT_COMMAND") orelse return null;
+        return .{ .scalar = value };
     }
 
     fn clearBashPromptCache(self: *InteractiveSession) void {
         if (self.bash_prompt_cache) |cached| self.allocator.free(cached);
         self.bash_prompt_cache = null;
         self.bash_prompt_active = null;
-        self.bash_prompt_expansion_status = null;
     }
 
     fn renderBashPrompt(self: *InteractiveSession) ![]const u8 {
@@ -423,11 +467,12 @@ const InteractiveSession = struct {
             variable.value
         else
             startup.envValue(self.sh.env, "PS1") orelse "rush> ";
-        const expanded = try shell.eval.expandPromptValue(self.sh, value, .{});
+        const expanded = try shell.eval.expandPromptValue(self.sh, value, .{}, self.bash_prompt_mode);
         const cached = try self.allocator.dupe(u8, expanded);
         errdefer self.allocator.free(cached);
+        const rendered = try self.allocator.dupe(u8, cached);
         self.bash_prompt_cache = cached;
-        return self.allocator.dupe(u8, cached);
+        return rendered;
     }
 
     fn runBashPromptCommand(self: *InteractiveSession) !?u8 {
@@ -437,10 +482,7 @@ const InteractiveSession = struct {
         if (!active) return null;
 
         self.sh.state.last_status = self.last_command_status;
-        const commands = prompt_commands orelse {
-            self.bash_prompt_expansion_status = self.sh.state.last_status;
-            return null;
-        };
+        const commands = prompt_commands orelse return null;
         const exit_status = switch (commands) {
             .scalar => |value| run: {
                 const command = try self.allocator.dupe(u8, value);
@@ -458,7 +500,6 @@ const InteractiveSession = struct {
                 break :run null;
             },
         };
-        self.bash_prompt_expansion_status = self.sh.state.last_status;
         return exit_status;
     }
 
@@ -474,6 +515,7 @@ const InteractiveSession = struct {
             error.OutOfMemory => return error.OutOfMemory,
             else => {
                 if (!shell.parser.isParseError(err)) {
+                    // ziglint-ignore: Z026 preserve the original prompt-command failure when diagnostics cannot write
                     self.sh.host.writeAll(.stderr, "rush: PROMPT_COMMAND error\n") catch {};
                 }
                 self.sh.state.last_status = 2;
@@ -1022,48 +1064,6 @@ fn readStdinLineWithNewline(allocator: std.mem.Allocator, sh: *RushShell) !?[]co
     }
 }
 
-fn runPromptedStdin(
-    allocator: std.mem.Allocator,
-    sh: *RushShell,
-    source_id: *shell.source.SourceId,
-) !u8 {
-    while (true) {
-        const prompt_text = try promptedStdinPrompt(allocator, sh);
-        defer allocator.free(prompt_text);
-        try sh.host.writeAll(.stderr, prompt_text);
-
-        const line = try readInteractiveStdinLine(allocator, sh) orelse {
-            return shell.eval.runExitTrap(sh, sh.state.last_status) catch {
-                try sh.host.writeAll(.stderr, "rush: shell error\n");
-                return 2;
-            };
-        };
-        defer allocator.free(line);
-
-        const src: shell.source.Source = .{
-            .id = source_id.*,
-            .kind = .interactive,
-            .name = "interactive",
-            .text = line,
-        };
-        source_id.* +%= 1;
-
-        const evaluated = sh.evalSource(src) catch |err| {
-            sh.state.last_status = 2;
-            // Parse errors already produced a positioned syntax diagnostic.
-            if (!shell.parser.isParseError(err)) try sh.host.writeAll(.stderr, "rush: shell error\n");
-            continue;
-        };
-        switch (evaluated.flow) {
-            .exit => |status| return shell.eval.runExitTrap(sh, status) catch {
-                try sh.host.writeAll(.stderr, "rush: shell error\n");
-                return 2;
-            },
-            else => {},
-        }
-    }
-}
-
 fn readInteractiveStdinLine(allocator: std.mem.Allocator, sh: *RushShell) !?[]const u8 {
     var line: std.ArrayList(u8) = .empty;
     defer line.deinit(allocator);
@@ -1282,7 +1282,7 @@ test "PROMPT_COMMAND selects and prepares the Bash PS1 prompt" {
     try std.testing.expectEqualStrings("bash:7", rendered);
 }
 
-test "Bash prompt render restores its prompt-cycle status after shell status drift" {
+test "Bash prompt expansion uses the preceding command status after PROMPT_COMMAND" {
     var sh = RushShell.init(std.testing.allocator, .{}, .{});
     defer sh.deinit();
 
@@ -1319,7 +1319,40 @@ test "Bash prompt render restores its prompt-cycle status after shell status dri
     const rendered = try session.renderPrompt();
     defer std.testing.allocator.free(rendered);
 
-    try std.testing.expectEqualStrings("1", rendered);
+    try std.testing.expectEqualStrings("7", rendered);
+    try std.testing.expectEqual(@as(shell.result.ExitStatus, 7), sh.state.last_status);
+}
+
+test "environment PROMPT_COMMAND selects and prepares the Bash prompt" {
+    const env = [_][:0]const u8{
+        "PS1=initial:$?",
+        "PROMPT_COMMAND=PS1=environment:$?",
+    };
+    const env_ptrs = [_][*:0]const u8{ env[0].ptr, env[1].ptr };
+    var sh = RushShell.init(std.testing.allocator, .{}, .{ .env = &env_ptrs });
+    defer sh.deinit();
+
+    var command_history = try history.History.init(std.testing.allocator);
+    defer command_history.deinit();
+    var history_service = history.InteractiveHistoryService.init(&command_history);
+    var source_id: shell.source.SourceId = 1;
+    var session: InteractiveSession = .{
+        .allocator = std.testing.allocator,
+        .io = std.testing.io,
+        .sh = &sh,
+        .source_id = &source_id,
+        .command_history = &command_history,
+        .history_service = &history_service,
+        .events = .{ .sh = &sh },
+        .last_command_status = 7,
+    };
+    defer session.clearBashPromptCache();
+
+    try std.testing.expectEqual(@as(?u8, null), try session.runBashPromptCommand());
+    const rendered = try session.renderPrompt();
+    defer std.testing.allocator.free(rendered);
+
+    try std.testing.expectEqualStrings("environment:7", rendered);
     try std.testing.expectEqual(@as(shell.result.ExitStatus, 7), sh.state.last_status);
 }
 

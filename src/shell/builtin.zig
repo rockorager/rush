@@ -389,6 +389,7 @@ fn evalShopt(shell: anytype, args: []const []const u8) result.EvalResult {
     var print_reusable = false;
     var query = false;
     var set_value: ?bool = null;
+    var set_and_unset = false;
     var index: usize = 1;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
@@ -400,25 +401,34 @@ fn evalShopt(shell: anytype, args: []const []const u8) result.EvalResult {
         for (arg[1..]) |option| switch (option) {
             'p' => print_reusable = true,
             'q' => query = true,
-            's' => set_value = true,
-            'u' => set_value = false,
+            's' => {
+                if (set_value == false) set_and_unset = true;
+                set_value = true;
+            },
+            'u' => {
+                if (set_value == true) set_and_unset = true;
+                set_value = false;
+            },
             else => return .{ .status = 2 },
         };
     }
 
-    if ((print_reusable and query) or (query and set_value != null) or (print_reusable and set_value != null)) {
-        return .{ .status = 2 };
+    if (set_and_unset) {
+        shell.host.writeAll(.stderr, "shopt: cannot set and unset shell options simultaneously\n") catch {
+            return .{ .status = 1 };
+        };
+        return .{ .status = 1 };
     }
 
-    if (index >= args.len and set_value != null) return .{ .status = 2 };
-    if (index >= args.len) return printShopt(shell, print_reusable, null, query);
+    if (index >= args.len) return printShopt(shell, print_reusable, null, query, set_value);
 
-    if (set_value == null) return printShopt(shell, print_reusable, args[index..], query);
+    if (set_value == null) return printShopt(shell, print_reusable, args[index..], query, null);
 
     var status: result.ExitStatus = 0;
     for (args[index..]) |name| {
         const option = shopt_option_names.get(name) orelse {
             status = 1;
+            if (!writeInvalidShoptOption(shell, name)) return .{ .status = 1 };
             continue;
         };
         setShoptOption(shell, option, set_value.?);
@@ -426,12 +436,19 @@ fn evalShopt(shell: anytype, args: []const []const u8) result.EvalResult {
     return .{ .status = status };
 }
 
-fn printShopt(shell: anytype, reusable: bool, names: ?[]const []const u8, query: bool) result.EvalResult {
+fn printShopt(
+    shell: anytype,
+    reusable: bool,
+    names: ?[]const []const u8,
+    query: bool,
+    enabled_filter: ?bool,
+) result.EvalResult {
     var status: result.ExitStatus = 0;
     if (names) |operands| {
         for (operands) |name| {
             const option = shopt_option_names.get(name) orelse {
                 status = 1;
+                if (!writeInvalidShoptOption(shell, name)) return .{ .status = 1 };
                 continue;
             };
             if (!shoptOptionEnabled(shell, option)) status = 1;
@@ -439,10 +456,18 @@ fn printShopt(shell: anytype, reusable: bool, names: ?[]const []const u8, query:
         }
     } else if (!query) {
         for (shopt_option_order) |option| {
+            if (enabled_filter) |enabled| if (shoptOptionEnabled(shell, option) != enabled) continue;
             if (!writeShoptOption(shell, option, reusable)) return .{ .status = 1 };
         }
     }
     return .{ .status = status };
+}
+
+fn writeInvalidShoptOption(shell: anytype, name: []const u8) bool {
+    shell.host.writeAll(.stderr, "shopt: ") catch return false;
+    shell.host.writeAll(.stderr, name) catch return false;
+    shell.host.writeAll(.stderr, ": invalid shell option name\n") catch return false;
+    return true;
 }
 
 fn writeShoptOption(shell: anytype, option: ShoptOption, reusable: bool) bool {

@@ -17,6 +17,7 @@ const Case = struct {
     name: []const u8,
     shell_args: []const []const u8 = &.{},
     script: []const u8,
+    stdin: ?[]const u8 = null,
     stdout: []const u8 = "",
     stderr: []const u8 = "",
     stderr_match: BytesExpectation = .exact,
@@ -47,6 +48,7 @@ const Config = struct {
     print_diff: bool,
     color_diff: bool,
     case_filter: ?[]const u8,
+    environ_map: ?*const std.process.Environ.Map = null,
 };
 
 const DiscoveredFiles = struct {
@@ -62,8 +64,10 @@ const DiscoveredFiles = struct {
 const TempRoot = struct {
     path: []const u8,
     dir: std.Io.Dir,
+    environ_map: std.process.Environ.Map,
 
     fn deinit(self: *TempRoot, allocator: std.mem.Allocator, io: std.Io) void {
+        self.environ_map.deinit();
         self.dir.close(io);
         std.Io.Dir.cwd().deleteTree(io, self.path) catch |err| {
             std.debug.print("conformance: failed to remove temporary directory {s}: {s}\n", .{
@@ -167,6 +171,7 @@ pub fn main(init: std.process.Init) !u8 {
         .print_diff = parsed_config.print_diff or parsed_config.case_filter != null,
         .color_diff = std.Io.File.stderr().isTty(init.io) catch false,
         .case_filter = parsed_config.case_filter,
+        .environ_map = init.environ_map,
     };
     if (config.files.len == 0) {
         std.debug.print("conformance: no suite files found\n", .{});
@@ -379,7 +384,7 @@ fn runSuiteFile(
     const file_node = progress.startFile(path, suite.name, matching_cases);
     defer progress.finishFile(file_node);
 
-    var temp_root = try createTempRoot(allocator, io);
+    var temp_root = try createTempRoot(allocator, io, config.environ_map.?);
     defer temp_root.deinit(allocator, io);
 
     var stats: RunStats = .{};
@@ -405,7 +410,11 @@ fn runSuiteFile(
     return stats;
 }
 
-fn createTempRoot(allocator: std.mem.Allocator, io: std.Io) !TempRoot {
+fn createTempRoot(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    parent_environ_map: *const std.process.Environ.Map,
+) !TempRoot {
     const cwd = std.Io.Dir.cwd();
     try cwd.createDirPath(io, ".zig-cache");
 
@@ -428,10 +437,24 @@ fn createTempRoot(allocator: std.mem.Allocator, io: std.Io) !TempRoot {
             },
             else => return err,
         };
+        // ziglint-ignore: Z026 best-effort cleanup after failed temporary-environment setup
+        errdefer cwd.deleteTree(io, path) catch {};
+
+        var environ_map = try parent_environ_map.clone(allocator);
+        errdefer environ_map.deinit();
+        try environ_map.put("HOME", ".");
+        try environ_map.put("XDG_CONFIG_HOME", ".");
+        try environ_map.put("XDG_STATE_HOME", ".");
+        try environ_map.put("HISTFILE", ".bash_history");
+        _ = environ_map.swapRemove("BASH_ENV");
+        _ = environ_map.swapRemove("ENV");
+        _ = environ_map.swapRemove("PROMPT_COMMAND");
+        _ = environ_map.swapRemove("PS1");
 
         return .{
             .path = path,
             .dir = try cwd.openDir(io, path, .{}),
+            .environ_map = environ_map,
         };
     }
 
@@ -539,9 +562,11 @@ fn runRush(
     if (config.mode == .posix) try argv.append(allocator, "--posix");
     if (config.interactive) try argv.append(allocator, "-i");
     try argv.appendSlice(allocator, case.shell_args);
-    try argv.append(allocator, "-c");
-    try argv.append(allocator, case.script);
-    return runCommand(allocator, io, cwd, argv.items);
+    if (case.stdin == null) {
+        try argv.append(allocator, "-c");
+        try argv.append(allocator, case.script);
+    }
+    return runCommand(allocator, io, cwd, argv.items, case.stdin, &temp_root.environ_map);
 }
 
 fn runGenericShell(
@@ -563,15 +588,43 @@ fn runGenericShell(
     try argv.appendSlice(allocator, shell_args);
     if (interactive) try argv.append(allocator, "-i");
     try argv.appendSlice(allocator, case.shell_args);
-    try argv.append(allocator, "-c");
-    try argv.append(allocator, case.script);
-    var result = try runCommand(allocator, io, cwd, argv.items);
+    if (case.stdin == null) {
+        try argv.append(allocator, "-c");
+        try argv.append(allocator, case.script);
+    }
+    var result = try runCommand(allocator, io, cwd, argv.items, case.stdin, &temp_root.environ_map);
     if (interactive) result = try filterInteractiveShellStderr(allocator, result);
     return result;
 }
 
-fn runCommand(allocator: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir, argv: []const []const u8) !RunResult {
-    const result = try std.process.run(allocator, io, .{ .argv = argv, .cwd = .{ .dir = cwd } });
+fn runCommand(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    cwd: std.Io.Dir,
+    argv: []const []const u8,
+    stdin: ?[]const u8,
+    environ_map: *const std.process.Environ.Map,
+) !RunResult {
+    var wrapper_argv: std.ArrayList([]const u8) = .empty;
+    defer wrapper_argv.deinit(allocator);
+    if (stdin) |input| {
+        try wrapper_argv.appendSlice(allocator, &.{
+            "/bin/sh",
+            "-c",
+            \\input=$1; shift; printf '%s' "$input" | "$@"
+            ,
+            "rush-conformance",
+            input,
+        });
+        try wrapper_argv.appendSlice(allocator, argv);
+    }
+
+    const command_argv = if (stdin == null) argv else wrapper_argv.items;
+    const result = try std.process.run(allocator, io, .{
+        .argv = command_argv,
+        .cwd = .{ .dir = cwd },
+        .environ_map = environ_map,
+    });
     errdefer allocator.free(result.stdout);
     errdefer allocator.free(result.stderr);
 
@@ -855,7 +908,7 @@ fn writeUsage(io: std.Io) !void {
         \\usage: conformance-harness (--rush PATH | --shell SHELL [--shell-arg ARG...])
         \\                           --mode MODE [--interactive] [--case TEXT] [--diff] [FILE...]
         \\modes: posix, bash
-        \\--interactive: discover interactive suites and invoke the target with -i -c
+        \\--interactive: discover interactive suites and invoke the target with -i
         \\--case TEXT: run cases whose names contain TEXT; implies --diff
         \\--diff: print unified stdout/stderr diffs for failures
         \\

@@ -4,10 +4,6 @@ const RealHost = @This();
 
 const std = @import("std");
 const builtin = @import("builtin");
-const libc = @cImport({
-    @cInclude("time.h");
-    @cInclude("unistd.h");
-});
 
 const host = @import("../host.zig");
 
@@ -19,6 +15,30 @@ extern "c" fn readdir(dir: *std.c.DIR) ?*std.c.dirent;
 extern "c" fn getpgrp() c_int;
 extern "c" fn tcgetpgrp(fd: c_int) c_int;
 extern "c" fn tcsetpgrp(fd: c_int, pgrp: c_int) c_int;
+extern "c" fn ttyname_r(fd: c_int, buffer: [*]u8, length: usize) c_int;
+
+const CTime = extern struct {
+    sec: c_int,
+    min: c_int,
+    hour: c_int,
+    month_day: c_int,
+    month: c_int,
+    year: c_int,
+    week_day: c_int,
+    year_day: c_int,
+    daylight_saving: c_int,
+    utc_offset: c_long,
+    zone: ?[*:0]const u8,
+};
+
+extern "c" fn localtime_r(timestamp: *const std.c.time_t, result: *CTime) ?*CTime;
+extern "c" fn __localtime_r50(timestamp: *const std.c.time_t, result: *CTime) ?*CTime;
+extern "c" fn strftime(
+    buffer: [*]u8,
+    length: usize,
+    format: [*:0]const u8,
+    local_time: *const CTime,
+) usize;
 
 var pending_signal_bits: std.atomic.Value(u64) = .init(0);
 
@@ -70,7 +90,7 @@ pub fn terminalName(_: RealHost, allocator: std.mem.Allocator, fd: host.Fd) ![]c
     while (buffer_len <= lookup_max_buffer_len) : (buffer_len *= 2) {
         const buffer = try allocator.alloc(u8, buffer_len);
         defer allocator.free(buffer);
-        const rc = libc.ttyname_r(fd.raw(), buffer.ptr, buffer.len);
+        const rc = ttyname_r(fd.raw(), buffer.ptr, buffer.len);
         if (rc == 0) return allocator.dupe(u8, std.mem.sliceTo(buffer, 0));
         if (rc != @intFromEnum(std.c.E.RANGE)) return error.Unexpected;
     }
@@ -78,9 +98,13 @@ pub fn terminalName(_: RealHost, allocator: std.mem.Allocator, fd: host.Fd) ![]c
 }
 
 pub fn formatLocalTime(_: RealHost, allocator: std.mem.Allocator, timestamp: i64, format: []const u8) ![]const u8 {
-    const timestamp_c: libc.time_t = @intCast(timestamp);
-    var local: libc.struct_tm = undefined;
-    if (libc.localtime_r(&timestamp_c, &local) == null) return error.Unexpected;
+    const timestamp_c: std.c.time_t = @intCast(timestamp);
+    var local: CTime = undefined;
+    const local_result = if (builtin.os.tag == .netbsd)
+        __localtime_r50(&timestamp_c, &local)
+    else
+        localtime_r(&timestamp_c, &local);
+    if (local_result == null) return error.Unexpected;
     if (format.len == 0) return allocator.dupe(u8, "");
 
     const format_z = try allocator.dupeZ(u8, format);
@@ -92,7 +116,7 @@ pub fn formatLocalTime(_: RealHost, allocator: std.mem.Allocator, timestamp: i64
     while (true) {
         const buffer = try allocator.alloc(u8, buffer_len);
         defer allocator.free(buffer);
-        const written = libc.strftime(buffer.ptr, buffer.len, format_z.ptr, &local);
+        const written = strftime(buffer.ptr, buffer.len, format_z.ptr, &local);
         if (written != 0) return allocator.dupe(u8, buffer[0..written]);
 
         // POSIX uses zero for both insufficient capacity and a legitimately
