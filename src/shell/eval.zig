@@ -7746,19 +7746,30 @@ fn evalExternalWithSearchPath(
     var restored_assignments = false;
     errdefer if (!restored_assignments) restoreVariables(shell, saved);
     try applyAssignments(shell, assignments);
-    if (try commandFoundButNotExecutable(shell, fields[0], search_path)) {
-        restoreVariables(shell, saved);
-        restored_assignments = true;
-        return .{ .status = 126 };
-    }
-    const command_path = try findCommandPath(shell, fields[0], search_path) orelse {
-        try writeCommandNotFoundDiagnostic(shell, fields[0], search_path);
-        restoreVariables(shell, saved);
-        restored_assignments = true;
-        return .{ .status = 127 };
+    const command_path = switch (try searchExternalCommand(shell, fields[0], search_path)) {
+        .executable => |path| path,
+        .not_executable => {
+            restoreVariables(shell, saved);
+            restored_assignments = true;
+            return .{ .status = 126 };
+        },
+        .not_found => {
+            try writeCommandNotFoundDiagnostic(shell, fields[0], search_path);
+            restoreVariables(shell, saved);
+            restored_assignments = true;
+            return .{ .status = 127 };
+        },
     };
     try rememberCommandHash(shell, fields[0], command_path, search_path);
-    var request = try makeExternalSpawnRequestWithSearchPath(shell, fields, assignments, &.{}, search_path);
+    const argv = try makeExecArgv(shell, fields);
+    var request = try makeExternalSpawnRequestFromResolvedPath(
+        shell,
+        fields[1..],
+        assignments,
+        &.{},
+        argv,
+        command_path,
+    );
     const HostType = switch (@typeInfo(@TypeOf(shell.host))) {
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
@@ -7902,6 +7913,13 @@ fn collectPathCommandSuggestions(
         for (entries.entries) |entry| {
             if (entry.name.len == 0 or entry.name[0] == '.') continue;
             if (entry.kind == .directory) continue;
+            if (suggestions.contains(entry.name)) continue;
+            const candidate_distance = try distance.atMost(
+                allocator,
+                command,
+                entry.name,
+                command_suggestion_max_distance,
+            ) orelse continue;
             candidate_buffer.clearRetainingCapacity();
             try candidate_buffer.appendSlice(allocator, directory);
             if (!std.mem.endsWith(u8, directory, "/")) try candidate_buffer.append(allocator, '/');
@@ -7909,7 +7927,7 @@ fn collectPathCommandSuggestions(
             try candidate_buffer.append(allocator, 0);
             const candidate = candidate_buffer.items[0 .. candidate_buffer.items.len - 1 :0];
             if (!shell.host.fileAccessZ(candidate, .execute)) continue;
-            try suggestions.consider(allocator, distance, command, entry.name);
+            try suggestions.considerAtDistance(allocator, entry.name, candidate_distance);
         }
     }
 }
@@ -7943,6 +7961,18 @@ const CommandSuggestions = struct {
             candidate,
             command_suggestion_max_distance,
         ) orelse return;
+        try self.considerAtDistance(allocator, candidate, candidate_distance);
+    }
+
+    fn considerAtDistance(
+        self: *CommandSuggestions,
+        allocator: std.mem.Allocator,
+        candidate: []const u8,
+        candidate_distance: usize,
+    ) !void {
+        std.debug.assert(candidate.len != 0);
+        std.debug.assert(candidate_distance <= command_suggestion_max_distance);
+        if (self.contains(candidate)) return;
         const suggestion: CommandSuggestion = .{
             .name = try allocator.dupe(u8, candidate),
             .distance = candidate_distance,
@@ -8019,15 +8049,29 @@ const EditDistance = struct {
     }
 };
 
-fn commandFoundButNotExecutable(shell: anytype, command: []const u8, search_path: ?[]const u8) !bool {
+const ExternalCommandSearchResult = union(enum) {
+    executable: [:0]const u8,
+    not_executable,
+    not_found,
+};
+
+fn searchExternalCommand(
+    shell: anytype,
+    command: []const u8,
+    search_path: ?[]const u8,
+) !ExternalCommandSearchResult {
+    std.debug.assert(command.len != 0);
     const allocator = shell.scratchAllocator();
     if (std.mem.indexOfScalar(u8, command, '/') != null) {
         const command_z = try allocator.dupeZ(u8, command);
-        if (try pathIsDirectory(shell, command, .other)) return true;
-        return !shell.host.isExecutableZ(command_z) and shell.host.existsZ(command_z);
+        if (shell.host.isExecutableZ(command_z)) {
+            if (try pathIsDirectory(shell, command, .other)) return .not_executable;
+            return .{ .executable = command_z };
+        }
+        return if (shell.host.existsZ(command_z)) .not_executable else .not_found;
     }
 
-    var found = false;
+    var found_not_executable = false;
     // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     const path = search_path orelse if (shell.state.getVariable("PATH")) |variable| variable.value else envPath(shell.env) orelse defaultUtilityPath();
     var candidate_buffer: std.ArrayList(u8) = .empty;
@@ -8040,14 +8084,16 @@ fn commandFoundButNotExecutable(shell: anytype, command: []const u8, search_path
         try candidate_buffer.appendSlice(allocator, command);
         try candidate_buffer.append(allocator, 0);
         const candidate = candidate_buffer.items[0 .. candidate_buffer.items.len - 1 :0];
-        if (try pathIsDirectory(shell, candidate, .other)) {
-            found = true;
-            continue;
+        if (shell.host.isExecutableZ(candidate)) {
+            if (try pathIsDirectory(shell, candidate, .other)) {
+                found_not_executable = true;
+                continue;
+            }
+            return .{ .executable = candidate };
         }
-        if (shell.host.isExecutableZ(candidate)) return false;
-        found = found or shell.host.existsZ(candidate);
+        found_not_executable = found_not_executable or shell.host.existsZ(candidate);
     }
-    return found;
+    return if (found_not_executable) .not_executable else .not_found;
 }
 
 fn rememberCommandHash(shell: anytype, command: []const u8, path: []const u8, search_path: ?[]const u8) !void {
@@ -8076,11 +8122,22 @@ fn makeExternalSpawnRequestWithSearchPath(
     const command_text = std.mem.span(argv[0].?);
     const command = argv[0].?[0..command_text.len :0];
     const path = try resolveCommandPathWithSearchPath(shell, command, search_path);
+    return makeExternalSpawnRequestFromResolvedPath(shell, fields[1..], assignments, fd_actions, argv, path);
+}
+
+fn makeExternalSpawnRequestFromResolvedPath(
+    shell: anytype,
+    arguments: []const []const u8,
+    assignments: []const ast.Assignment,
+    fd_actions: []const host_mod.SpawnFdAction,
+    argv: [:null]const ?[*:0]const u8,
+    path: [:0]const u8,
+) !host_mod.SpawnRequest {
     const envp = try makeExecEnvp(shell, assignments);
     return .{
         .path = path,
         .argv = argv,
-        .fallback_argv = try makeShellFallbackArgv(shell, path, fields[1..]),
+        .fallback_argv = try makeShellFallbackArgv(shell, path, arguments),
         .envp = envp,
         .fd_actions = fd_actions,
         .default_signals = if (shell.state.options.monitor) &job_control_signals else &.{},
@@ -8383,6 +8440,158 @@ test "command suggestions keep the two nearest stable candidates" {
     try std.testing.expectEqual(@as(usize, 2), suggestions.count);
     try std.testing.expectEqualStrings("gt", suggestions.items[0].name);
     try std.testing.expectEqualStrings("gta", suggestions.items[1].name);
+}
+
+test "PATH command suggestions check executability only for close names" {
+    const TestHost = struct {
+        const Self = @This();
+
+        file_access_calls: usize = 0,
+
+        fn listDir(_: *Self, allocator: std.mem.Allocator, path: []const u8) !host_mod.ListDirResult {
+            try std.testing.expectEqualStrings("/commands", path);
+            const source = [_]host_mod.DirectoryEntry{
+                .{ .name = "cat", .kind = .file },
+                .{ .name = "git", .kind = .file },
+                .{ .name = "gta", .kind = .file },
+            };
+            const entries = try allocator.alloc(host_mod.DirectoryEntry, source.len);
+            var initialized: usize = 0;
+            errdefer {
+                for (entries[0..initialized]) |entry| allocator.free(entry.name);
+                allocator.free(entries);
+            }
+            for (source, 0..) |entry, index| {
+                entries[index] = .{
+                    .name = try allocator.dupe(u8, entry.name),
+                    .kind = entry.kind,
+                };
+                initialized += 1;
+            }
+            return .{ .allocator = allocator, .entries = entries };
+        }
+
+        fn fileAccessZ(self: *Self, path: [:0]const u8, access: host_mod.FileAccess) bool {
+            std.debug.assert(access == .execute);
+            self.file_access_calls += 1;
+            return std.mem.endsWith(u8, path, "/git");
+        }
+    };
+    const TestShell = struct {
+        const Self = @This();
+
+        scratch: *std.heap.ArenaAllocator,
+        host: *TestHost,
+        env: []const [*:0]const u8 = &.{},
+        state: state_mod.State,
+
+        fn scratchAllocator(self: *Self) std.mem.Allocator {
+            return self.scratch.allocator();
+        }
+    };
+
+    var scratch = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer scratch.deinit();
+    var test_host: TestHost = .{};
+    var shell: TestShell = .{
+        .scratch = &scratch,
+        .host = &test_host,
+        .state = .init(std.testing.allocator, .{}),
+    };
+    defer shell.state.deinit();
+    var distance: EditDistance = .{};
+    defer distance.deinit(scratch.allocator());
+    var suggestions: CommandSuggestions = .{};
+    defer suggestions.deinit(scratch.allocator());
+
+    try collectPathCommandSuggestions(
+        scratch.allocator(),
+        &shell,
+        &distance,
+        "gti",
+        "/commands",
+        &suggestions,
+    );
+
+    try std.testing.expectEqual(@as(usize, 2), test_host.file_access_calls);
+    try std.testing.expectEqual(@as(usize, 1), suggestions.count);
+    try std.testing.expectEqualStrings("git", suggestions.items[0].name);
+}
+
+test "external command search traverses PATH once" {
+    const TestHost = struct {
+        const Self = @This();
+
+        executable_checks: usize = 0,
+        existence_checks: usize = 0,
+        directory_checks: usize = 0,
+
+        fn isExecutableZ(self: *Self, path: [:0]const u8) bool {
+            self.executable_checks += 1;
+            return std.mem.eql(u8, path, "/two/cmd");
+        }
+
+        fn existsZ(self: *Self, path: [:0]const u8) bool {
+            self.existence_checks += 1;
+            return std.mem.eql(u8, path, "/one/cmd");
+        }
+
+        fn listDir(self: *Self, _: std.mem.Allocator, _: []const u8) !host_mod.ListDirResult {
+            self.directory_checks += 1;
+            return error.NotDir;
+        }
+
+        fn reset(self: *Self) void {
+            self.executable_checks = 0;
+            self.existence_checks = 0;
+            self.directory_checks = 0;
+        }
+    };
+    const TestShell = struct {
+        const Self = @This();
+
+        scratch: *std.heap.ArenaAllocator,
+        host: *TestHost,
+        env: []const [*:0]const u8 = &.{},
+        state: state_mod.State,
+
+        fn scratchAllocator(self: *Self) std.mem.Allocator {
+            return self.scratch.allocator();
+        }
+    };
+
+    var scratch = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer scratch.deinit();
+    var test_host: TestHost = .{};
+    var shell: TestShell = .{
+        .scratch = &scratch,
+        .host = &test_host,
+        .state = .init(std.testing.allocator, .{}),
+    };
+    defer shell.state.deinit();
+
+    const executable = try searchExternalCommand(&shell, "cmd", "/one:/two");
+    switch (executable) {
+        .executable => |path| try std.testing.expectEqualStrings("/two/cmd", path),
+        else => return error.TestExpectedEqual,
+    }
+    try std.testing.expectEqual(@as(usize, 2), test_host.executable_checks);
+    try std.testing.expectEqual(@as(usize, 1), test_host.existence_checks);
+    try std.testing.expectEqual(@as(usize, 1), test_host.directory_checks);
+
+    test_host.reset();
+    const not_executable = try searchExternalCommand(&shell, "cmd", "/missing:/one");
+    try std.testing.expect(not_executable == .not_executable);
+    try std.testing.expectEqual(@as(usize, 2), test_host.executable_checks);
+    try std.testing.expectEqual(@as(usize, 2), test_host.existence_checks);
+    try std.testing.expectEqual(@as(usize, 0), test_host.directory_checks);
+
+    test_host.reset();
+    const not_found = try searchExternalCommand(&shell, "cmd", "/missing");
+    try std.testing.expect(not_found == .not_found);
+    try std.testing.expectEqual(@as(usize, 1), test_host.executable_checks);
+    try std.testing.expectEqual(@as(usize, 1), test_host.existence_checks);
+    try std.testing.expectEqual(@as(usize, 0), test_host.directory_checks);
 }
 
 test "cd suggestions choose nearest directory in target parent" {
