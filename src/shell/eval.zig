@@ -12,6 +12,7 @@ const host_mod = @import("../host.zig");
 const lexer = @import("lexer.zig");
 const pattern_mod = @import("pattern.zig");
 const parser = @import("parser.zig");
+const prompt_mod = @import("prompt.zig");
 const result = @import("result.zig");
 const source_mod = @import("source.zig");
 const state_mod = @import("state.zig");
@@ -972,9 +973,52 @@ fn evalConditionalExpression(shell: anytype, expression: ast.ConditionalExpressi
 fn evalConditionalUnaryTest(shell: anytype, test_expr: ast.ConditionalUnaryTest) EvalError!bool {
     const operand = try expandWord(shell, test_expr.operand);
     return switch (test_expr.operator) {
+        .option_enabled => builtin.isSetOptionEnabled(shell, operand) orelse false,
         .string_empty => operand.len == 0,
         .string_nonempty => operand.len != 0,
+        .variable_set => try conditionalParameterIsSet(shell, operand),
         else => (try evalFileUnaryTest(shell, conditionalUnaryTestOperatorText(test_expr.operator), operand)).?,
+    };
+}
+
+fn conditionalParameterIsSet(shell: anytype, name: []const u8) EvalError!bool {
+    if (isAssignmentName(name)) {
+        if (shell.state.getVariable(name) != null) return true;
+        const array = shell.state.getArray(name) orelse return false;
+        return array.elementValue(0) != null;
+    }
+    if (shell.state.options.mode == .posix) return false;
+
+    const parameter = parser.parseBracedParameterExpansion(
+        shell.scratchAllocator(),
+        name,
+        .{},
+    ) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return false,
+    } orelse return false;
+    if (parameter.length or parameter.array_indices or parameter.op != null) {
+        return false;
+    }
+    return switch (parameter.parameter) {
+        .positional => |position| positionalValue(shell, position) != null,
+        .array => |array_parameter| try conditionalArrayParameterIsSet(shell, array_parameter),
+        else => false,
+    };
+}
+
+fn conditionalArrayParameterIsSet(shell: anytype, parameter: ast.ArrayParameter) EvalError!bool {
+    if (shell.state.getArray(parameter.name)) |array| {
+        return switch (parameter.subscript) {
+            .index => |word| array.elementValue(try expandArrayIndexForArray(shell, word, array)) != null,
+            .all => array.elements.len != 0,
+        };
+    }
+
+    if (shell.state.getVariable(parameter.name) == null) return false;
+    return switch (parameter.subscript) {
+        .index => |word| (try expandArrayIndexForName(shell, parameter.name, word)) == 0,
+        .all => true,
     };
 }
 
@@ -995,7 +1039,7 @@ fn conditionalUnaryTestOperatorText(operator: ast.ConditionalUnaryTestOperator) 
         .readable => "-r",
         .writable => "-w",
         .executable => "-x",
-        .string_empty, .string_nonempty => unreachable,
+        .option_enabled, .string_empty, .string_nonempty, .variable_set => unreachable,
     };
 }
 
@@ -6235,7 +6279,20 @@ fn expandArithmeticBracedParameter(shell: anytype, text: []const u8, index: *usi
     const content_start = index.* + 2;
     const content_end = scanArithmeticBracedParameterEnd(text, content_start) orelse return error.InvalidArithmetic;
     const content = text[content_start..content_end];
-    const parameter = parseArithmeticBracedParameter(content) orelse return error.InvalidArithmetic;
+    const parameter = parseArithmeticBracedParameter(content) orelse parameter: {
+        if (shell.state.options.mode == .posix) return error.InvalidArithmetic;
+        // Bash permits its full parameter grammar here, including indexed
+        // array lengths such as `${#values[@]}`.
+        const parsed = parser.parseBracedParameterExpansion(
+            shell.scratchAllocator(),
+            content,
+            .{},
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => return error.InvalidArithmetic,
+        };
+        break :parameter parsed orelse return error.InvalidArithmetic;
+    };
 
     index.* = content_end + 1;
     return expandParameter(shell, parameter);
@@ -6958,6 +7015,7 @@ fn expandParameter(shell: anytype, parameter: ast.ParameterExpansion) EvalError!
             .substitute_prefix,
             .substitute_suffix,
             => expandParameterSubstitution(shell, parameter, operator),
+            .transform_prompt => expandParameterPrompt(shell, parameter),
         };
     }
 
@@ -7000,6 +7058,33 @@ fn expandParameter(shell: anytype, parameter: ast.ParameterExpansion) EvalError!
             return "";
         },
     };
+}
+
+fn expandParameterPrompt(shell: anytype, parameter: ast.ParameterExpansion) EvalError![]const u8 {
+    const value = (try parameterCurrentValue(shell, parameter.parameter)) orelse {
+        if (shell.state.options.nounset and parameterSubjectToNounset(parameter.parameter)) {
+            try writeExpansionDiagnostic(
+                shell,
+                parameter,
+                parameterDiagnosticName(parameter.parameter),
+                "parameter not set",
+            );
+            return error.FatalExpansionError;
+        }
+        return "";
+    };
+    return expandPromptValue(shell, value, parameter.span);
+}
+
+/// Expands a Bash prompt value, including prompt escapes and the optional
+/// second expansion controlled by `shopt -s promptvars`.
+pub fn expandPromptValue(shell: anytype, value: []const u8, span: source_mod.Span) EvalError![]const u8 {
+    const decoded = try prompt_mod.decode(shell, value);
+    if (!shell.state.options.promptvars) return decoded;
+    if (std.mem.indexOfAny(u8, decoded, "$\\`") == null) return decoded;
+
+    const word = try parser.parseDoubleQuotedExpansionText(shell.scratchAllocator(), decoded, span);
+    return expandWord(shell, word);
 }
 
 fn positionalValue(shell: anytype, position: u32) ?[]const u8 {

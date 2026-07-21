@@ -545,6 +545,22 @@
             .status = 0,
         },
         .{
+            .name = "shopt without names succeeds regardless of disabled options",
+            .script =
+            \\shopt >/dev/null
+            \\printf 'list=<%s>\n' "$?"
+            \\shopt -q
+            \\printf 'query=<%s>\n' "$?"
+            ,
+            .stdout =
+            \\list=<0>
+            \\query=<0>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "type supports path kind and all-match options",
             .script =
             \\type -t cd

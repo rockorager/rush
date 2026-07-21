@@ -281,6 +281,11 @@ pub const ParameterExpansion = struct {
             std.debug.assert(self.word == null);
             std.debug.assert(self.second_word == null);
         }
+        if (self.op == .transform_prompt) {
+            std.debug.assert(!self.colon);
+            std.debug.assert(self.word == null);
+            std.debug.assert(self.second_word == null);
+        }
         if (self.length) std.debug.assert(self.op == null);
         if (self.array_indices) {
             std.debug.assert(!self.length);
@@ -306,6 +311,7 @@ pub const ParameterOperator = enum {
     substitute_all,
     substitute_prefix,
     substitute_suffix,
+    transform_prompt,
 };
 
 pub const Redirection = struct {
@@ -511,8 +517,10 @@ pub const ConditionalUnaryTestOperator = enum {
     readable,
     writable,
     executable,
+    option_enabled,
     string_empty,
     string_nonempty,
+    variable_set,
 };
 
 pub const ConditionalUnaryTest = struct {

@@ -31,6 +31,20 @@
             .status = 0,
         },
         .{
+            .name = "arithmetic expansion supports indexed array lengths",
+            .script =
+            \\empty=()
+            \\values=(a b c)
+            \\printf '<%s> <%s>\n' "$((${#empty[@]} - 1))" "$((${#values[@]} - 1))"
+            ,
+            .stdout =
+            \\<-1> <2>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "arithmetic expansion error in assignment-only command does not exit",
             .script =
             \\x=$((1/0))
@@ -497,6 +511,40 @@
             \\<X>
             \\<X>
             \\<acabc>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "prompt parameter transformation decodes prompt control sequences",
+            .script =
+            \\USER=rush
+            \\HOME=/home/rush
+            \\PWD=/home/rush/project
+            \\prompt='\[\e[31m\]$USER'
+            \\shopt -u promptvars
+            \\expected=$'\x01\e[31m\x02$USER'
+            \\[[ ${prompt@P} == "$expected" ]] && printf 'literal-vars\n'
+            \\shopt -s promptvars
+            \\expected=$'\x01\e[31m\x02rush'
+            \\[[ ${prompt@P} == "$expected" ]] && printf 'expanded-vars\n'
+            \\prompt='\w|\W|\101'
+            \\[[ ${prompt@P} == '~/project|project|A' ]] && printf 'standard-escapes\n'
+            \\prompt='"hi" $USER'
+            \\[[ ${prompt@P} == '"hi" rush' ]] && printf 'literal-quotes\n'
+            \\prompt="it's"
+            \\[[ ${prompt@P} == "it's" ]] && printf 'literal-apostrophe\n'
+            \\prompt='\\w'
+            \\[[ ${prompt@P} == '\w' ]] && printf 'escaped-backslash\n'
+            ,
+            .stdout =
+            \\literal-vars
+            \\expanded-vars
+            \\standard-escapes
+            \\literal-quotes
+            \\literal-apostrophe
+            \\escaped-backslash
             \\
             ,
             .stderr = "",

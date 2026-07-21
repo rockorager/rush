@@ -7,6 +7,7 @@ const key_mod = @import("key.zig");
 const history_mod = @import("history.zig");
 const menu = @import("menu.zig");
 const path = @import("path.zig");
+const prompt_markers = @import("../prompt_markers.zig");
 const render = @import("render.zig");
 const request_mod = @import("request.zig");
 const shell_lexer = @import("../shell/lexer.zig");
@@ -159,6 +160,27 @@ pub const MouseClick = struct {
     menu_presentation: MenuPresentation = .{},
 };
 
+/// Readline uses SOH/STX to bracket non-printing prompt bytes. The editor
+/// parses terminal escapes itself, so those markers must not reach either its
+/// width calculations or the terminal output stream.
+fn copyPromptBytes(allocator: std.mem.Allocator, bytes: []const u8) ![]const u8 {
+    var marker_count: usize = 0;
+    for (bytes) |byte| if (prompt_markers.isMarker(byte)) {
+        marker_count += 1;
+    };
+    if (marker_count == 0) return allocator.dupe(u8, bytes);
+
+    const copy = try allocator.alloc(u8, bytes.len - marker_count);
+    var index: usize = 0;
+    for (bytes) |byte| {
+        if (prompt_markers.isMarker(byte)) continue;
+        copy[index] = byte;
+        index += 1;
+    }
+    std.debug.assert(index == copy.len);
+    return copy;
+}
+
 /// Owns editable state, copied prompts, queued requests, accepted history and
 /// completion data, and any submitted line until `takeSubmittedLine`.
 /// `HistoryView` callback context and static entries remain caller-owned and
@@ -231,7 +253,7 @@ pub const LineSession = struct {
         return .{
             .allocator = allocator,
             .prompt = .{
-                .bytes = try allocator.dupe(u8, prompt.bytes),
+                .bytes = try copyPromptBytes(allocator, prompt.bytes),
                 .visible_width = prompt.visible_width,
             },
             .editing_mode = editing_mode,
@@ -1932,7 +1954,7 @@ pub const LineSession = struct {
 
     /// Copies the prompt bytes before replacing the session-owned prompt.
     pub fn replacePrompt(self: *LineSession, prompt: Prompt) !void {
-        const bytes = try self.allocator.dupe(u8, prompt.bytes);
+        const bytes = try copyPromptBytes(self.allocator, prompt.bytes);
         self.allocator.free(self.prompt.bytes);
         self.prompt = .{
             .bytes = bytes,
@@ -1943,7 +1965,7 @@ pub const LineSession = struct {
 
     /// Copies the prompt bytes before replacing the session-owned prompt.
     pub fn replaceRightPrompt(self: *LineSession, prompt: Prompt) !void {
-        const bytes = try self.allocator.dupe(u8, prompt.bytes);
+        const bytes = try copyPromptBytes(self.allocator, prompt.bytes);
         if (self.right_prompt.bytes.len != 0) self.allocator.free(self.right_prompt.bytes);
         self.right_prompt = .{
             .bytes = bytes,
@@ -4636,6 +4658,17 @@ test "line session renders with its prompt" {
     defer std.testing.allocator.free(rendered);
 
     try std.testing.expectEqualStrings("\r\x1b[2Krush> x\r\x1b[7C", rendered);
+}
+
+test "line session removes Readline non-printing markers from prompt surfaces" {
+    const marked = "\x01\x1b[31m\x02red\x01\x1b[0m\x02";
+    const expected = "\x1b[31mred\x1b[0m";
+    var session = try LineSession.init(std.testing.allocator, marked);
+    defer session.deinit();
+    try session.replaceRightPrompt(.{ .bytes = marked });
+
+    try std.testing.expectEqualStrings(expected, session.prompt.bytes);
+    try std.testing.expectEqualStrings(expected, session.right_prompt.bytes);
 }
 
 test "line session renders right prompt flush right" {

@@ -79,6 +79,7 @@ pub fn parse(args: []const []const u8) ParseError!Invocation {
             for (arg[1..]) |option| switch (option) {
                 'i' => {
                     options.interactive = true;
+                    options.history = true;
                     forced_interactive = true;
                 },
                 'u' => options.nounset = true,
@@ -114,6 +115,7 @@ pub fn parse(args: []const []const u8) ParseError!Invocation {
 
     options.mode = mode;
     options.interactive = true;
+    options.history = true;
     return .{ .interactive = .{
         .mode = mode,
         .options = options,
@@ -137,6 +139,7 @@ test "invocation parses bare interactive shell" {
     };
     try std.testing.expectEqual(state.Mode.bash, interactive.mode);
     try std.testing.expect(interactive.options.interactive);
+    try std.testing.expect(interactive.options.history);
     try std.testing.expect(!interactive.forced_interactive);
     try std.testing.expect(!interactive.login);
     try std.testing.expectEqualStrings("rush", interactive.arg_zero);
@@ -260,6 +263,7 @@ test "invocation parses interactive option" {
         .help, .version, .interactive, .script_file => return error.TestExpectedEqual,
     };
     try std.testing.expect(command.options.interactive);
+    try std.testing.expect(command.options.history);
     try std.testing.expectEqual(state.Mode.posix, command.options.mode);
 }
 

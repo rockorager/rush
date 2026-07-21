@@ -4,10 +4,16 @@ const RealHost = @This();
 
 const std = @import("std");
 const builtin = @import("builtin");
+const libc = @cImport({
+    @cInclude("time.h");
+    @cInclude("unistd.h");
+});
 
 const host = @import("../host.zig");
 
 const real_host: RealHost = .{};
+const lookup_max_buffer_len = 1024 * 1024;
+const local_time_max_buffer_len = 1024 * 1024;
 
 extern "c" fn readdir(dir: *std.c.DIR) ?*std.c.dirent;
 extern "c" fn getpgrp() c_int;
@@ -31,6 +37,69 @@ pub const WriteError = error{
 
 pub fn wallTimeNs(_: RealHost) i128 {
     return clockTimeNs(.REALTIME) orelse 0;
+}
+
+pub fn effectiveUserId(_: RealHost) std.c.uid_t {
+    return std.c.geteuid();
+}
+
+pub fn effectiveUserName(_: RealHost, allocator: std.mem.Allocator) ![]const u8 {
+    var password: std.c.passwd = undefined;
+    var buffer_len: usize = 1024;
+    while (buffer_len <= lookup_max_buffer_len) : (buffer_len *= 2) {
+        const buffer = try allocator.alloc(u8, buffer_len);
+        defer allocator.free(buffer);
+        var entry: ?*std.c.passwd = null;
+        const rc = std.c.getpwuid_r(std.c.geteuid(), &password, buffer.ptr, buffer.len, &entry);
+        if (rc == 0) {
+            const name = (entry orelse return error.Unexpected).name orelse return error.Unexpected;
+            return allocator.dupe(u8, std.mem.span(name));
+        }
+        if (rc != @intFromEnum(std.c.E.RANGE)) return error.Unexpected;
+    }
+    return error.Unexpected;
+}
+
+pub fn hostname(_: RealHost, allocator: std.mem.Allocator) ![]const u8 {
+    var buffer: [std.posix.HOST_NAME_MAX]u8 = undefined;
+    return allocator.dupe(u8, try std.posix.gethostname(&buffer));
+}
+
+pub fn terminalName(_: RealHost, allocator: std.mem.Allocator, fd: host.Fd) ![]const u8 {
+    var buffer_len: usize = 128;
+    while (buffer_len <= lookup_max_buffer_len) : (buffer_len *= 2) {
+        const buffer = try allocator.alloc(u8, buffer_len);
+        defer allocator.free(buffer);
+        const rc = libc.ttyname_r(fd.raw(), buffer.ptr, buffer.len);
+        if (rc == 0) return allocator.dupe(u8, std.mem.sliceTo(buffer, 0));
+        if (rc != @intFromEnum(std.c.E.RANGE)) return error.Unexpected;
+    }
+    return error.Unexpected;
+}
+
+pub fn formatLocalTime(_: RealHost, allocator: std.mem.Allocator, timestamp: i64, format: []const u8) ![]const u8 {
+    const timestamp_c: libc.time_t = @intCast(timestamp);
+    var local: libc.struct_tm = undefined;
+    if (libc.localtime_r(&timestamp_c, &local) == null) return error.Unexpected;
+    if (format.len == 0) return allocator.dupe(u8, "");
+
+    const format_z = try allocator.dupeZ(u8, format);
+    defer allocator.free(format_z);
+    const minimum_len = std.math.add(usize, format.len, 1) catch return error.OutOfMemory;
+    if (minimum_len > local_time_max_buffer_len) return error.Unexpected;
+
+    var buffer_len = @max(@as(usize, 256), minimum_len);
+    while (true) {
+        const buffer = try allocator.alloc(u8, buffer_len);
+        defer allocator.free(buffer);
+        const written = libc.strftime(buffer.ptr, buffer.len, format_z.ptr, &local);
+        if (written != 0) return allocator.dupe(u8, buffer[0..written]);
+
+        // POSIX uses zero for both insufficient capacity and a legitimately
+        // empty result. Retry to a bounded maximum before accepting empty.
+        if (buffer_len == local_time_max_buffer_len) return allocator.dupe(u8, "");
+        buffer_len = @min(buffer_len * 2, local_time_max_buffer_len);
+    }
 }
 
 fn clockTimeNs(clock: std.c.clockid_t) ?i128 {

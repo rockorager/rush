@@ -21,11 +21,13 @@ pub const Options = struct {
     emacs: bool = true,
     errexit: bool = false,
     hashall: bool = false,
+    history: bool = false,
     nounset: bool = false,
     noglob: bool = false,
     noclobber: bool = false,
     noexec: bool = false,
     pipefail: bool = false,
+    promptvars: bool = true,
     notify: bool = false,
     verbose: bool = false,
     /// POSIX vi command-line editing for the interactive line editor.
@@ -68,6 +70,42 @@ pub const ProcessSubstitution = struct {
 
 pub const ReapOnlyProcessSubstitution = struct {
     pid: host.Pid,
+};
+
+pub const PromptMetadataField = enum {
+    username,
+    hostname,
+    terminal_name,
+};
+
+const PromptMetadata = struct {
+    username: ?[]const u8 = null,
+    hostname: ?[]const u8 = null,
+    terminal_name: ?[]const u8 = null,
+
+    fn value(self: PromptMetadata, field: PromptMetadataField) ?[]const u8 {
+        return switch (field) {
+            .username => self.username,
+            .hostname => self.hostname,
+            .terminal_name => self.terminal_name,
+        };
+    }
+
+    fn set(self: *PromptMetadata, field: PromptMetadataField, value_text: []const u8) void {
+        std.debug.assert(self.value(field) == null);
+        switch (field) {
+            .username => self.username = value_text,
+            .hostname => self.hostname = value_text,
+            .terminal_name => self.terminal_name = value_text,
+        }
+    }
+
+    fn deinit(self: *PromptMetadata, allocator: std.mem.Allocator) void {
+        if (self.username) |value_text| allocator.free(value_text);
+        if (self.hostname) |value_text| allocator.free(value_text);
+        if (self.terminal_name) |value_text| allocator.free(value_text);
+        self.* = .{};
+    }
 };
 
 pub const ArrayElement = struct {
@@ -314,6 +352,11 @@ pub const State = struct {
     seconds_base_time_ns: i128 = 0,
     seconds_offset: i64 = 0,
     random_state: u64 = 1,
+    /// One-based number shown by the next Bash `\#` prompt escape.
+    prompt_command_number: u64 = 1,
+    /// One-based history number shown by the next Bash `\!` prompt escape.
+    prompt_history_number: i64 = 1,
+    prompt_metadata: PromptMetadata = .{},
     arg_zero: []const u8 = "rush",
     positionals: []const []const u8 = &.{},
     owned_positionals: []const []const u8 = &.{},
@@ -359,6 +402,7 @@ pub const State = struct {
         for (self.background_jobs.items) |*job| job.deinit(self.allocator);
         self.background_jobs.deinit(self.allocator);
         if (self.last_pipeline_statuses.len != 0) self.allocator.free(self.last_pipeline_statuses);
+        self.prompt_metadata.deinit(self.allocator);
         self.freeOwnedPositionals();
         self.clearExitTrap();
         self.definition_arena.deinit();
@@ -373,6 +417,18 @@ pub const State = struct {
         std.debug.assert(name.len != 0);
         const binding = self.bindings.get(name) orelse return null;
         return binding.variable();
+    }
+
+    pub fn promptMetadata(self: State, field: PromptMetadataField) ?[]const u8 {
+        return self.prompt_metadata.value(field);
+    }
+
+    /// Copies and caches stable host metadata for prompt escape expansion.
+    pub fn cachePromptMetadata(self: *State, field: PromptMetadataField, value_text: []const u8) ![]const u8 {
+        if (self.prompt_metadata.value(field)) |cached| return cached;
+        const owned = try self.allocator.dupe(u8, value_text);
+        self.prompt_metadata.set(field, owned);
+        return owned;
     }
 
     pub fn getArray(self: State, name: []const u8) ?ArrayVariable {

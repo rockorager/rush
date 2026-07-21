@@ -154,6 +154,62 @@
             .status = 0,
         },
         .{
+            .name = "conditional command tests whether variables are set",
+            .script =
+            \\unset missing
+            \\empty=
+            \\value=text
+            \\array=([2]=two)
+            \\set -- positional
+            \\scalar=text
+            \\[[ -v missing ]] || printf 'missing\n'
+            \\[[ -v empty ]] && printf 'empty\n'
+            \\[[ -v value ]] && printf 'value\n'
+            \\[[ -v 'array[2]' ]] && printf 'array-element\n'
+            \\[[ -v 'array[1]' ]] || printf 'array-hole\n'
+            \\[[ -v 'array[@]' ]] && printf 'array-any\n'
+            \\[[ -v 1 ]] && printf 'positional\n'
+            \\[[ -v 'scalar[0]' ]] && printf 'scalar-zero\n'
+            \\[[ -v 'scalar[@]' ]] && printf 'scalar-any\n'
+            \\[[ -v 'scalar[*]' ]] && printf 'scalar-star\n'
+            ,
+            .stdout =
+            \\missing
+            \\empty
+            \\value
+            \\array-element
+            \\array-hole
+            \\array-any
+            \\positional
+            \\scalar-zero
+            \\scalar-any
+            \\scalar-star
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "conditional command tests whether shell options are enabled",
+            .script =
+            \\[[ -o history ]] || printf 'history-off\n'
+            \\set -o history
+            \\[[ -o history ]] && printf 'history-on\n'
+            \\set +o history
+            \\[[ -o history ]] || printf 'history-off-again\n'
+            \\[[ -o no_such_option ]] || printf 'unknown-off\n'
+            ,
+            .stdout =
+            \\history-off
+            \\history-on
+            \\history-off-again
+            \\unknown-off
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "conditional command evaluates file unary primaries",
             .script =
             \\: >package.json

@@ -344,6 +344,21 @@ pub const History = struct {
     ) !?[]const u8 {
         return queryLatestCommand(allocator, self.db, session_id);
     }
+
+    /// Returns the one-based number that the next persisted command receives.
+    pub fn nextCommandNumber(self: *History) !i64 {
+        var stmt: ?*sqlite.sqlite3_stmt = null;
+        try sqliteCheck(sqlite.sqlite3_prepare_v2(
+            self.db,
+            "select coalesce(max(id), 0) + 1 from history",
+            -1,
+            &stmt,
+            null,
+        ), self.db);
+        defer _ = sqlite.sqlite3_finalize(stmt);
+        try sqliteCheck(sqlite.sqlite3_step(stmt), self.db);
+        return sqlite.sqlite3_column_int64(stmt, 0);
+    }
 };
 
 pub const InteractiveHistoryService = struct {
@@ -401,6 +416,10 @@ pub const InteractiveHistoryService = struct {
         started_at: i64,
     ) !?History.CommandHandle {
         return self.history.startCommand(io, line, started_at);
+    }
+
+    pub fn nextCommandNumber(self: *InteractiveHistoryService) !i64 {
+        return self.history.nextCommandNumber();
     }
 
     // ziglint-ignore: Z012 existing public API type exposure; preserve API
@@ -2014,6 +2033,15 @@ test "history exposes POSIX fc command numbers from sqlite" {
     try std.testing.expectEqualStrings("printf 'one\\n'", entries[0].command);
     try std.testing.expectEqual(@as(i64, 2), entries[1].number);
     try std.testing.expectEqualStrings("printf 'two\\n'", entries[1].command);
+}
+
+test "history reports the next command number" {
+    var history = try History.init(std.testing.allocator);
+    defer history.deinit();
+
+    try std.testing.expectEqual(@as(i64, 1), try history.nextCommandNumber());
+    try history.addCommand(std.testing.io, "echo one", 0, 1, 1);
+    try std.testing.expectEqual(@as(i64, 2), try history.nextCommandNumber());
 }
 
 test "history search filters with fts and orders newest first" {

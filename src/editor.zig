@@ -10,6 +10,7 @@ pub const history = @import("editor/history.zig");
 pub const key = @import("editor/key.zig");
 pub const menu = @import("editor/menu.zig");
 pub const path = @import("editor/path.zig");
+pub const prompt_markers = @import("prompt_markers.zig");
 pub const render = @import("editor/render.zig");
 pub const request = @import("editor/request.zig");
 /// Editor-only signal adapter for interactive event-loop wake pipes. It stays

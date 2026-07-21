@@ -84,6 +84,41 @@ pub fn parseWordExpansionText(
     return parser_state.parseWordText(text, span);
 }
 
+/// Parses expansion text using the same quoting rules as the contents of a
+/// double-quoted word. Quote characters remain literal, while parameter,
+/// command, arithmetic, and the applicable backslash expansions stay active.
+/// The returned word may borrow `text`.
+// ziglint-ignore: Z015 existing public API error set exposure; preserve API
+pub fn parseDoubleQuotedExpansionText(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    span: source_mod.Span,
+) ParserError!ast.Word {
+    const src: source_mod.Source = .{
+        .id = span.source_id,
+        .kind = .command_string,
+        .name = "double-quoted expansion",
+        .text = text,
+    };
+    var parser_state: Parser = .{ .allocator = allocator, .source = src, .tokens = &.{}, .alias_state = null };
+    if (std.mem.indexOfAny(u8, text, "$\\`") == null) {
+        const word: ast.Word = .{ .data = .{ .literal = text }, .span = span, .quoted = true };
+        word.validate();
+        return word;
+    }
+
+    var parts: std.ArrayList(ast.WordPart) = .empty;
+    errdefer parts.deinit(allocator);
+    try parser_state.appendWordParts(&parts, text, 0, text.len, .double, span);
+    const word: ast.Word = .{
+        .data = .{ .parts = try parts.toOwnedSlice(allocator) },
+        .span = span,
+        .quoted = true,
+    };
+    word.validate();
+    return word;
+}
+
 /// Parses parameter expansions from raw text without applying shell quote
 /// semantics. Other expansion forms are skipped as complete units so callers
 /// can preserve them literally. The returned slice is allocator-backed and its
@@ -809,8 +844,10 @@ const Parser = struct {
         if (std.mem.eql(u8, tok.text, "-r")) return .readable;
         if (std.mem.eql(u8, tok.text, "-w")) return .writable;
         if (std.mem.eql(u8, tok.text, "-x")) return .executable;
+        if (std.mem.eql(u8, tok.text, "-o")) return .option_enabled;
         if (std.mem.eql(u8, tok.text, "-n")) return .string_nonempty;
         if (std.mem.eql(u8, tok.text, "-z")) return .string_empty;
+        if (std.mem.eql(u8, tok.text, "-v")) return .variable_set;
         return null;
     }
 
@@ -1417,6 +1454,11 @@ const Parser = struct {
         const rest = content[prefix.end..];
         if (rest.len == 0) return .{ .parameter = prefix.parameter, .span = span };
 
+        if (self.mode() != .posix and std.mem.eql(u8, rest, "@P")) return .{
+            .parameter = prefix.parameter,
+            .op = .transform_prompt,
+            .span = span,
+        };
         if (try self.parseBashSubstring(prefix.parameter, rest, span)) |parameter| return parameter;
         if (try self.parseBashSubstitution(prefix.parameter, rest, span)) |parameter| return parameter;
         if (try self.parsePatternRemoval(prefix.parameter, rest, span)) |parameter| return parameter;

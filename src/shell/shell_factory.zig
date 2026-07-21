@@ -212,7 +212,7 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
                 }
 
                 const evaluated = if (direct_program != null and !self.aliasesMayRewrite())
-                    try eval.evalProgram(Host, self, direct_program.?)
+                    try self.evalParsedProgram(src.kind, direct_program.?)
                 else
                     try self.evalAliasAwareCommand(src, &incremental, &boundaries_failed, start, &end);
 
@@ -286,6 +286,17 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
                 .{ .require_complete_here_docs = require_complete_here_docs, .failure = failure },
             );
             program.validate();
+            return self.evalParsedProgram(src.kind, program);
+        }
+
+        /// Advances Bash's command number only after an interactive command
+        /// has parsed successfully and immediately before it begins executing.
+        fn evalParsedProgram(
+            self: *Self,
+            source_kind: source.SourceKind,
+            program: ast.Program,
+        ) !result.EvalResult {
+            if (source_kind == .interactive) self.state.prompt_command_number +|= 1;
             return eval.evalProgram(Host, self, program);
         }
 
@@ -404,6 +415,41 @@ test "Shell initializes exported PWD instead of preserving a stale environment v
     const pwd = shell.state.getVariable("PWD").?;
     try std.testing.expectEqualStrings("/home/tim/repos", pwd.value);
     try std.testing.expect(pwd.exported);
+}
+
+test "Shell counts parsed interactive commands at the evaluation boundary" {
+    const TestHost = struct {
+        fn writeAll(_: @This(), _: host_mod.Fd, _: []const u8) !void {}
+    };
+    var shell = Shell(TestHost).init(std.testing.allocator, .{}, .{});
+    defer shell.deinit();
+
+    const malformed_src: source.Source = .{
+        .id = 1,
+        .kind = .interactive,
+        .name = "interactive",
+        .text = ")",
+    };
+    try std.testing.expectError(error.ExpectedCommand, shell.evalSource(malformed_src));
+    try std.testing.expectEqual(@as(u64, 1), shell.state.prompt_command_number);
+
+    const interactive_src: source.Source = .{
+        .id = 2,
+        .kind = .interactive,
+        .name = "interactive",
+        .text = "value=1",
+    };
+    _ = try shell.evalSource(interactive_src);
+    try std.testing.expectEqual(@as(u64, 2), shell.state.prompt_command_number);
+
+    const nested_src: source.Source = .{
+        .id = 3,
+        .kind = .command_string,
+        .name = "nested",
+        .text = "value=2",
+    };
+    _ = try shell.evalSourceNested(nested_src);
+    try std.testing.expectEqual(@as(u64, 2), shell.state.prompt_command_number);
 }
 
 test "Shell parameter-only expansion preserves non-parameter substitutions" {

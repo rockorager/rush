@@ -349,6 +349,42 @@ fn evalUnalias(shell: anytype, args: []const []const u8) result.EvalResult {
     return .{ .status = status };
 }
 
+const ShoptOption = enum {
+    expand_aliases,
+    promptvars,
+};
+
+const shopt_option_names = std.StaticStringMap(ShoptOption).initComptime(.{
+    .{ "expand_aliases", .expand_aliases },
+    .{ "promptvars", .promptvars },
+});
+
+const shopt_option_order = [_]ShoptOption{
+    .expand_aliases,
+    .promptvars,
+};
+
+fn shoptOptionName(option: ShoptOption) []const u8 {
+    return switch (option) {
+        .expand_aliases => "expand_aliases",
+        .promptvars => "promptvars",
+    };
+}
+
+fn shoptOptionEnabled(shell: anytype, option: ShoptOption) bool {
+    return switch (option) {
+        .expand_aliases => shell.state.options.expand_aliases,
+        .promptvars => shell.state.options.promptvars,
+    };
+}
+
+fn setShoptOption(shell: anytype, option: ShoptOption, enabled: bool) void {
+    switch (option) {
+        .expand_aliases => shell.state.options.expand_aliases = enabled,
+        .promptvars => shell.state.options.promptvars = enabled,
+    }
+}
+
 fn evalShopt(shell: anytype, args: []const []const u8) result.EvalResult {
     var print_reusable = false;
     var query = false;
@@ -381,35 +417,44 @@ fn evalShopt(shell: anytype, args: []const []const u8) result.EvalResult {
 
     var status: result.ExitStatus = 0;
     for (args[index..]) |name| {
-        if (std.mem.eql(u8, name, "expand_aliases")) {
-            shell.state.options.expand_aliases = set_value.?;
-        } else {
+        const option = shopt_option_names.get(name) orelse {
             status = 1;
-        }
+            continue;
+        };
+        setShoptOption(shell, option, set_value.?);
     }
     return .{ .status = status };
 }
 
 fn printShopt(shell: anytype, reusable: bool, names: ?[]const []const u8, query: bool) result.EvalResult {
-    const operands = names orelse &[_][]const u8{"expand_aliases"};
     var status: result.ExitStatus = 0;
-    for (operands) |name| {
-        if (!std.mem.eql(u8, name, "expand_aliases")) {
-            status = 1;
-            continue;
+    if (names) |operands| {
+        for (operands) |name| {
+            const option = shopt_option_names.get(name) orelse {
+                status = 1;
+                continue;
+            };
+            if (!shoptOptionEnabled(shell, option)) status = 1;
+            if (!query and !writeShoptOption(shell, option, reusable)) return .{ .status = 1 };
         }
-        const enabled = shell.state.options.expand_aliases;
-        if (!enabled) status = 1;
-        if (query) continue;
-        const text = if (reusable)
-            if (enabled) "shopt -s expand_aliases\n" else "shopt -u expand_aliases\n"
-        else if (enabled)
-            "expand_aliases\ton\n"
-        else
-            "expand_aliases\toff\n";
-        shell.host.writeAll(.stdout, text) catch return .{ .status = 1 };
+    } else if (!query) {
+        for (shopt_option_order) |option| {
+            if (!writeShoptOption(shell, option, reusable)) return .{ .status = 1 };
+        }
     }
     return .{ .status = status };
+}
+
+fn writeShoptOption(shell: anytype, option: ShoptOption, reusable: bool) bool {
+    const name = shoptOptionName(option);
+    const enabled = shoptOptionEnabled(shell, option);
+    var buffer: [64]u8 = undefined;
+    const text = if (reusable)
+        std.fmt.bufPrint(&buffer, "shopt -{s} {s}\n", .{ if (enabled) "s" else "u", name }) catch unreachable
+    else
+        std.fmt.bufPrint(&buffer, "{s}\t{s}\n", .{ name, if (enabled) "on" else "off" }) catch unreachable;
+    shell.host.writeAll(.stdout, text) catch return false;
+    return true;
 }
 
 fn evalHash(shell: anytype, args: []const []const u8) !result.EvalResult {
@@ -1554,6 +1599,7 @@ const SetOption = enum {
     emacs,
     errexit,
     hashall,
+    history,
     monitor,
     noclobber,
     noexec,
@@ -1571,6 +1617,7 @@ const set_option_names = std.StaticStringMap(SetOption).initComptime(.{
     .{ "emacs", .emacs },
     .{ "errexit", .errexit },
     .{ "hashall", .hashall },
+    .{ "history", .history },
     .{ "monitor", .monitor },
     .{ "noclobber", .noclobber },
     .{ "noexec", .noexec },
@@ -1588,6 +1635,7 @@ const set_option_order = [_]SetOption{
     .emacs,
     .errexit,
     .hashall,
+    .history,
     .monitor,
     .noclobber,
     .noexec,
@@ -1606,6 +1654,7 @@ fn setOptionName(option: SetOption) []const u8 {
         .emacs => "emacs",
         .errexit => "errexit",
         .hashall => "hashall",
+        .history => "history",
         .monitor => "monitor",
         .noclobber => "noclobber",
         .noexec => "noexec",
@@ -1625,6 +1674,7 @@ fn setOptionEnabled(shell: anytype, option: SetOption) bool {
         .emacs => shell.state.options.emacs,
         .errexit => shell.state.options.errexit,
         .hashall => shell.state.options.hashall,
+        .history => shell.state.options.history,
         .monitor => shell.state.options.monitor,
         .noclobber => shell.state.options.noclobber,
         .noexec => shell.state.options.noexec,
@@ -1636,6 +1686,11 @@ fn setOptionEnabled(shell: anytype, option: SetOption) bool {
         .verbose => shell.state.options.verbose,
         .xtrace => shell.state.options.xtrace,
     };
+}
+
+pub fn isSetOptionEnabled(shell: anytype, name: []const u8) ?bool {
+    const option = set_option_names.get(name) orelse return null;
+    return setOptionEnabled(shell, option);
 }
 
 fn listSetOptions(shell: anytype, table: bool) !result.EvalResult {
@@ -1673,6 +1728,7 @@ fn setNamedOption(shell: anytype, name: []const u8, enabled: bool) bool {
         },
         .errexit => shell.state.options.errexit = enabled,
         .hashall => shell.state.options.hashall = enabled,
+        .history => shell.state.options.history = enabled,
         .monitor => shell.state.options.monitor = enabled,
         .noclobber => shell.state.options.noclobber = enabled,
         .noexec => shell.state.options.noexec = enabled,

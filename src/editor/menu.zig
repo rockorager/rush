@@ -4,6 +4,7 @@ const std = @import("std");
 const vaxis = @import("vaxis");
 
 const completion = @import("completion.zig");
+const prompt_markers = @import("../prompt_markers.zig");
 
 const default_max_candidate_rows = 16;
 const default_max_label_width = 32;
@@ -458,6 +459,12 @@ pub fn visibleWidth(bytes: []const u8, method: vaxis.gwidth.Method) u16 {
     var plain_start: usize = 0;
     var i: usize = 0;
     while (i < bytes.len) {
+        if (prompt_markers.isMarker(bytes[i])) {
+            width += vaxis.gwidth.gwidth(bytes[plain_start..i], method);
+            i += 1;
+            plain_start = i;
+            continue;
+        }
         if (bytes[i] != 0x1b) {
             i += 1;
             continue;
@@ -487,6 +494,10 @@ pub fn visibleWidth(bytes: []const u8, method: vaxis.gwidth.Method) u16 {
     }
     width += vaxis.gwidth.gwidth(bytes[plain_start..], method);
     return width;
+}
+
+test "visible width ignores Readline non-printing markers" {
+    try std.testing.expectEqual(@as(u16, 3), visibleWidth("\x01\x1b[31m\x02red\x01\x1b[0m\x02", .unicode));
 }
 
 fn escapeSequenceEnd(bytes: []const u8, index: usize) ?usize {
