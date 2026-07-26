@@ -3,3 +3,4 @@ zig-pkg/
 zig-out/
 .amp/fig-completion-import-state.json
 .amp/fig-completion-import/
+result
