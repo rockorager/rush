@@ -82,6 +82,7 @@ pub fn parse(args: []const []const u8) ParseError!Invocation {
                     options.history = true;
                     forced_interactive = true;
                 },
+                'l' => login = true,
                 'u' => options.nounset = true,
                 'x' => options.xtrace = true,
                 else => return error.UnsupportedOption,
@@ -165,6 +166,28 @@ test "invocation parses explicit login shell" {
     };
     try std.testing.expect(interactive.login);
     try std.testing.expect(interactive.options.interactive);
+}
+
+test "invocation parses short login flag" {
+    const args = [_][]const u8{ "rush", "-l" };
+    const invocation = try parse(&args);
+    const interactive = switch (invocation) {
+        .interactive => |interactive| interactive,
+        .help, .version, .command_string, .script_file => return error.TestExpectedEqual,
+    };
+    try std.testing.expect(interactive.login);
+    try std.testing.expect(interactive.options.interactive);
+}
+
+test "invocation parses bundled short login flag" {
+    const args = [_][]const u8{ "rush", "-il" };
+    const invocation = try parse(&args);
+    const interactive = switch (invocation) {
+        .interactive => |interactive| interactive,
+        .help, .version, .command_string, .script_file => return error.TestExpectedEqual,
+    };
+    try std.testing.expect(interactive.login);
+    try std.testing.expect(interactive.forced_interactive);
 }
 
 test "invocation parses login shell arg zero" {

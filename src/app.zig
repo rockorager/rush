@@ -13,7 +13,7 @@ const shell = @import("shell.zig");
 const RushShell = shell.ShellWithBuiltins(host.RealHost, extensions.rush.registry);
 
 const usage =
-    \\usage: rush [--login] [--posix] [-i] [-u] [-x]
+    \\usage: rush [-l | --login] [--posix] [-i] [-u] [-x]
     \\       rush [--posix] [-i] [-u] [-x] -c SCRIPT [NAME [ARGS...]]
     \\       rush [--posix] [-i] [-u] [-x] [--] SCRIPT [ARGS...]
     \\       rush --help

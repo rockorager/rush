@@ -77,7 +77,7 @@ zig build run -- -c 'echo hello'
 Supported CLI forms:
 
 ```text
-rush [--login] [--posix] [-i] [-u] [-x]
+rush [-l | --login] [--posix] [-i] [-u] [-x]
 rush [--posix] [-i] [-u] [-x] -c SCRIPT [NAME [ARGS...]]
 rush [--posix] [-i] [-u] [-x] [--] SCRIPT_FILE [ARGS...]
 rush --help
