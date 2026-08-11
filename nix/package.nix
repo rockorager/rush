@@ -46,7 +46,6 @@ pkgs.stdenv.mkDerivation {
   meta = with pkgs.lib; {
     description = "rockorager's user-friendly shell";
     homepage = "https://github.com/rockorager/rush";
-    maintainers = with maintainers; [ rockorager ];
     platforms = with platforms; linux ++ darwin;
     license = licenses.mit;
     mainProgram = "rush";
