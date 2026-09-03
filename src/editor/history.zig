@@ -23,8 +23,8 @@ pub const View = struct {
     entries: []const []const u8 = &.{},
     now: i64 = 0,
     context: ?*anyopaque = null,
-    /// Provider callbacks return allocator-owned `HistoryEntry` values. The
-    /// line session copies `entry.text` before calling `HistoryEntry.deinit`.
+    /// Provider callbacks return entries deeply owned by the supplied
+    /// allocator. Page callbacks allocate both the slice and each entry text.
     previous: ?*const fn (*anyopaque, std.mem.Allocator, []const u8, ?i64) anyerror!?HistoryEntry = null,
     next: ?*const fn (*anyopaque, std.mem.Allocator, []const u8, i64) anyerror!?HistoryEntry = null,
     by_number: ?*const fn (*anyopaque, std.mem.Allocator, usize) anyerror!?HistoryEntry = null,
@@ -42,6 +42,22 @@ pub const View = struct {
         SearchFilters,
         ?i64,
     ) anyerror!?HistoryEntry = null,
+    search_page: ?*const fn (
+        *anyopaque,
+        std.mem.Allocator,
+        []const u8,
+        SearchFilters,
+        ?i64,
+        usize,
+    ) anyerror![]HistoryEntry = null,
+    search_next_page: ?*const fn (
+        *anyopaque,
+        std.mem.Allocator,
+        []const u8,
+        SearchFilters,
+        ?i64,
+        usize,
+    ) anyerror![]HistoryEntry = null,
     suggest: ?*const fn (*anyopaque, std.mem.Allocator, []const u8) anyerror!?HistoryEntry = null,
 };
 

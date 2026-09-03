@@ -1060,6 +1060,9 @@ fn resolveHistorySearch(
     filters: line_editor.HistorySearchFilters,
     before: ?i64,
 ) ![]line_editor.HistoryView.HistoryEntry {
+    if (history.search_page) |search_page| {
+        return resolveHistorySearchPage(allocator, search_page, context, query, filters, before);
+    }
     const search = history.search orelse return &.{};
     var matches: std.ArrayList(line_editor.HistoryView.HistoryEntry) = .empty;
     errdefer {
@@ -1081,6 +1084,9 @@ fn resolveHistorySearchNext(
     filters: line_editor.HistorySearchFilters,
     after: ?i64,
 ) ![]line_editor.HistoryView.HistoryEntry {
+    if (history.search_next_page) |search_page| {
+        return resolveHistorySearchPage(allocator, search_page, context, query, filters, after);
+    }
     const search_next = history.search_next orelse
         return resolveHistorySearch(allocator, history, context, query, filters, null);
     var matches: std.ArrayList(line_editor.HistoryView.HistoryEntry) = .empty;
@@ -1093,6 +1099,35 @@ fn resolveHistorySearchNext(
         try appendHistorySearchEntries(allocator, &matches, search_next, context, query, filters, null);
     }
     return matches.toOwnedSlice(allocator);
+}
+
+const history_search_page_size = 20;
+
+const HistorySearchPageCallback = *const fn (
+    *anyopaque,
+    std.mem.Allocator,
+    []const u8,
+    line_editor.HistorySearchFilters,
+    ?i64,
+    usize,
+) anyerror![]line_editor.HistoryView.HistoryEntry;
+
+fn resolveHistorySearchPage(
+    allocator: std.mem.Allocator,
+    callback: HistorySearchPageCallback,
+    context: *anyopaque,
+    query: []const u8,
+    filters: line_editor.HistorySearchFilters,
+    cursor: ?i64,
+) ![]line_editor.HistoryView.HistoryEntry {
+    var matches = try callback(context, allocator, query, filters, cursor, history_search_page_size);
+    std.debug.assert(matches.len <= history_search_page_size);
+    if (matches.len != 0 or cursor == null) return matches;
+
+    allocator.free(matches);
+    matches = try callback(context, allocator, query, filters, null, history_search_page_size);
+    std.debug.assert(matches.len <= history_search_page_size);
+    return matches;
 }
 
 const HistorySearchCallback = *const fn (
@@ -1113,7 +1148,7 @@ fn appendHistorySearchEntries(
     start_cursor: ?i64,
 ) !void {
     var cursor = start_cursor;
-    while (matches.items.len < 20) {
+    while (matches.items.len < history_search_page_size) {
         const entry = try callback(context, allocator, query, filters, cursor) orelse break;
         cursor = entry.id;
         try matches.append(allocator, entry);
@@ -1318,6 +1353,55 @@ fn appendOscText(writer: *std.Io.Writer, text: []const u8) !void {
         0x00...0x1f, 0x7f => try writer.writeByte(' '),
         else => try writer.writeByte(byte),
     };
+}
+
+const TestHistoryPage = struct {
+    calls: usize = 0,
+
+    fn search(
+        context: *anyopaque,
+        allocator: std.mem.Allocator, // ziglint-ignore: Z023 callback signature
+        query: []const u8,
+        filters: line_editor.HistorySearchFilters,
+        cursor: ?i64,
+        limit: usize,
+    ) ![]line_editor.HistoryView.HistoryEntry {
+        const provider: *TestHistoryPage = @ptrCast(@alignCast(context));
+        provider.calls += 1;
+        try std.testing.expectEqualStrings(" ", query);
+        try std.testing.expectEqual(@as(line_editor.HistorySearchFilters, .{}), filters);
+        try std.testing.expectEqual(@as(?i64, null), cursor);
+        try std.testing.expectEqual(history_search_page_size, limit);
+
+        const entries = try allocator.alloc(line_editor.HistoryView.HistoryEntry, limit);
+        errdefer allocator.free(entries);
+        var initialized: usize = 0;
+        errdefer for (entries[0..initialized]) |entry| entry.deinit(allocator);
+        for (entries, 0..) |*entry, index| {
+            entry.* = .{
+                .id = @intCast(index + 1),
+                .text = try std.fmt.allocPrint(allocator, "history {d}", .{index}),
+            };
+            initialized += 1;
+        }
+        return entries;
+    }
+};
+
+test "history page callback resolves a search in one provider call" {
+    var provider: TestHistoryPage = .{};
+    const result = try resolveHistoryRequest(std.testing.allocator, .{
+        .context = &provider,
+        .search_page = TestHistoryPage.search,
+    }, .{ .search = .{ .query = " ", .filters = .{}, .before = null } });
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), provider.calls);
+    const entries = switch (result) {
+        .entries => |items| items,
+        .entry => return error.TestExpectedHistoryPage,
+    };
+    try std.testing.expectEqual(history_search_page_size, entries.len);
 }
 
 fn testExpandAbbreviation(

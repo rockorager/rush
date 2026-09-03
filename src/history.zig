@@ -287,6 +287,56 @@ pub const History = struct {
         return queryHistorySearchEntry(allocator, self.db, query, cwd, session_id, filters, after, .next);
     }
 
+    /// Returns up to `limit` deeply owned entries in backward search order.
+    /// `limit` must be greater than zero.
+    pub fn searchPage(
+        self: *History,
+        allocator: std.mem.Allocator,
+        query: []const u8,
+        cwd: []const u8,
+        session_id: []const u8,
+        filters: line_editor.HistorySearchFilters,
+        before: ?i64,
+        limit: usize,
+    ) ![]line_editor.HistoryView.HistoryEntry {
+        return queryHistorySearchEntries(
+            allocator,
+            self.db,
+            query,
+            cwd,
+            session_id,
+            filters,
+            before,
+            limit,
+            .previous,
+        );
+    }
+
+    /// Returns up to `limit` deeply owned entries in forward search order.
+    /// `limit` must be greater than zero.
+    pub fn searchNextPage(
+        self: *History,
+        allocator: std.mem.Allocator,
+        query: []const u8,
+        cwd: []const u8,
+        session_id: []const u8,
+        filters: line_editor.HistorySearchFilters,
+        after: ?i64,
+        limit: usize,
+    ) ![]line_editor.HistoryView.HistoryEntry {
+        return queryHistorySearchEntries(
+            allocator,
+            self.db,
+            query,
+            cwd,
+            session_id,
+            filters,
+            after,
+            limit,
+            .next,
+        );
+    }
+
     pub fn suggestEntry(
         self: *History,
         allocator: std.mem.Allocator,
@@ -340,6 +390,8 @@ pub const InteractiveHistoryService = struct {
             .by_number = numberedHistoryEntry,
             .search = searchHistoryEntry,
             .search_next = searchNextHistoryEntry,
+            .search_page = searchHistoryPage,
+            .search_next_page = searchNextHistoryPage,
             .suggest = suggestHistoryEntry,
         };
     }
@@ -555,6 +607,44 @@ pub const InteractiveHistoryService = struct {
         );
     }
 
+    fn searchPage(
+        self: *InteractiveHistoryService,
+        allocator: std.mem.Allocator,
+        query: []const u8,
+        filters: line_editor.HistorySearchFilters,
+        before: ?i64,
+        limit: usize,
+    ) ![]line_editor.HistoryView.HistoryEntry {
+        return self.history.searchPage(
+            allocator,
+            query,
+            self.history.current_cwd,
+            self.history.session_id,
+            filters,
+            before,
+            limit,
+        );
+    }
+
+    fn searchNextPage(
+        self: *InteractiveHistoryService,
+        allocator: std.mem.Allocator,
+        query: []const u8,
+        filters: line_editor.HistorySearchFilters,
+        after: ?i64,
+        limit: usize,
+    ) ![]line_editor.HistoryView.HistoryEntry {
+        return self.history.searchNextPage(
+            allocator,
+            query,
+            self.history.current_cwd,
+            self.history.session_id,
+            filters,
+            after,
+            limit,
+        );
+    }
+
     fn suggestEntry(
         self: *InteractiveHistoryService,
         allocator: std.mem.Allocator,
@@ -619,6 +709,30 @@ fn searchNextHistoryEntry(
 ) !?line_editor.HistoryView.HistoryEntry {
     const history_service: *InteractiveHistoryService = @ptrCast(@alignCast(context));
     return history_service.searchNextEntry(allocator, query, filters, after);
+}
+
+fn searchHistoryPage(
+    context: *anyopaque,
+    allocator: std.mem.Allocator, // ziglint-ignore: Z023 (callback iface)
+    query: []const u8,
+    filters: line_editor.HistorySearchFilters,
+    before: ?i64,
+    limit: usize,
+) ![]line_editor.HistoryView.HistoryEntry {
+    const history_service: *InteractiveHistoryService = @ptrCast(@alignCast(context));
+    return history_service.searchPage(allocator, query, filters, before, limit);
+}
+
+fn searchNextHistoryPage(
+    context: *anyopaque,
+    allocator: std.mem.Allocator, // ziglint-ignore: Z023 (callback iface)
+    query: []const u8,
+    filters: line_editor.HistorySearchFilters,
+    after: ?i64,
+    limit: usize,
+) ![]line_editor.HistoryView.HistoryEntry {
+    const history_service: *InteractiveHistoryService = @ptrCast(@alignCast(context));
+    return history_service.searchNextPage(allocator, query, filters, after, limit);
 }
 
 fn suggestHistoryEntry(
@@ -1208,17 +1322,55 @@ fn queryHistorySearchEntry(
     cursor: ?i64,
     direction: HistoryDirection,
 ) !?line_editor.HistoryView.HistoryEntry {
+    const entries = try queryHistorySearchEntries(
+        allocator,
+        db,
+        query,
+        cwd,
+        session_id,
+        filters,
+        cursor,
+        1,
+        direction,
+    );
+    defer allocator.free(entries);
+    std.debug.assert(entries.len <= 1);
+    return if (entries.len == 0) null else entries[0];
+}
+
+fn queryHistorySearchEntries(
+    allocator: std.mem.Allocator,
+    db: *sqlite.sqlite3,
+    query: []const u8,
+    cwd: []const u8,
+    session_id: []const u8,
+    filters: line_editor.HistorySearchFilters,
+    cursor: ?i64,
+    limit: usize,
+    direction: HistoryDirection,
+) ![]line_editor.HistoryView.HistoryEntry {
+    std.debug.assert(limit > 0);
     // FTS can only express word-prefix matches, so queries with punctuation
     // (flags, paths, operators) switch to a literal substring match instead
     // of silently dropping the bytes FTS cannot tokenize.
     if (historySearchNeedsSubstring(query)) {
-        return queryHistorySubstringSearchEntry(allocator, db, query, cwd, session_id, filters, cursor, direction);
+        return queryHistorySubstringSearchEntries(
+            allocator,
+            db,
+            query,
+            cwd,
+            session_id,
+            filters,
+            cursor,
+            limit,
+            direction,
+        );
     }
     var fts_query: std.ArrayList(u8) = .empty;
     defer fts_query.deinit(allocator);
     try appendHistoryFtsQuery(allocator, &fts_query, query);
     if (fts_query.items.len == 0) {
-        return queryHistoryListEntry(allocator, db, cwd, session_id, filters, cursor, direction);
+        return queryHistoryListEntries(allocator, db, cwd, session_id, filters, cursor, limit, direction);
     }
 
     var stmt: ?*sqlite.sqlite3_stmt = null;
@@ -1246,7 +1398,7 @@ fn queryHistorySearchEntry(
         \\      )
         \\  )
         \\order by (h.cwd = ?2) desc, h.id desc
-        \\limit 1 offset ?3
+        \\limit ?8 offset ?3
         ,
         .next =>
         \\select h.id, h.command, h.started_at
@@ -1270,7 +1422,7 @@ fn queryHistorySearchEntry(
         \\      )
         \\  )
         \\order by (h.cwd = ?2) asc, h.id asc
-        \\limit 1 offset ?3
+        \\limit ?8 offset ?3
         ,
     };
     try sqliteCheck(sqlite.sqlite3_prepare_v2(db, sql, -1, &stmt, null), db);
@@ -1282,15 +1434,8 @@ fn queryHistorySearchEntry(
     try sqliteCheck(sqlite.sqlite3_bind_int(stmt, 5, @intFromBool(filters.successful)), db);
     try sqliteCheck(sqlite.sqlite3_bind_int(stmt, 6, @intFromBool(filters.session)), db);
     try sqliteCheck(sqlite.sqlite3_bind_text(stmt, 7, session_id.ptr, @intCast(session_id.len), null), db);
-    const rc = sqlite.sqlite3_step(stmt);
-    if (rc == sqlite.SQLITE_DONE) return null;
-    if (rc != sqlite.SQLITE_ROW) try sqliteCheck(rc, db);
-    const command_text = sqlite.sqlite3_column_text(stmt, 1) orelse return null;
-    return .{
-        .id = offset + 1,
-        .text = try allocator.dupe(u8, std.mem.span(command_text)),
-        .when = sqlite.sqlite3_column_int64(stmt, 2),
-    };
+    try sqliteCheck(sqlite.sqlite3_bind_int64(stmt, 8, @intCast(limit)), db);
+    return collectHistorySearchEntries(allocator, db, stmt.?, offset);
 }
 
 fn historySearchNeedsSubstring(query: []const u8) bool {
@@ -1300,7 +1445,7 @@ fn historySearchNeedsSubstring(query: []const u8) bool {
     return false;
 }
 
-fn queryHistorySubstringSearchEntry(
+fn queryHistorySubstringSearchEntries(
     allocator: std.mem.Allocator,
     db: *sqlite.sqlite3,
     query: []const u8,
@@ -1308,8 +1453,9 @@ fn queryHistorySubstringSearchEntry(
     session_id: []const u8,
     filters: line_editor.HistorySearchFilters,
     cursor: ?i64,
+    limit: usize,
     direction: HistoryDirection,
-) !?line_editor.HistoryView.HistoryEntry {
+) ![]line_editor.HistoryView.HistoryEntry {
     var like_pattern: std.ArrayList(u8) = .empty;
     defer like_pattern.deinit(allocator);
     try appendSqlLikeSubstring(allocator, &like_pattern, query);
@@ -1338,7 +1484,7 @@ fn queryHistorySubstringSearchEntry(
         \\      )
         \\  )
         \\order by (h.cwd = ?2) desc, h.id desc
-        \\limit 1 offset ?3
+        \\limit ?8 offset ?3
         ,
         .next =>
         \\select h.id, h.command, h.started_at
@@ -1361,7 +1507,7 @@ fn queryHistorySubstringSearchEntry(
         \\      )
         \\  )
         \\order by (h.cwd = ?2) asc, h.id asc
-        \\limit 1 offset ?3
+        \\limit ?8 offset ?3
         ,
     };
     try sqliteCheck(sqlite.sqlite3_prepare_v2(db, sql, -1, &stmt, null), db);
@@ -1379,26 +1525,20 @@ fn queryHistorySubstringSearchEntry(
     try sqliteCheck(sqlite.sqlite3_bind_int(stmt, 5, @intFromBool(filters.successful)), db);
     try sqliteCheck(sqlite.sqlite3_bind_int(stmt, 6, @intFromBool(filters.session)), db);
     try sqliteCheck(sqlite.sqlite3_bind_text(stmt, 7, session_id.ptr, @intCast(session_id.len), null), db);
-    const rc = sqlite.sqlite3_step(stmt);
-    if (rc == sqlite.SQLITE_DONE) return null;
-    if (rc != sqlite.SQLITE_ROW) try sqliteCheck(rc, db);
-    const command_text = sqlite.sqlite3_column_text(stmt, 1) orelse return null;
-    return .{
-        .id = offset + 1,
-        .text = try allocator.dupe(u8, std.mem.span(command_text)),
-        .when = sqlite.sqlite3_column_int64(stmt, 2),
-    };
+    try sqliteCheck(sqlite.sqlite3_bind_int64(stmt, 8, @intCast(limit)), db);
+    return collectHistorySearchEntries(allocator, db, stmt.?, offset);
 }
 
-fn queryHistoryListEntry(
+fn queryHistoryListEntries(
     allocator: std.mem.Allocator,
     db: *sqlite.sqlite3,
     cwd: []const u8,
     session_id: []const u8,
     filters: line_editor.HistorySearchFilters,
     cursor: ?i64,
+    limit: usize,
     direction: HistoryDirection,
-) !?line_editor.HistoryView.HistoryEntry {
+) ![]line_editor.HistoryView.HistoryEntry {
     const offset = if (cursor) |value| @max(value, 0) else 0;
     const sql = switch (direction) {
         .previous =>
@@ -1416,7 +1556,7 @@ fn queryHistoryListEntry(
         \\      and newer.id > h.id
         \\  )
         \\order by (h.cwd = ?2) desc, h.id desc
-        \\limit 1 offset ?6
+        \\limit ?7 offset ?6
         ,
         .next =>
         \\select h.id, h.command, h.started_at
@@ -1433,7 +1573,7 @@ fn queryHistoryListEntry(
         \\      and newer.id > h.id
         \\  )
         \\order by (h.cwd = ?2) asc, h.id asc
-        \\limit 1 offset ?6
+        \\limit ?7 offset ?6
         ,
     };
     var stmt: ?*sqlite.sqlite3_stmt = null;
@@ -1445,15 +1585,34 @@ fn queryHistoryListEntry(
     try sqliteCheck(sqlite.sqlite3_bind_int(stmt, 4, @intFromBool(filters.session)), db);
     try sqliteCheck(sqlite.sqlite3_bind_text(stmt, 5, session_id.ptr, @intCast(session_id.len), null), db);
     try sqliteCheck(sqlite.sqlite3_bind_int64(stmt, 6, offset), db);
-    const rc = sqlite.sqlite3_step(stmt);
-    if (rc == sqlite.SQLITE_DONE) return null;
-    if (rc != sqlite.SQLITE_ROW) try sqliteCheck(rc, db);
-    const command_text = sqlite.sqlite3_column_text(stmt, 1) orelse return null;
-    return .{
-        .id = offset + 1,
-        .text = try allocator.dupe(u8, std.mem.span(command_text)),
-        .when = sqlite.sqlite3_column_int64(stmt, 2),
-    };
+    try sqliteCheck(sqlite.sqlite3_bind_int64(stmt, 7, @intCast(limit)), db);
+    return collectHistorySearchEntries(allocator, db, stmt.?, offset);
+}
+
+fn collectHistorySearchEntries(
+    allocator: std.mem.Allocator,
+    db: *sqlite.sqlite3,
+    stmt: *sqlite.sqlite3_stmt,
+    offset: i64,
+) ![]line_editor.HistoryView.HistoryEntry {
+    var entries: std.ArrayList(line_editor.HistoryView.HistoryEntry) = .empty;
+    errdefer {
+        for (entries.items) |entry| entry.deinit(allocator);
+        entries.deinit(allocator);
+    }
+    while (true) {
+        const rc = sqlite.sqlite3_step(stmt);
+        if (rc == sqlite.SQLITE_DONE) break;
+        if (rc != sqlite.SQLITE_ROW) try sqliteCheck(rc, db);
+        const command_text = sqlite.sqlite3_column_text(stmt, 1) orelse continue;
+        try entries.ensureUnusedCapacity(allocator, 1);
+        entries.appendAssumeCapacity(.{
+            .id = offset + @as(i64, @intCast(entries.items.len)) + 1,
+            .text = try allocator.dupe(u8, std.mem.span(command_text)),
+            .when = sqlite.sqlite3_column_int64(stmt, 2),
+        });
+    }
+    return entries.toOwnedSlice(allocator);
 }
 
 fn appendHistoryFtsQuery(allocator: std.mem.Allocator, output: *std.ArrayList(u8), query: []const u8) !void {
@@ -2063,7 +2222,64 @@ test "history search filters with fts and orders newest first" {
     try std.testing.expectEqualStrings("git status", second.text);
     try std.testing.expectEqual(@as(i64, 30), second.when);
 
+    const page = try history.searchPage(std.testing.allocator, "git sta", "", "", .{}, null, 20);
+    defer {
+        for (page) |entry| entry.deinit(std.testing.allocator);
+        std.testing.allocator.free(page);
+    }
+    try std.testing.expectEqual(@as(usize, 2), page.len);
+    try std.testing.expectEqualStrings("echo git status", page[0].text);
+    try std.testing.expectEqualStrings("git status", page[1].text);
+
     try std.testing.expect(try history.searchEntry(std.testing.allocator, "gco", "", "", .{}, null) == null);
+}
+
+test "history search returns whitespace-only results one page at a time" {
+    const path = "rush-history-whitespace-page-test.sqlite";
+    try deleteHistoryDbFilesIfExists(std.testing.io, path);
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, path ++ "-wal") catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, path ++ "-shm") catch {};
+
+    var history = try History.init(std.testing.allocator);
+    defer history.deinit();
+    try history.load(std.testing.io, path);
+    for (0..25) |index| {
+        var command_buffer: [32]u8 = undefined;
+        const command = try std.fmt.bufPrint(&command_buffer, "echo item {d}", .{index});
+        try insertHistoryRecord(history.db, .{ .cmd = command, .when = @intCast(index) });
+    }
+
+    const first_page = try history.searchPage(std.testing.allocator, "   ", "", "", .{}, null, 20);
+    defer {
+        for (first_page) |entry| entry.deinit(std.testing.allocator);
+        std.testing.allocator.free(first_page);
+    }
+    try std.testing.expectEqual(@as(usize, 20), first_page.len);
+    try std.testing.expectEqual(@as(i64, 1), first_page[0].id);
+    try std.testing.expectEqualStrings("echo item 24", first_page[0].text);
+    try std.testing.expectEqual(@as(i64, 20), first_page[19].id);
+    try std.testing.expectEqualStrings("echo item 5", first_page[19].text);
+
+    const second_page = try history.searchPage(std.testing.allocator, "   ", "", "", .{}, 20, 20);
+    defer {
+        for (second_page) |entry| entry.deinit(std.testing.allocator);
+        std.testing.allocator.free(second_page);
+    }
+    try std.testing.expectEqual(@as(usize, 5), second_page.len);
+    try std.testing.expectEqual(@as(i64, 21), second_page[0].id);
+    try std.testing.expectEqualStrings("echo item 4", second_page[0].text);
+    try std.testing.expectEqual(@as(i64, 25), second_page[4].id);
+    try std.testing.expectEqualStrings("echo item 0", second_page[4].text);
+
+    const forward_page = try history.searchNextPage(std.testing.allocator, "   ", "", "", .{}, null, 20);
+    defer {
+        for (forward_page) |entry| entry.deinit(std.testing.allocator);
+        std.testing.allocator.free(forward_page);
+    }
+    try std.testing.expectEqual(@as(usize, 20), forward_page.len);
+    try std.testing.expectEqualStrings("echo item 0", forward_page[0].text);
+    try std.testing.expectEqualStrings("echo item 19", forward_page[19].text);
 }
 
 test "history search matches punctuation queries as substrings" {
