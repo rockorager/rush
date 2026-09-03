@@ -837,10 +837,10 @@ fn appendFunctionProvider(
     function_name: []const u8,
     companion_path: ?[]const u8,
 ) !void {
-    if (companion_path) |path| try sourceCompanionIfNeeded(allocator, io, sh, path);
-
     try sh.state.pushVariableSnapshot();
     defer sh.state.popVariableSnapshot();
+
+    if (companion_path) |path| try sourceCompanionIfNeeded(allocator, io, sh, path);
 
     const parsed_options = try parsedOptionsForProvider(allocator, analyzed, root_command);
     defer allocator.free(parsed_options);
@@ -1666,6 +1666,67 @@ test "completion loads dynamic subcommands from manifest providers" {
         if (std.mem.eql(u8, candidate.value, "generated")) return;
     }
     return error.ExpectedDynamicSubcommandCandidate;
+}
+
+test "completion companion assignments do not mutate shell variables" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const root = try std.fmt.allocPrint(allocator, "rush-test-companion-state-{d}", .{std.c.getpid()});
+    defer allocator.free(root);
+    // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    const completions_dir = try std.fs.path.join(allocator, &.{ root, "rush", "completions" });
+    defer allocator.free(completions_dir);
+    try std.Io.Dir.cwd().createDirPath(io, completions_dir);
+    const manifest_path = try std.fs.path.join(allocator, &.{ completions_dir, "rush-test-state.json" });
+    defer allocator.free(manifest_path);
+    try std.Io.Dir.cwd().writeFile(io, .{
+        .sub_path = manifest_path,
+        .data =
+        \\{
+        \\  "manifestVersion": 1,
+        \\  "command": {
+        \\    "name": "rush-test-state",
+        \\    "providers": {
+        \\      "values": { "function": "__rush_test_state_values" }
+        \\    },
+        \\    "arguments": { "states": [
+        \\      { "name": "value", "index": 0, "provider": "values" }
+        \\    ] }
+        \\  }
+        \\}
+        ,
+    });
+    const companion_path = try std.fs.path.join(allocator, &.{ completions_dir, "rush-test-state.rush" });
+    defer allocator.free(companion_path);
+    try std.Io.Dir.cwd().writeFile(io, .{
+        .sub_path = companion_path,
+        .data =
+        \\existing=changed
+        \\created=leaked
+        \\__rush_test_state_values() {
+        \\  rush_complete candidate isolated --kind plain
+        \\}
+        ,
+    });
+
+    var sh = shell.ShellWithBuiltins(host.RealHost, extensions.rush.registry).init(allocator, .{}, .{});
+    defer sh.deinit();
+    try sh.state.putVariable(.{ .name = "XDG_DATA_HOME", .value = root });
+    try sh.state.putVariable(.{ .name = "existing", .value = "original" });
+
+    const source = "rush-test-state ";
+    var application = try complete(&sh, allocator, io, source, source.len);
+    defer application.deinit(allocator);
+    const edit = switch (application) {
+        .edit => |edit| edit,
+        else => return error.ExpectedCompanionCandidate,
+    };
+    try std.testing.expectEqualStrings("isolated", edit.replacement);
+    try std.testing.expectEqualStrings("original", sh.state.getVariable("existing").?.value);
+    try std.testing.expectEqual(null, sh.state.getVariable("created"));
 }
 
 test "yay target providers retain candidates from package command output" {
