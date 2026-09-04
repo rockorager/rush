@@ -368,6 +368,12 @@ pub const RemovalSize = enum {
 };
 
 pub fn removePrefix(value: []const u8, pattern: []const u8, size: RemovalSize) []const u8 {
+    // Escapes and possible pattern operators retain the general matcher.
+    if (std.mem.findAny(u8, pattern, "*?[\\") == null) {
+        if (!std.mem.startsWith(u8, value, pattern)) return value;
+        const cut = pattern.len;
+        return if (removalBoundaryReachable(value, cut, size == .large)) value[cut..] else value;
+    }
     switch (size) {
         .small => {
             var cut: usize = 0;
@@ -389,6 +395,11 @@ pub fn removePrefix(value: []const u8, pattern: []const u8, size: RemovalSize) [
 }
 
 pub fn removeSuffix(value: []const u8, pattern: []const u8, size: RemovalSize) []const u8 {
+    if (std.mem.findAny(u8, pattern, "*?[\\") == null) {
+        if (!std.mem.endsWith(u8, value, pattern)) return value;
+        const cut = value.len - pattern.len;
+        return if (removalBoundaryReachable(value, cut, size == .small)) value[0..cut] else value;
+    }
     switch (size) {
         .small => {
             var cut = value.len;
@@ -407,6 +418,21 @@ pub fn removeSuffix(value: []const u8, pattern: []const u8, size: RemovalSize) [
         },
     }
     return value;
+}
+
+fn removalBoundaryReachable(value: []const u8, target: usize, backwards: bool) bool {
+    std.debug.assert(target <= value.len);
+    if (target == 0 or target == value.len) return true;
+    // Literal matching determines one candidate cut. Preserve the matcher's
+    // character boundaries, including its directional treatment of malformed UTF-8.
+    if (backwards) {
+        var cut = value.len;
+        while (cut > target) cut = previousCut(value, cut);
+        return cut == target;
+    }
+    var cut: usize = 0;
+    while (cut < target) cut = nextCut(value, cut);
+    return cut == target;
 }
 
 pub const Match = struct {
@@ -509,6 +535,50 @@ test "prefix and suffix removal preserve shortest and longest semantics" {
     try std.testing.expectEqualStrings("posix", removeSuffix("posix/src/std", "/*", .large));
     try std.testing.expectEqualStrings("", removePrefix("", "*", .small));
     try std.testing.expectEqualStrings("", removeSuffix("", "*", .large));
+}
+
+test "literal removal agrees with the matcher at byte and Unicode boundaries" {
+    const Reference = struct {
+        fn remove(value: []const u8, pattern: []const u8, size: RemovalSize, prefix: bool) []const u8 {
+            const backwards = prefix == (size == .large);
+            var cut: usize = if (backwards) value.len else 0;
+            while (true) {
+                if (matchesText(pattern, if (prefix) value[0..cut] else value[cut..])) {
+                    return if (prefix) value[cut..] else value[0..cut];
+                }
+                if (backwards) {
+                    if (cut == 0) break;
+                    cut = previousCut(value, cut);
+                } else {
+                    if (cut == value.len) break;
+                    cut = nextCut(value, cut);
+                }
+            }
+            return value;
+        }
+    };
+    const values = [_][]const u8{ "", "abc", "abcabc", "åbç", "*?[", "\\x", "x\x80", "\xc3x", "\xc3", "\xa5" };
+    const patterns = [_][]const u8{
+        "",     "a",    "abc",  "c", "x", "missing",
+        "å",
+        "ç",
+        "\xc3", "\xa5", "\x80", "*", "?", "[a-c]",
+        "[",    "\\*",  "\\\\",
+    };
+    for (values) |value| {
+        for (patterns) |pattern| {
+            for ([_]RemovalSize{ .small, .large }) |size| {
+                try std.testing.expectEqualStrings(
+                    Reference.remove(value, pattern, size, true),
+                    removePrefix(value, pattern, size),
+                );
+                try std.testing.expectEqualStrings(
+                    Reference.remove(value, pattern, size, false),
+                    removeSuffix(value, pattern, size),
+                );
+            }
+        }
+    }
 }
 
 test "prefix and suffix match searches select longest matches" {
