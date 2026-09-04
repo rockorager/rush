@@ -2436,7 +2436,11 @@ fn evalCommandBuiltin(
             .exec => {
                 restore_redirections.* = false;
                 try redirections.commit(shell);
-                if (index + 1 == args.len) return .{};
+                if (index + 1 == args.len) {
+                    restoreVariables(shell, saved);
+                    restored_assignments = true;
+                    return .{};
+                }
                 return evalExecBuiltin(shell, args[index..], assignments);
             },
             .declare, .export_, .readonly, .typeset => {

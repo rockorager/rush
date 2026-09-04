@@ -191,6 +191,20 @@
             .status = 0,
         },
         .{
+            .name = "command exec without a command does not persist prefix assignments",
+            .script =
+            \\value=outer
+            \\value=inner command exec
+            \\printf '<%s>\n' "$value"
+            ,
+            .stdout =
+            \\<outer>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "exec redirections persist until explicitly restored",
             .script =
             \\exec 3>&1 >out
