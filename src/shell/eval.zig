@@ -1238,7 +1238,7 @@ fn appendParameterOperatorAtFields(shell: anytype, fields: *std.ArrayList([]cons
     if (parameter.op == null or parameter.word == null) return false;
     const at_parts = atExpansionParts(parameter.word.?) orelse return false;
 
-    const is_set = isParameterSet(parameter, try parameterCurrentValue(shell, parameter.parameter));
+    const is_set = isParameterSet(parameter.*, try parameterCurrentValue(shell, parameter.parameter));
     const selected = switch (parameter.op.?) {
         .default_value => !is_set,
         .alternate_value => is_set,
@@ -1258,7 +1258,7 @@ fn appendParameterOperatorStarField(shell: anytype, fields: *std.ArrayList([]con
     const word_is_unquoted_star = wordIsUnquotedStar(parameter.word.?);
     if (!word_is_quoted_star and !word_is_unquoted_star) return false;
 
-    const is_set = isParameterSet(parameter, try parameterCurrentValue(shell, parameter.parameter));
+    const is_set = isParameterSet(parameter.*, try parameterCurrentValue(shell, parameter.parameter));
     const selected = switch (parameter.op.?) {
         .default_value => !is_set,
         .alternate_value => is_set,
@@ -1437,12 +1437,12 @@ fn wordPartIsAtParameter(part: ast.WordPart) bool {
     };
 }
 
-fn singleDoubleQuotedParameter(word: ast.Word) ?ast.ParameterExpansion {
+fn singleDoubleQuotedParameter(word: ast.Word) ?*const ast.ParameterExpansion {
     return switch (word.data) {
         .literal => null,
         .parts => |parts| if (parts.len == 1) switch (parts[0]) {
             .double_quoted => |quoted| if (quoted.len == 1) switch (quoted[0]) {
-                .parameter => |parameter| parameter,
+                .parameter => |*parameter| parameter,
                 else => null,
             } else null,
             else => null,
@@ -1451,13 +1451,13 @@ fn singleDoubleQuotedParameter(word: ast.Word) ?ast.ParameterExpansion {
     };
 }
 
-fn singleParameterWord(word: ast.Word) ?ast.ParameterExpansion {
+fn singleParameterWord(word: ast.Word) ?*const ast.ParameterExpansion {
     return switch (word.data) {
         .literal => null,
         .parts => |parts| if (parts.len == 1) switch (parts[0]) {
-            .parameter => |parameter| parameter,
+            .parameter => |*parameter| parameter,
             .double_quoted => |quoted| if (quoted.len == 1) switch (quoted[0]) {
-                .parameter => |parameter| parameter,
+                .parameter => |*parameter| parameter,
                 else => null,
             } else null,
             else => null,
@@ -1466,15 +1466,31 @@ fn singleParameterWord(word: ast.Word) ?ast.ParameterExpansion {
     };
 }
 
-fn singleUnquotedParameter(word: ast.Word) ?ast.ParameterExpansion {
+fn singleUnquotedParameter(word: ast.Word) ?*const ast.ParameterExpansion {
     return switch (word.data) {
         .literal => null,
         .parts => |parts| if (parts.len == 1) switch (parts[0]) {
-            .parameter => |parameter| parameter,
+            .parameter => |*parameter| parameter,
             else => null,
         } else null,
         .declaration_array_assignment => null,
     };
+}
+
+test "single parameter inspection borrows the original AST node" {
+    const parts = [_]ast.WordPart{.{ .parameter = .{ .parameter = .{ .variable = "x" } } }};
+    const quoted_parts = [_]ast.WordPart{.{ .double_quoted = &parts }};
+    const unquoted: ast.Word = .{ .data = .{ .parts = &parts } };
+    const quoted: ast.Word = .{ .data = .{ .parts = &quoted_parts }, .quoted = true };
+    const parameter = &parts[0].parameter;
+
+    try std.testing.expect(singleParameterWord(unquoted).? == parameter);
+    try std.testing.expect(singleUnquotedParameter(unquoted).? == parameter);
+    try std.testing.expect(singleDoubleQuotedParameter(unquoted) == null);
+    try std.testing.expect(singleParameterWord(quoted).? == parameter);
+    try std.testing.expect(singleDoubleQuotedParameter(quoted).? == parameter);
+    try std.testing.expect(singleUnquotedParameter(quoted) == null);
+    try std.testing.expect(singleParameterWord(.{ .data = .{ .literal = "x" } }) == null);
 }
 
 fn appendUnquotedAtFields(shell: anytype, fields: *std.ArrayList([]const u8), word: ast.Word) !bool {
@@ -4853,8 +4869,8 @@ fn applyHereDocRedirection(shell: anytype, target: host_mod.Fd, here_doc: ast.He
 fn expandHereDocParts(shell: anytype, parts: []const ast.WordPart) EvalError![]const u8 {
     const allocator = shell.scratchAllocator();
     var output: std.ArrayList(u8) = .empty;
-    for (parts) |part| {
-        const bytes = if (hereDocAtParameter(part))
+    for (parts) |*part| {
+        const bytes = if (hereDocAtParameter(part.*))
             try joinPositionals(shell, ifsFirstCharacter(shell))
         else
             try expandWordPart(shell, part, null);
@@ -5815,7 +5831,7 @@ fn appendExpandedWordPathnameParts(
     substitution_status: ?*?result.ExitStatus,
 ) EvalError!void {
     const allocator = shell.scratchAllocator();
-    for (parts) |part| switch (part) {
+    for (parts) |*part| switch (part.*) {
         .literal => |bytes| try appendPathnamePatternBytes(allocator, text, special, bytes, !quoted),
         .escaped, .single_quoted => |bytes| try appendPathnamePatternBytes(allocator, text, special, bytes, false),
         .double_quoted => |nested| try appendExpandedWordPathnameParts(
@@ -6339,7 +6355,7 @@ fn homeValue(shell: anytype) ?[]const u8 {
 // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
 fn expandWordParts(shell: anytype, parts: []const ast.WordPart, substitution_status: ?*?result.ExitStatus) EvalError![]const u8 {
     if (parts.len == 0) return "";
-    if (parts.len == 1) return expandWordPart(shell, parts[0], substitution_status);
+    if (parts.len == 1) return expandWordPart(shell, &parts[0], substitution_status);
 
     const allocator = shell.scratchAllocator();
     var stack_expanded: [8][]const u8 = undefined;
@@ -6349,7 +6365,7 @@ fn expandWordParts(shell: anytype, parts: []const ast.WordPart, substitution_sta
         try allocator.alloc([]const u8, parts.len);
 
     var total_len: usize = 0;
-    for (parts, 0..) |part, index| {
+    for (parts, 0..) |*part, index| {
         const bytes = try expandWordPart(shell, part, substitution_status);
         expanded[index] = bytes;
         total_len = std.math.add(usize, total_len, bytes.len) catch return error.OutOfMemory;
@@ -6365,8 +6381,12 @@ fn expandWordParts(shell: anytype, parts: []const ast.WordPart, substitution_sta
     return output;
 }
 
-fn expandWordPart(shell: anytype, part: ast.WordPart, substitution_status: ?*?result.ExitStatus) EvalError![]const u8 {
-    return switch (part) {
+fn expandWordPart(
+    shell: anytype,
+    part: *const ast.WordPart,
+    substitution_status: ?*?result.ExitStatus,
+) EvalError![]const u8 {
+    return switch (part.*) {
         .literal, .escaped, .single_quoted => |bytes| bytes,
         .arithmetic => |text| expandArithmetic(shell, text),
         .double_quoted => |parts| expandWordParts(shell, parts, substitution_status),
@@ -7848,7 +7868,7 @@ fn expandPatternWord(shell: anytype, word: ast.Word) ![]const u8 {
 fn expandPatternParts(shell: anytype, parts: []const ast.WordPart) ![]const u8 {
     var output: std.ArrayList(u8) = .empty;
     const allocator = shell.scratchAllocator();
-    for (parts) |part| switch (part) {
+    for (parts) |*part| switch (part.*) {
         .literal => |bytes| try output.appendSlice(allocator, bytes),
         .escaped => |bytes| try appendPatternLiteral(allocator, &output, bytes),
         .single_quoted => |bytes| try appendPatternLiteral(allocator, &output, bytes),
