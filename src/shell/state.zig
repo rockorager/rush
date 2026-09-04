@@ -512,6 +512,10 @@ pub const State = struct {
 
     pub fn setLastPipelineStatuses(self: *State, statuses: []const result.ExitStatus) !void {
         std.debug.assert(statuses.len != 0);
+        if (self.last_pipeline_statuses.len == statuses.len) {
+            @memmove(self.last_pipeline_statuses, statuses);
+            return;
+        }
         const owned = try self.allocator.dupe(result.ExitStatus, statuses);
         if (self.last_pipeline_statuses.len != 0) self.allocator.free(self.last_pipeline_statuses);
         self.last_pipeline_statuses = owned;
@@ -1473,4 +1477,28 @@ test "State replaces variable values without losing the binding" {
     try std.testing.expectEqualStrings("x", variable.name);
     try std.testing.expectEqualStrings("new", variable.value);
     try std.testing.expect(variable.exported);
+}
+
+test "State reuses pipeline status storage and preserves it on allocation failure" {
+    var allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var shell_state = State.init(allocator.allocator(), .{});
+    defer shell_state.deinit();
+
+    try shell_state.setLastPipelineStatuses(&.{1});
+    allocator.fail_index = allocator.alloc_index;
+    try shell_state.setLastPipelineStatuses(&.{0});
+    try shell_state.setLastPipelineStatuses(shell_state.last_pipeline_statuses);
+    try std.testing.expectEqualSlices(result.ExitStatus, &.{0}, shell_state.last_pipeline_statuses);
+    try std.testing.expectError(error.OutOfMemory, shell_state.setLastPipelineStatuses(&.{ 2, 3 }));
+    try std.testing.expectEqualSlices(result.ExitStatus, &.{0}, shell_state.last_pipeline_statuses);
+
+    allocator.fail_index = std.math.maxInt(usize);
+    try shell_state.setLastPipelineStatuses(&.{ 2, 3 });
+    allocator.fail_index = allocator.alloc_index;
+    try shell_state.setLastPipelineStatuses(&.{ 4, 5 });
+    try std.testing.expectEqualSlices(result.ExitStatus, &.{ 4, 5 }, shell_state.last_pipeline_statuses);
+
+    allocator.fail_index = std.math.maxInt(usize);
+    try shell_state.setLastPipelineStatuses(&.{6});
+    try std.testing.expectEqualSlices(result.ExitStatus, &.{6}, shell_state.last_pipeline_statuses);
 }
