@@ -2014,6 +2014,54 @@
             .status = 0,
         },
         .{
+            .name = "fully quoted scalar fields stay literal while mixed words still glob",
+            .script =
+            \\: >a.txt
+            \\x='*.txt'
+            \\printf '<%s>\n' "$x" 'prefix:'"$x" "$x"\? "" "$(printf 'a b*')"
+            \\stem=a
+            \\for value in "$x" "$stem"*.txt ""; do printf 'for=<%s>\n' "$value"; done
+            ,
+            .stdout =
+            \\<*.txt>
+            \\<prefix:*.txt>
+            \\<*.txt?>
+            \\<>
+            \\<a b*>
+            \\for=<*.txt>
+            \\for=<a.txt>
+            \\for=<>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "fully quoted scalar expansion snapshots values before later mutations",
+            .script =
+            \\x=12345
+            \\printf '<%s>\n' "$x" "$((x=7))"
+            \\x=12345
+            \\printf '<%s>\n' "$x$((x=7))"
+            \\i=0
+            \\printf '<%s>\n' "$((i+=1))""$((i+=1))" "$i"
+            \\x=12345
+            \\for value in "$x" "$((x=7))"; do printf 'for=<%s>\n' "$value"; done
+            ,
+            .stdout =
+            \\<12345>
+            \\<7>
+            \\<123457>
+            \\<12>
+            \\<2>
+            \\for=<12345>
+            \\for=<7>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "brace expansion bashism is literal in POSIX mode",
             .script =
             \\printf '<%s>\n' pre{a,b}post {1..3} ${unset:-{n,o}}

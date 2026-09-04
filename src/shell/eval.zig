@@ -1177,6 +1177,8 @@ fn expandForWordFields(shell: anytype, words: []const ast.Word) ![]const []const
             try appendSpecialQuotedFields(shell, &fields, word))
         {
             continue;
+        } else if (wordIsFullyQuoted(word)) {
+            try fields.append(allocator, try expandFullyQuotedWord(shell, word, null));
         } else if (!wordHasDynamicExpansion(word)) {
             try appendStaticWordField(shell, &fields, word);
         } else {
@@ -5299,6 +5301,8 @@ fn appendExpandedWordFields(
         try appendSpecialQuotedFields(shell, fields, word))
     {
         return;
+    } else if (wordIsFullyQuoted(word)) {
+        try fields.append(allocator, try expandFullyQuotedWord(shell, word, substitution_status));
     } else if (!wordHasDynamicExpansion(word)) {
         try appendStaticWordField(shell, fields, word);
     } else {
@@ -5721,6 +5725,18 @@ fn appendStaticWordField(shell: anytype, fields: *std.ArrayList([]const u8), wor
     }
 }
 
+fn wordIsFullyQuoted(word: ast.Word) bool {
+    const parts = switch (word.data) {
+        .parts => |parts| parts,
+        else => return false,
+    };
+    for (parts) |*part| switch (part.*) {
+        .escaped, .single_quoted, .double_quoted => {},
+        else => return false,
+    };
+    return true;
+}
+
 fn wordHasDynamicExpansion(word: ast.Word) bool {
     return switch (word.data) {
         .literal => false,
@@ -5799,6 +5815,19 @@ fn appendStaticWordPathnameParts(
     };
 }
 
+fn expandFullyQuotedWord(
+    shell: anytype,
+    word: ast.Word,
+    substitution_status: ?*?result.ExitStatus,
+) EvalError![]const u8 {
+    std.debug.assert(word.data == .parts);
+    var text: std.ArrayList(u8) = .empty;
+    // Copy each expansion before evaluating the next: later parts can replace
+    // variables whose values an earlier part borrowed.
+    try appendExpandedWordPathnameParts(shell, &text, null, word.data.parts, false, substitution_status);
+    return text.toOwnedSlice(shell.scratchAllocator());
+}
+
 fn expandQuotedDynamicWordPathnamePattern(
     shell: anytype,
     word: ast.Word,
@@ -5825,7 +5854,7 @@ fn expandQuotedDynamicWordPathnamePattern(
 fn appendExpandedWordPathnameParts(
     shell: anytype,
     text: *std.ArrayList(u8),
-    special: *std.ArrayList(bool),
+    special: ?*std.ArrayList(bool),
     parts: []const ast.WordPart,
     quoted: bool,
     substitution_status: ?*?result.ExitStatus,
@@ -5853,12 +5882,12 @@ fn appendExpandedWordPathnameParts(
 fn appendPathnamePatternBytes(
     allocator: std.mem.Allocator,
     text: *std.ArrayList(u8),
-    special: *std.ArrayList(bool),
+    special: ?*std.ArrayList(bool),
     bytes: []const u8,
     are_special: bool,
 ) !void {
     try text.appendSlice(allocator, bytes);
-    try special.appendNTimes(allocator, are_special, bytes.len);
+    if (special) |mask| try mask.appendNTimes(allocator, are_special, bytes.len);
 }
 
 fn appendSplitFields(
