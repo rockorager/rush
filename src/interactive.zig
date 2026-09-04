@@ -47,6 +47,7 @@ pub fn run(
     if (interactive) state_options.history = true;
 
     const initial_pwd = try real_host.currentDir(allocator);
+    defer allocator.free(initial_pwd);
     var sh = RushShell.init(allocator, real_host, .{
         .state = state_options,
         .env = env,
@@ -75,6 +76,7 @@ pub fn run(
         };
     }
     command_history.session_id = history.sessionId(allocator, io) catch "";
+    defer allocator.free(command_history.session_id);
     var history_service = history.InteractiveHistoryService.init(&command_history);
     sh.setCommandHistory(history_service.commandHistory(io));
     sh.state.prompt_history_number = history_service.nextCommandNumber() catch 1;

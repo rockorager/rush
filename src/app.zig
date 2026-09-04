@@ -34,6 +34,7 @@ pub fn run(
 ) !u8 {
     var real_host: host.RealHost = .{};
 
+    // Only invocation data belongs in the process arena; shell state must be reclaimable.
     const args = try init.args.toSlice(process_allocator);
     const invocation = shell.invocation.parse(args) catch {
         try real_host.writeAll(.stderr, usage);
@@ -55,7 +56,7 @@ pub fn run(
                 .environ = init.environ,
             });
             defer threaded_io.deinit();
-            return interactive.run(process_allocator, real_host, threaded_io.io(), init.environ.block.view().slice, .{
+            return interactive.run(root_allocator, real_host, threaded_io.io(), init.environ.block.view().slice, .{
                 .state_options = interactive_invocation.options,
                 .arg_zero = interactive_invocation.arg_zero,
                 .positionals = &.{},
@@ -70,7 +71,7 @@ pub fn run(
                 .name = command.arg_zero,
                 .text = command.script,
             };
-            return evalSource(process_allocator, real_host, init.environ.block.view().slice, .{
+            return evalSource(root_allocator, real_host, init.environ.block.view().slice, .{
                 .state_options = command.options,
                 .arg_zero = command.arg_zero,
                 .positionals = command.positionals,
@@ -87,7 +88,7 @@ pub fn run(
                 .name = script.path,
                 .text = text,
             };
-            return evalSource(process_allocator, real_host, init.environ.block.view().slice, .{
+            return evalSource(root_allocator, real_host, init.environ.block.view().slice, .{
                 .state_options = script.options,
                 .arg_zero = script.path,
                 .positionals = script.positionals,
@@ -104,6 +105,7 @@ fn evalSource(
     src: shell.source.Source,
 ) !u8 {
     const initial_pwd = try real_host.currentDir(allocator);
+    defer allocator.free(initial_pwd);
     var sh = RushShell.init(allocator, real_host, .{
         .state = options.state_options,
         .env = env,
@@ -127,6 +129,26 @@ fn evalSource(
 
 fn autoloadRushFunction(sh: *RushShell, name: []const u8) !bool {
     return function_autoload.autoload(sh, name);
+}
+
+test "command evaluation does not allocate shell state from the process arena" {
+    // Invocation data may live until exit, but replacing a variable must not
+    // consume that arena's capacity on every iteration.
+    var process_buffer: [64 * 1024]u8 = undefined;
+    var process_allocator = std.heap.FixedBufferAllocator.init(&process_buffer);
+    const script =
+        \\i=0
+        \\while [ "$i" -lt 1000 ]; do
+        \\    value=$1
+        \\    i=$((i+1))
+        \\done
+        \\[ "$i" -eq 1000 ] && [ "${#value}" -eq 1024 ]
+    ;
+    const status = try run(std.testing.allocator, process_allocator.allocator(), .{
+        .args = .{ .vector = &.{ "rush", "--posix", "-c", script, "rush", "x" ** 1024 } },
+        .environ = .empty,
+    });
+    try std.testing.expectEqual(@as(u8, 0), status);
 }
 
 test {
