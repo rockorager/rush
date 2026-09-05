@@ -6261,7 +6261,9 @@ fn expandPathnamePattern(
                 try matches.append(allocator, try std.fmt.allocPrint(allocator, "{s}/", .{candidate}));
             }
         } else if (rest.text.len == 0) {
-            try matches.append(allocator, candidate);
+            // A wildcard prefix does not prove its literal suffix exists.
+            // Match the directory entry itself, including dangling symlinks.
+            if (try fileStatus(shell, candidate, false) != null) try matches.append(allocator, candidate);
         } else {
             try expandPathnamePattern(shell, allocator, matches, candidate, rest);
         }

@@ -1698,6 +1698,64 @@
             .status = 0,
         },
         .{
+            .name = "pathname expansion requires literal suffixes to exist",
+            .script =
+            \\mkdir 1 2
+            \\: >1/pass
+            \\: >2/skip
+            \\printf '<%s>\n' */pass */skip */fail ?/fail [12]/fail
+            ,
+            .stdout =
+            \\<1/pass>
+            \\<2/skip>
+            \\<*/fail>
+            \\<?/fail>
+            \\<[12]/fail>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "pathname expansion literal suffixes preserve symlinks and reject invalid prefixes",
+            .script =
+            \\mkdir -p dir/sub
+            \\: >dir/sub/file
+            \\: >dfile
+            \\ln -s absent dir/broken
+            \\ln -s sub dir/link
+            \\ln -s dir alias
+            \\printf '<%s>\n' d*/broken d*/link/file d*/missing/file */sub/file
+            ,
+            .stdout =
+            \\<dir/broken>
+            \\<dir/link/file>
+            \\<d*/missing/file>
+            \\<alias/sub/file>
+            \\<dir/sub/file>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "pathname expansion literal suffixes need search but not read permission",
+            .script =
+            \\mkdir dir
+            \\: >dir/file
+            \\trap 'chmod 700 dir' 0
+            \\chmod 100 dir
+            \\printf '<%s>\n' d*/file d*/missing
+            ,
+            .stdout =
+            \\<dir/file>
+            \\<d*/missing>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "pathname expansion leaves invalid bracket expressions unchanged",
             .script =
             \\printf '<%s>\n' [ name[ abc[def
