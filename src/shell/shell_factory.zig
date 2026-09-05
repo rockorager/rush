@@ -205,7 +205,12 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
             if (reset_chunks) self.resetForTopLevelCommand();
             if (src.text.len == 0) return .{};
 
-            const ast_allocator = self.astAllocator();
+            // A nested source must not retain its parsed commands until the
+            // caller's top-level command finishes. Definitions are copied into
+            // persistent storage during evaluation; all other AST data dies here.
+            var source_arena = memory.Arena.init(self.allocator);
+            defer source_arena.deinit();
+            const ast_allocator = if (reset_chunks) self.astAllocator() else source_arena.allocator();
             const tokens = try lexer.lex(ast_allocator, src);
             var incremental = parser.Incremental.init(ast_allocator, src, tokens, self.state);
             var boundaries_failed = false;
@@ -242,6 +247,7 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
                     try self.writeVerboseInput(src.text, &verbose_offset, end);
                     break :evaluated try self.evalParsedProgram(src.kind, direct_program.?);
                 } else try self.evalAliasAwareCommand(
+                    ast_allocator,
                     src,
                     &incremental,
                     &boundaries_failed,
@@ -275,6 +281,7 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
         /// construct that later lines close).
         fn evalAliasAwareCommand(
             self: *Self,
+            ast_allocator: std.mem.Allocator,
             src: source.Source,
             incremental: *parser.Incremental,
             boundaries_failed: *bool,
@@ -287,7 +294,13 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
                 var failure: ?parser.Failure = null;
                 const chunk = src.text[start..end.*];
                 try self.writeVerboseInput(src.text, verbose_offset, end.*);
-                return self.evalSourceChunk(src, chunk, require_complete, &failure) catch |err| switch (err) {
+                return self.evalSourceChunk(
+                    ast_allocator,
+                    src,
+                    chunk,
+                    require_complete,
+                    &failure,
+                ) catch |err| switch (err) {
                     error.ExpectedCommand,
                     error.ExpectedRedirectionTarget,
                     error.IncompleteHereDoc,
@@ -309,6 +322,7 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
 
         fn evalSourceChunk(
             self: *Self,
+            ast_allocator: std.mem.Allocator,
             src: source.Source,
             text: []const u8,
             require_complete_here_docs: bool,
@@ -316,7 +330,6 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
         ) !result.EvalResult {
             const chunk_src: source.Source = .{ .id = src.id, .kind = src.kind, .name = src.name, .text = text };
 
-            const ast_allocator = self.astAllocator();
             const lexed = try lexer.lexWithAliasesSourceOptions(ast_allocator, chunk_src, self.state, .{
                 .autoload_function_name = self.autoloading_function,
             });
@@ -509,6 +522,28 @@ test "Shell counts parsed interactive commands at the evaluation boundary" {
     };
     _ = try shell.evalSourceNested(nested_src);
     try std.testing.expectEqual(@as(u64, 2), shell.state.prompt_command_number);
+}
+
+test "nested source parsing does not accumulate in the caller AST arena" {
+    var shell = Shell(host_mod.RealHost).init(std.testing.allocator, .{}, .{});
+    defer shell.deinit();
+
+    // Keep caller-owned AST storage alive while nested evaluations come and go.
+    const sentinel = try shell.astAllocator().dupe(u8, "caller");
+    const capacity = shell.arenas.ast.arena.queryCapacity();
+    const src: source.Source = .{
+        .id = 1,
+        .kind = .sourced_file,
+        .name = "nested",
+        .text = "value=kept\n" ** 128,
+    };
+    for (0..16) |_| {
+        const evaluated = try shell.evalSourceNested(src);
+        try std.testing.expectEqual(@as(result.ExitStatus, 0), evaluated.status);
+        try std.testing.expectEqual(capacity, shell.arenas.ast.arena.queryCapacity());
+        try std.testing.expectEqualStrings("caller", sentinel);
+        try std.testing.expectEqualStrings("kept", shell.state.getVariable("value").?.value);
+    }
 }
 
 test "Shell parameter-only expansion preserves non-parameter substitutions" {

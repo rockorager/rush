@@ -998,6 +998,42 @@
             .status = 0,
         },
         .{
+            .name = "dot definitions survive source return and active replacement",
+            .script =
+            \\cat >file.sh <<'EOF'
+            \\saved() {
+            \\    cat <<'BODY'
+            \\saved heredoc
+            \\BODY
+            \\}
+            \\f() {
+            \\    . ./file.sh
+            \\    printf 'old:%s\n' "$marker"
+            \\}
+            \\EOF
+            \\. ./file.sh
+            \\cat >file.sh <<'EOF'
+            \\alias set_marker='marker=loaded'
+            \\set_marker
+            \\unset -f f
+            \\f() { printf 'new\n'; }
+            \\return 0
+            \\marker=unreachable
+            \\EOF
+            \\f
+            \\f
+            \\saved
+            ,
+            .stdout =
+            \\old:loaded
+            \\new
+            \\saved heredoc
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "dot accepts extra operands and preserves caller positional parameters",
             .script =
             \\cat >file.sh <<'EOF'
