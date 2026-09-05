@@ -3,14 +3,20 @@
     .mode = .posix,
     .cases = .{
         .{
-            .name = "append assignment is rejected in POSIX mode",
+            // += is an extension: accepting it or treating it as a command must
+            // allow capability probes (such as libtoolize's) to finish.
+            .name = "append assignment capability probe permits a fallback",
             .script =
-            \\x+=a
-            \\printf 'bad\n'
+            \\if v=a && v+=' b' 2>/dev/null && test "$v" = 'a b'; then
+            \\  test "$v" = 'a b' || exit 1
+            \\else
+            \\  test "$v" = a || exit 1
+            \\fi
+            \\printf 'probe completed\n'
             ,
-            .stdout = "",
-            .stderr_match = .nonempty,
-            .status = 2,
+            .stdout = "probe completed\n",
+            .stderr = "",
+            .status = 0,
         },
         .{
             .name = "array assignment is rejected in POSIX mode",

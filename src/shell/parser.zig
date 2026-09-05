@@ -1038,7 +1038,8 @@ const Parser = struct {
         const array_index = arrayAssignmentIndex(word_token.text[0..name_end]);
         const name = if (array_index) |index| word_token.text[0..index] else word_token.text[0..name_end];
         if (!isAssignmentName(name)) return null;
-        if (append and self.mode() == .posix) return error.UnexpectedToken;
+        // Unsupported += words are commands, so capability probes can fall back.
+        if (append and self.mode() == .posix) return null;
         if ((array_index != null or self.at(.left_paren)) and self.mode() == .posix) return error.UnexpectedToken;
 
         if (array_index == null and self.at(.left_paren)) {
@@ -2426,18 +2427,30 @@ test "parser recognizes bash append assignment words" {
     try std.testing.expectEqualStrings("x+=arg", command.words[1].data.literal);
 }
 
-test "parser rejects append assignment words in POSIX mode" {
+test "parser treats append words as commands with redirections in POSIX mode" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const src: source_mod.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = "x+=hello" };
+    const src: source_mod.Source = .{
+        .id = 1,
+        .kind = .command_string,
+        .name = "-c",
+        .text = "x+=hello 2>/dev/null",
+    };
     // ziglint-ignore: Z028 inline import kept local to test/helper; avoid non-semantic refactor
     const tokens = try @import("lexer.zig").lex(allocator, src);
     var shell_state = state_mod.State.init(std.testing.allocator, .{ .mode = .posix });
     defer shell_state.deinit();
 
-    try std.testing.expectError(error.UnexpectedToken, parseWithAliases(allocator, src, tokens, shell_state));
+    const program = try parseWithAliases(allocator, src, tokens, shell_state);
+    const command = program.body.entries[0].and_or.pipelines[0].pipeline.stages[0].simple;
+    try std.testing.expectEqual(@as(usize, 0), command.assignments.len);
+    try std.testing.expectEqual(@as(usize, 1), command.words.len);
+    try std.testing.expectEqualStrings("x+=hello", command.words[0].data.literal);
+    try std.testing.expectEqual(@as(usize, 1), command.redirections.len);
+    try std.testing.expectEqual(@as(?u31, 2), command.redirections[0].fd);
+    try std.testing.expectEqualStrings("/dev/null", command.redirections[0].target.data.literal);
 }
 
 test "parser builds parameter parts inside double quotes" {
