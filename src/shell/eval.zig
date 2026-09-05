@@ -3744,8 +3744,8 @@ fn staticDeclarationBuiltinName(shell: anytype, word: ast.Word) !?builtin.Id {
     if (shell.state.options.mode == .bash) {
         if (std.mem.eql(u8, name, "declare")) return .declare;
         if (std.mem.eql(u8, name, "typeset")) return .typeset;
-        if (std.mem.eql(u8, name, "local")) return .local;
     }
+    if (std.mem.eql(u8, name, "local")) return .local;
     if (std.mem.eql(u8, name, "export")) return .export_;
     if (std.mem.eql(u8, name, "readonly")) return .readonly;
     return null;

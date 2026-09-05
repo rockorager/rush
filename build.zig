@@ -498,6 +498,7 @@ fn addConformanceTests(
             .root_source_file = b.path("tests/harness.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
         }),
     });
 

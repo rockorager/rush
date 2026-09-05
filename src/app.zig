@@ -9,6 +9,7 @@ const function_autoload = @import("function_autoload.zig");
 const host = @import("host.zig");
 const interactive = @import("interactive.zig");
 const shell = @import("shell.zig");
+const startup = @import("interactive/startup.zig");
 
 const RushShell = shell.ShellWithBuiltins(host.RealHost, extensions.rush.registry);
 
@@ -117,6 +118,11 @@ fn evalSource(
     });
     defer sh.deinit();
     sh.setFunctionAutoload(autoloadRushFunction);
+
+    if (options.state_options.interactive) {
+        var source_id = src.id +% 1;
+        if (try startup.source(&sh, &source_id, false)) |status| return status;
+    }
 
     const evaluated = sh.evalSource(src) catch |err| {
         // Parse errors already produced a positioned syntax diagnostic.

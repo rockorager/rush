@@ -12,6 +12,10 @@ pub fn source(
     source_id: *shell.source.SourceId,
     login: bool,
 ) !?u8 {
+    // Do not let inherited environment paths execute code with elevated IDs.
+    // Guard Rush startup files too, not just the POSIX ENV file.
+    if (!sh.host.credentialsMatch()) return null;
+
     if (try sourceText(sh, source_id, "default_config", default_config)) |status| return status;
 
     if (envValue(sh.env, "ENV")) |env_path| {

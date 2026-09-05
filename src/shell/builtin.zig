@@ -191,8 +191,9 @@ pub fn lookup(name: []const u8) ?Definition {
 /// Rush-specific and bash-only builtins are hidden in POSIX mode.
 pub fn availableInMode(definition: Definition, mode: state_mod.Mode) bool {
     if (mode != .posix) return true;
+    // Debian /bin/sh scripts require local, although POSIX does not specify it.
     return switch (definition.id) {
-        .declare, .local, .source, .shopt, .typeset, .z, .history => false,
+        .declare, .source, .shopt, .typeset, .z, .history => false,
         else => true,
     };
 }

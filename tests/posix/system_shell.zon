@@ -1,0 +1,130 @@
+.{
+    .name = "System shell workload regressions",
+    .mode = .posix,
+    .cases = .{
+        .{
+            // Debian Policy 10.4 requires local in /bin/sh; this is a
+            // deliberate compatibility requirement beyond POSIX Issue 8.
+            .name = "Debian maintainer scripts can localize assigned variables",
+            .script =
+            \\set -e
+            \\value=outer
+            \\f() {
+            \\    local a b value=inner
+            \\    printf '%s\n' "$value"
+            \\}
+            \\f
+            \\printf '%s\n' "$value"
+            ,
+            .stdout = "inner\nouter\n",
+        },
+        .{
+            // Reduced from gzip 1.12's zdiff, reached by make check-local.
+            .name = "gzip zdiff nests pipeline subshells inside command substitution",
+            .script =
+            \\value=$(
+            \\    : | ((printf x
+            \\          printf y) | cat)
+            \\)
+            \\printf '<%s>\n' "$value"
+            ,
+            .stdout = "<xy>\n",
+        },
+        .{
+            // Reduced from Automake's mdate-sh, used by gzip's doc build.
+            .name = "Automake backquote eval preserves an escaped variable reference",
+            .script =
+            \\save_arg1=target
+            \\ls_command=show
+            \\show() { printf '<%s>\n' "$1"; }
+            \\result=`eval "$ls_command \"\\\$save_arg1\""`
+            \\printf '%s\n' "$result"
+            ,
+            .stdout = "<target>\n",
+        },
+        .{
+            .name = "interactive command string sources ENV before its body",
+            .script =
+            \\set -e
+            \\ln -s "$(command -v "$0")" sh
+            \\printf '%s\n' 'printf "ENV\n"' >startup
+            \\ENV="$PWD/startup" ./sh -ic 'printf "BODY\n"' 2>diagnostics
+            ,
+            .stdout = "ENV\nBODY\n",
+        },
+        .{
+            .name = "local assignments preserve spaces and restore the caller variable",
+            .script =
+            \\value=outer
+            \\f() { local value=$1; printf '<%s>\n' "$value"; }
+            \\f 'two words'
+            \\printf '%s\n' "$value"
+            ,
+            .stdout = "<two words>\nouter\n",
+        },
+        .{
+            .name = "interactive script sources ENV but noninteractive command does not",
+            .script =
+            \\set -e
+            \\ln -s "$(command -v "$0")" sh
+            \\printf '%s\n' 'printf "ENV\n"' >startup
+            \\printf '%s\n' 'printf "SCRIPT\n"' >body
+            \\ENV="$PWD/startup" ./sh -i body 2>diagnostics
+            \\ENV="$PWD/startup" ./sh -c 'printf "COMMAND\n"'
+            ,
+            .stdout = "ENV\nSCRIPT\nCOMMAND\n",
+        },
+        .{
+            .name = "exit in interactive ENV prevents command execution and runs EXIT trap",
+            .script =
+            \\ln -s "$(command -v "$0")" sh
+            \\printf '%s\n' "trap 'printf EXIT' 0" 'exit 7' >startup
+            \\ENV="$PWD/startup" ./sh -ic 'printf BAD' 2>diagnostics
+            ,
+            .stdout = "EXIT",
+            .status = 7,
+        },
+        .{
+            // POSIX sh must ignore ENV while IDs differ. Dropping privilege
+            // first is also safe, so only execution with unequal IDs fails.
+            .name = "interactive ENV cannot execute with mismatched real and effective UID",
+            .requires_root = true,
+            .script =
+            \\set -e
+            \\ln -s "$(command -v "$0")" sh
+            \\cat >startup <<'EOF'
+            \\if [ "$(id -ru)" != "$(id -u)" ]; then printf 'UNSAFE-ENV\n'; fi
+            \\EOF
+            \\mkdir -p config/rush
+            \\cp startup config/rush/config.rush
+            \\export XDG_CONFIG_HOME="$PWD/config"
+            \\ENV="$PWD/startup" "$RUSH_CONFORMANCE_HARNESS" --mismatched-ids uid ./sh -i 2>diagnostics <<'EOF'
+            \\printf 'BODY\n'
+            \\exit
+            \\EOF
+            \\ENV="$PWD/startup" "$RUSH_CONFORMANCE_HARNESS" --mismatched-ids uid ./sh -ic 'printf "BODY\n"' 2>diagnostics
+            ,
+            .stdout = "BODY\nBODY\n",
+        },
+        .{
+            .name = "interactive ENV cannot execute with mismatched real and effective GID",
+            .requires_root = true,
+            .script =
+            \\set -e
+            \\ln -s "$(command -v "$0")" sh
+            \\cat >startup <<'EOF'
+            \\if [ "$(id -rg)" != "$(id -g)" ]; then printf 'UNSAFE-ENV\n'; fi
+            \\EOF
+            \\mkdir -p config/rush
+            \\cp startup config/rush/config.rush
+            \\export XDG_CONFIG_HOME="$PWD/config"
+            \\ENV="$PWD/startup" "$RUSH_CONFORMANCE_HARNESS" --mismatched-ids gid ./sh -i 2>diagnostics <<'EOF'
+            \\printf 'BODY\n'
+            \\exit
+            \\EOF
+            \\ENV="$PWD/startup" "$RUSH_CONFORMANCE_HARNESS" --mismatched-ids gid ./sh -ic 'printf "BODY\n"' 2>diagnostics
+            ,
+            .stdout = "BODY\nBODY\n",
+        },
+    },
+}

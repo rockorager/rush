@@ -691,7 +691,9 @@ const Parser = struct {
 
     fn parseArithmeticCommand(self: *Parser) ParserError!?ast.ArithmeticCommand {
         if (!self.atArithmeticDelimiterStart()) return null;
-        if (self.mode() == .posix) return error.UnexpectedToken;
+        // In POSIX mode, adjacent opening parentheses are two nested subshell
+        // delimiters. Only Bash mode gives `((` arithmetic-command meaning.
+        if (self.mode() == .posix) return null;
 
         const expression = try self.parseArithmeticDelimitedText();
         const command: ast.ArithmeticCommand = .{ .expression = expression };
@@ -1662,6 +1664,10 @@ const Parser = struct {
                         try output.append(self.allocator, '`');
                         index += 2;
                     },
+                    '$' => {
+                        try output.append(self.allocator, '$');
+                        index += 2;
+                    },
                     '\\' => {
                         try output.append(self.allocator, '\\');
                         index += 2;
@@ -2392,6 +2398,48 @@ test "parser builds command substitution word parts" {
     const substitution = assignment.value.data.parts[0].command_substitution;
     try std.testing.expectEqualStrings("exit 7", substitution.source_text);
     try std.testing.expect(substitution.parsed != null);
+}
+
+test "POSIX parser treats adjacent parentheses as nested subshells" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const src: source_mod.Source = .{
+        .id = 1,
+        .kind = .command_string,
+        .name = "-c",
+        .text = "value=$(: | ((printf x\nprintf y) | cat))",
+    };
+    const tokens = try lexer.lex(allocator, src);
+    var shell_state = state_mod.State.init(std.testing.allocator, .{ .mode = .posix });
+    defer shell_state.deinit();
+
+    const program = try parseWithAliases(allocator, src, tokens, shell_state);
+    const assignment = program.body.entries[0].and_or.pipelines[0].pipeline.stages[0].simple.assignments[0];
+    const substitution = assignment.value.data.parts[0].command_substitution.parsed.?;
+    const outer_subshell = substitution.body.entries[0].and_or.pipelines[0].pipeline.stages[1].compound.body.subshell;
+    const inner_subshell = outer_subshell.entries[0].and_or.pipelines[0].pipeline.stages[0].compound.body.subshell;
+    try std.testing.expectEqual(@as(usize, 2), inner_subshell.entries.len);
+}
+
+test "backquote command text removes backslash before dollar" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const src: source_mod.Source = .{
+        .id = 1,
+        .kind = .command_string,
+        .name = "-c",
+        .text = "result=`eval \"show \\\"\\\\\\$value\\\"\"`",
+    };
+    const tokens = try lexer.lex(allocator, src);
+    const program = try parse(allocator, src, tokens);
+    const assignment = program.body.entries[0].and_or.pipelines[0].pipeline.stages[0].simple.assignments[0];
+    const substitution = assignment.value.data.parts[0].command_substitution;
+
+    try std.testing.expectEqualStrings("eval \"show \\\"\\$value\\\"\"", substitution.source_text);
 }
 
 test "incremental parser yields one complete command per call" {

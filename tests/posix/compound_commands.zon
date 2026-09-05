@@ -2096,14 +2096,12 @@
             .status_match = .nonzero,
         },
         .{
-            .name = "arithmetic command bashism is rejected in POSIX mode",
+            .name = "adjacent parentheses run nested subshell commands in POSIX mode",
             .script =
-            \\(( 1 ))
-            \\printf bad
+            \\(( printf nested ))
+            \\printf after
             ,
-            .stdout = "",
-            .stderr_match = .nonempty,
-            .status_match = .nonzero,
+            .stdout = "nestedafter",
         },
         .{
             .name = "c-style for command bashism is rejected in POSIX mode",

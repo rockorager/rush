@@ -25,6 +25,8 @@ const Case = struct {
     status_match: StatusExpectation = .exact,
     skip: ?[]const u8 = null,
     skip_rush: ?[]const u8 = null,
+    /// Credential-transition cases run only with real and effective UID 0.
+    requires_root: bool = false,
 };
 
 const BytesExpectation = enum {
@@ -146,11 +148,17 @@ const Progress = struct {
 pub fn main(init: std.process.Init) !u8 {
     const allocator = init.gpa;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
+    if (args.len >= 4 and std.mem.eql(u8, args[1], "--mismatched-ids")) {
+        return execWithMismatchedIds(init, args);
+    }
     const parsed_config = (try parseArgs(allocator, args)) orelse {
         try writeUsage(init.io);
         return 2;
     };
     defer allocator.free(parsed_config.shell_args);
+    const harness_path = try resolvePath(allocator, init.io, args[0]);
+    defer allocator.free(harness_path);
+    try init.environ_map.put("RUSH_CONFORMANCE_HARNESS", harness_path);
     const rush_path = if (parsed_config.rush_path) |path| try resolvePath(allocator, init.io, path) else null;
     defer if (rush_path) |path| allocator.free(path);
     const shell = if (parsed_config.shell) |path| try resolveCommandPath(allocator, init.io, path) else null;
@@ -217,6 +225,22 @@ pub fn main(init: std.process.Init) !u8 {
         );
     }
     return 0;
+}
+
+/// Re-executed by credential cases, never by the parent harness process.
+/// Keeps effective root credentials so the target must either drop privilege
+/// or suppress ENV while real and effective IDs differ.
+fn execWithMismatchedIds(init: std.process.Init, args: []const []const u8) !u8 {
+    std.debug.assert(args.len >= 4);
+    if (std.c.getuid() != 0 or std.c.geteuid() != 0) return error.RequiresRoot;
+    const status = if (std.mem.eql(u8, args[2], "uid"))
+        std.c.setreuid(65534, 0)
+    else if (std.mem.eql(u8, args[2], "gid"))
+        std.c.setregid(65534, 0)
+    else
+        return error.InvalidCredentialKind;
+    if (status != 0) return error.SetCredentialFailed;
+    return std.process.replace(init.io, .{ .argv = args[3..], .environ_map = init.environ_map });
 }
 
 fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !?Config {
@@ -504,6 +528,9 @@ fn caseSkipReason(case: Case, config: Config) ?[]const u8 {
     if (case.skip) |reason| return reason;
     if (config.rush_path != null) {
         if (case.skip_rush) |reason| return reason;
+    }
+    if (case.requires_root and (std.c.getuid() != 0 or std.c.geteuid() != 0)) {
+        return "requires root to create mismatched real/effective IDs";
     }
     return null;
 }

@@ -63,6 +63,10 @@ pub fn effectiveUserId(_: RealHost) std.c.uid_t {
     return std.c.geteuid();
 }
 
+pub fn credentialsMatch(_: RealHost) bool {
+    return std.c.getuid() == std.c.geteuid() and std.c.getgid() == std.c.getegid();
+}
+
 pub fn effectiveUserName(_: RealHost, allocator: std.mem.Allocator) ![]const u8 {
     var password: std.c.passwd = undefined;
     var buffer_len: usize = 1024;
