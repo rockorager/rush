@@ -153,6 +153,39 @@
             .status = 0,
         },
         .{
+            .name = "unquoted selected alternate word preserves its nested quote boundaries",
+            .script =
+            \\author='one two'
+            \\printf '<%s>\n' ${author:+ --author "$author"}
+            ,
+            .stdout =
+            \\<--author>
+            \\<one two>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "selected default word splits unquoted text and globs only unquoted patterns",
+            .script =
+            \\: >one.c
+            \\: >two.c
+            \\unset value
+            \\printf '<%s>\n' ${value:- prefix "two words" *.c \*.c}
+            ,
+            .stdout =
+            \\<prefix>
+            \\<two words>
+            \\<one.c>
+            \\<two.c>
+            \\<*.c>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "parameter expansion alternate distinguishes set null from unset",
             .script =
             \\unset missing
@@ -457,6 +490,21 @@
             .status = 0,
         },
         .{
+            .name = "unused alternate words do not run nested substitutions",
+            .script =
+            \\unset value marker
+            \\printf '<%s>\n' ${value:+$(printf side >marker)}
+            \\test ! -e marker && printf 'lazy\n'
+            ,
+            .stdout =
+            \\<>
+            \\lazy
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "parameter expansion evaluates default words when used",
             .script =
             \\unset x
@@ -520,6 +568,21 @@
             ,
             .stdout =
             \\start
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "tilde prefix must end in literal text before a dynamic word part",
+            .script =
+            \\HOME='/tmp/has space'
+            \\suffix=abc
+            \\printf '<%s>\n' ~$suffix ~/"$suffix"
+            ,
+            .stdout =
+            \\<~abc>
+            \\</tmp/has space/abc>
             \\
             ,
             .stderr = "",
@@ -912,6 +975,19 @@
             ,
             .stdout =
             \\11
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "arithmetic expansion removes continuations and evaluates nested expansions",
+            .script =
+            \\printf '%s:%s\n' $((1 + \
+            \\2)) $((1 + $((2 + 3))))
+            ,
+            .stdout =
+            \\3:6
             \\
             ,
             .stderr = "",
@@ -1698,6 +1774,27 @@
             .stdout =
             \\<a.txt>
             \\<b.txt>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "external command fast paths retain pathname expansion and quoting",
+            .script =
+            \\: >one.txt
+            \\: >two.txt
+            \\printf '<%s>\n' "$(ls *.txt)" "$(env printf '%s' '*.txt')" "$(env printf '%s' \*.txt)"
+            \\assigned=$(ls *.txt)
+            \\printf 'assigned:<%s>\n' "$assigned"
+            ,
+            .stdout =
+            \\<one.txt
+            \\two.txt>
+            \\<*.txt>
+            \\<*.txt>
+            \\assigned:<one.txt
+            \\two.txt>
             \\
             ,
             .stderr = "",

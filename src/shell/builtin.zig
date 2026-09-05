@@ -757,6 +757,10 @@ fn evalKill(shell: anytype, args: []const []const u8) !result.EvalResult {
     while (index < args.len) : (index += 1) {
         if (killOperandJob(shell, args[index])) |job| {
             const target = if (job.job_control) -job.process_group else job.pid;
+            if (try backgroundProcessCompleted(shell, target)) {
+                status = 1;
+                continue;
+            }
             shell.host.sendSignal(target, kill_signal.number) catch {
                 status = 1;
                 continue;
@@ -767,6 +771,10 @@ fn evalKill(shell: anytype, args: []const []const u8) !result.EvalResult {
             status = 1;
             continue;
         };
+        if (try backgroundProcessCompleted(shell, pid)) {
+            status = 1;
+            continue;
+        }
         if (kill_signal.name) |signal_name| {
             if (pid == shell.host.currentProcessId() and shell.state.getSignalTrap(signal_name) != null) {
                 try shell.state.queueTrap(signal_name);
@@ -779,6 +787,31 @@ fn evalKill(shell: anytype, args: []const []const u8) !result.EvalResult {
         };
     }
     return .{ .status = status };
+}
+
+fn backgroundProcessCompleted(shell: anytype, pid: host.Pid) !bool {
+    if (shell.state.completed_background.get(pid)) |cached| {
+        if (cached.owner_pid == shell.host.currentProcessId()) return true;
+    }
+    if (std.mem.indexOfScalar(host.Pid, shell.state.background_pids.items, pid) == null) return false;
+    const Host = switch (@typeInfo(@TypeOf(shell.host))) {
+        .pointer => |pointer| pointer.child,
+        else => @TypeOf(shell.host),
+    };
+    if (comptime !@hasDecl(Host, "waitNonBlocking")) return false;
+    // A terminated child can still exist as a zombie. Reap it before kill,
+    // but keep its status for wait; allocate before consuming the host event.
+    try shell.state.completed_background.ensureUnusedCapacity(shell.state.allocator, 1);
+    const waited = (shell.host.waitNonBlocking(pid) catch return false) orelse return false;
+    if (waited == .stopped) {
+        _ = shell.state.setBackgroundJobStatusByPid(pid, .stopped);
+        return false;
+    }
+    shell.state.completed_background.putAssumeCapacity(pid, .{
+        .owner_pid = shell.host.currentProcessId(),
+        .status = waited,
+    });
+    return true;
 }
 
 fn killOperandPid(shell: anytype, arg: []const u8) ?host.Pid {

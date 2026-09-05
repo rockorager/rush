@@ -335,6 +335,10 @@ pub const State = struct {
     reap_process_substitutions: std.ArrayListUnmanaged(ReapOnlyProcessSubstitution) = .empty,
     background_pids: std.ArrayListUnmanaged(host.Pid) = .empty,
     background_jobs: std.ArrayListUnmanaged(BackgroundJob) = .empty,
+    completed_background: std.AutoHashMapUnmanaged(host.Pid, struct {
+        owner_pid: host.Pid,
+        status: host.WaitStatus,
+    }) = .empty,
     last_status: result.ExitStatus = 0,
     last_pipeline_statuses: []result.ExitStatus = &.{},
     last_status_errexit_ignored: bool = false,
@@ -414,6 +418,7 @@ pub const State = struct {
         self.background_pids.deinit(self.allocator);
         for (self.background_jobs.items) |*job| job.deinit(self.allocator);
         self.background_jobs.deinit(self.allocator);
+        self.completed_background.deinit(self.allocator);
         if (self.last_pipeline_statuses.len != 0) self.allocator.free(self.last_pipeline_statuses);
         self.prompt_metadata.deinit(self.allocator);
         self.freeOwnedPositionals();
@@ -1324,7 +1329,14 @@ pub const State = struct {
     }
 
     pub fn addBackgroundPid(self: *State, pid: host.Pid) !void {
+        _ = self.completed_background.remove(pid);
         try self.background_pids.append(self.allocator, pid);
+    }
+
+    pub fn takeBackgroundStatus(self: *State, pid: host.Pid, owner_pid: host.Pid) ?host.WaitStatus {
+        const entry = self.completed_background.fetchRemove(pid) orelse return null;
+        // A fork inherits memory, not the parent's waitable children.
+        return if (entry.value.owner_pid == owner_pid) entry.value.status else null;
     }
 
     pub fn addBackgroundJob(self: *State, pid: host.Pid, command: []const u8, job_control: bool) !void {
@@ -1369,6 +1381,7 @@ pub const State = struct {
     }
 
     pub fn removeBackgroundPid(self: *State, pid: host.Pid) bool {
+        _ = self.completed_background.remove(pid);
         var removed = false;
         for (self.background_pids.items, 0..) |known, index| {
             if (known != pid) continue;
@@ -1513,6 +1526,7 @@ pub const State = struct {
 
     pub fn clearBackgroundPids(self: *State) void {
         self.background_pids.clearRetainingCapacity();
+        self.completed_background.clearRetainingCapacity();
         for (self.background_jobs.items) |*job| job.deinit(self.allocator);
         self.background_jobs.clearRetainingCapacity();
     }
@@ -1661,4 +1675,34 @@ test "function definition allocation failures leave table and owners intact" {
     try std.testing.expectEqual(old, shell_state.getFunction("f").?);
     try std.testing.expectEqual(@as(usize, 1), old.references);
     try std.testing.expectEqualStrings("old", old.source_name);
+}
+
+test "background completion cache is consumed and cleared with its process lifetime" {
+    var shell_state = State.init(std.testing.allocator, .{});
+    defer shell_state.deinit();
+    try shell_state.addBackgroundPid(42);
+    try shell_state.completed_background.put(shell_state.allocator, 42, .{
+        .owner_pid = 1,
+        .status = .{ .exited = 7 },
+    });
+    try std.testing.expectEqual(@as(u8, 7), shell_state.takeBackgroundStatus(42, 1).?.shellStatus());
+    try std.testing.expectEqual(@as(?host.WaitStatus, null), shell_state.takeBackgroundStatus(42, 1));
+    try shell_state.completed_background.put(shell_state.allocator, 42, .{
+        .owner_pid = 1,
+        .status = .{ .exited = 7 },
+    });
+    try std.testing.expectEqual(@as(?host.WaitStatus, null), shell_state.takeBackgroundStatus(42, 2));
+    try shell_state.completed_background.put(shell_state.allocator, 42, .{
+        .owner_pid = 1,
+        .status = .{ .exited = 7 },
+    });
+    try std.testing.expect(shell_state.removeBackgroundPid(42));
+    try std.testing.expect(!shell_state.completed_background.contains(42));
+    try shell_state.addBackgroundPid(42);
+    try shell_state.completed_background.put(shell_state.allocator, 42, .{
+        .owner_pid = 1,
+        .status = .{ .exited = 9 },
+    });
+    shell_state.clearBackgroundPids();
+    try std.testing.expectEqual(@as(u32, 0), shell_state.completed_background.count());
 }

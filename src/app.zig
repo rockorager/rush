@@ -107,14 +107,15 @@ fn evalSource(
     options: EvalSourceOptions,
     src: shell.source.Source,
 ) !u8 {
-    const initial_pwd = try real_host.currentDir(allocator);
-    defer allocator.free(initial_pwd);
+    const initial_pwd = try real_host.startupPwd(allocator, environmentValue(env, "PWD"));
+    defer if (initial_pwd) |pwd| allocator.free(pwd);
     var sh = RushShell.init(allocator, real_host, .{
         .state = options.state_options,
         .env = env,
         .arg_zero = options.arg_zero,
         .positionals = options.positionals,
         .initial_pwd = initial_pwd,
+        .initial_pwd_unavailable = initial_pwd == null,
     });
     defer sh.deinit();
     sh.setFunctionAutoload(autoloadRushFunction);
@@ -133,6 +134,17 @@ fn evalSource(
         if (!shell.parser.isParseError(err)) try sh.host.writeAll(.stderr, "rush: shell error\n");
         return 2;
     };
+}
+
+fn environmentValue(env: []const [*:0]const u8, name: []const u8) ?[]const u8 {
+    std.debug.assert(name.len != 0);
+    for (env) |entry_ptr| {
+        const entry = std.mem.span(entry_ptr);
+        if (entry.len > name.len and entry[name.len] == '=' and std.mem.eql(u8, entry[0..name.len], name)) {
+            return entry[name.len + 1 ..];
+        }
+    }
+    return null;
 }
 
 fn autoloadRushFunction(sh: *RushShell, name: []const u8) !bool {

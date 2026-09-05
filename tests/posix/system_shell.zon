@@ -3,6 +3,22 @@
     .mode = .posix,
     .cases = .{
         .{
+            .name = "system shell external prefix assignments expand exactly once",
+            .script =
+            \\ln -s "$(command -v "$0")" sh
+            \\x=foo
+            \\x=$x.bar printenv x
+            \\x=$x.bar command printenv x
+            \\(x=$x.bar exec printenv x)
+            \\x=$x.bar printenv x | cat
+            \\x=$(printf tick >>marker; printf value) printenv x
+            \\cat marker; echo
+            \\printf '%s\n' "$x"
+            \\x=first x=$x.second ./sh -c 'echo "$x"'
+            ,
+            .stdout = "foo.bar\nfoo.bar\nfoo.bar\nfoo.bar\nvalue\ntick\nfoo\nfirst.second\n",
+        },
+        .{
             .name = "inherited exports survive read arithmetic and readonly assignments",
             .script =
             \\ln -s "$(command -v "$0")" sh
@@ -82,6 +98,47 @@
             \\PROBE=before ./sh -c 'PROBE=one; PROBE=two; printenv PROBE'
             ,
             .stdout = "after\n/probe\ntwo\n",
+        },
+        .{
+            .name = "child shell preserves an inherited logical PWD",
+            .script =
+            \\set -e
+            \\ln -s "$(command -v "$0")" sh
+            \\mkdir -p real
+            \\ln -s real logical
+            \\cd logical
+            \\./../sh -c 'case $PWD in */logical) echo logical;; *) echo physical;; esac'
+            ,
+            .stdout = "logical\n",
+        },
+        .{
+            .name = "child shell replaces invalid inherited PWD values",
+            .script =
+            \\set -e
+            \\ln -s "$(command -v "$0")" sh
+            \\mkdir actual stale
+            \\cd actual
+            \\actual=$PWD
+            \\PWD=relative ./../sh -c '[ "$PWD" = "$1" ] && echo physical' sh "$actual"
+            \\PWD="$TMPDIR/stale" ./../sh -c '[ "$PWD" = "$1" ] && echo physical' sh "$actual"
+            ,
+            .stdout = "physical\nphysical\n",
+        },
+        .{
+            .name = "child shell starts after its working directory is deleted",
+            .script =
+            \\set -e
+            \\ln -s "$(command -v "$0")" sh
+            \\child=$PWD/sh
+            \\parent=$PWD
+            \\mkdir deleted
+            \\cd deleted
+            \\rmdir "$parent/deleted"
+            \\"$child" -c 'printf "child-started\n"'
+            ,
+            .stdout = "child-started\n",
+            // Reference shells may warn when getcwd(2) fails.
+            .stderr_match = .any,
         },
         .{
             // Reduced from Git 2.39.5's check-chainlint Make recipe.

@@ -3,6 +3,36 @@
     .mode = .posix,
     .cases = .{
         .{
+            .name = "system shell selected words retain nested and adjacent quote provenance",
+            .script =
+            \\x=yes; y='a b'
+            \\printf '<%s>\n' "${x:+"$y"}" ${x:+a b} pre${x:+"$y"}post ${x:+ "$y" $y}
+            \\set -- ${x:+ '' a '' }; printf 'empty:%s:<%s>:<%s>:<%s>\n' "$#" "$1" "$2" "$3"
+            \\set -- ${x:+""}; printf 'empty-only:%s\n' "$#"
+            \\IFS=:
+            \\z='a:b'; printf '<%s>\n' pre:${x:+"$z":$z}:post
+            \\unset IFS missing
+            \\for value in ${missing:-"$y" c}; do printf 'for:<%s>\n' "$value"; done
+            ,
+            .stdout =
+            \\<a b>
+            \\<a>
+            \\<b>
+            \\<prea bpost>
+            \\<a b>
+            \\<a>
+            \\<b>
+            \\empty:3:<>:<a>:<>
+            \\empty-only:1
+            \\<pre:a:b>
+            \\<a>
+            \\<b:post>
+            \\for:<a b>
+            \\for:<c>
+            \\
+            ,
+        },
+        .{
             .name = "backslash preserves the literal value of the following character",
             .script =
             \\printf '<%s>\n' a\ b \* \$HOME
@@ -178,6 +208,19 @@
             ,
             .stdout =
             \\<abc>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "single quotes are literal within double-quoted parameter operator words",
+            .script =
+            \\repo=worktree
+            \\printf '%s\n' "test ${repo:+-C '$repo'} done"
+            ,
+            .stdout =
+            \\test -C 'worktree' done
             \\
             ,
             .stderr = "",

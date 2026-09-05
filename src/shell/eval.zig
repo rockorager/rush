@@ -10,6 +10,7 @@ const host_mod = @import("../host.zig");
 const ui_style = @import("ui_style.zig");
 const lexer = @import("lexer.zig");
 const pattern_mod = @import("pattern.zig");
+const parse_scan = @import("parse_scan.zig");
 const parser = @import("parser.zig");
 const prompt_mod = @import("prompt.zig");
 const result = @import("result.zig");
@@ -20,7 +21,7 @@ const token_mod = @import("token.zig");
 
 pub const EvalError = anyerror;
 const CommandLookupMode = enum { none, terse, verbose };
-const CommandProcess = enum { retained, pipeline_child };
+const CommandProcess = enum { retained, replaceable_child };
 const command_suggestion_limit = 2;
 const command_suggestion_max_distance = 2;
 const cd_suggestion_max_distance = 2;
@@ -132,12 +133,15 @@ fn evalBackgroundAndOr(shell: anytype, and_or: ast.AndOr) EvalError!result.EvalR
                 const status = runExitTrap(shell, evaluated.status) catch shell.host.exit(2);
                 shell.host.exit(status);
             } else {
-                if (!shell.state.options.xtrace and and_or.pipelines.len == 1) {
+                if (and_or.pipelines.len == 1) {
                     const pipeline = and_or.pipelines[0].pipeline;
-                    if (!pipeline.negated and pipeline.stages.len == 1) {
-                        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
-                        const request = dynamicExternalCommandRequest(shell, pipeline.stages[0], &.{}) catch shell.host.exit(2);
-                        if (request) |spawn_request| shell.host.exec(spawn_request) catch shell.host.exit(127);
+                    if (!pipeline.negated and pipeline.stages.len == 1 and pipeline.stages[0] == .simple) {
+                        // This child owns the asynchronous command's PID. Let
+                        // the normal simple-command path apply expansions and
+                        // redirections once, then replace it with the external.
+                        const evaluated = evalCommand(shell, &pipeline.stages[0], .replaceable_child) catch
+                            shell.host.exit(2);
+                        shell.host.exit(evaluated.status);
                     }
                 }
                 const evaluated = evalAndOr(shell, and_or) catch shell.host.exit(2);
@@ -509,7 +513,7 @@ fn forkPipelineStage(
                 if (request) |spawn_request| shell.host.exec(spawn_request) catch shell.host.exit(127);
             }
             if (suppress_child_xtrace) shell.state.options.xtrace = false;
-            const evaluated = evalCommand(shell, &command, .pipeline_child) catch shell.host.exit(2);
+            const evaluated = evalCommand(shell, &command, .replaceable_child) catch shell.host.exit(2);
             shell.host.exit(evaluated.status);
         },
     };
@@ -530,7 +534,9 @@ fn staticPipelineStageFields(shell: anytype, command: ast.Command) !?[]const []c
     const fields = try shell.scratchAllocator().alloc([]const u8, simple.words.len);
     for (simple.words, 0..) |word, index| {
         if (wordExpandsLeadingTilde(shell, word)) return null;
-        fields[index] = staticLiteralWord(word) orelse return null;
+        const literal = staticLiteralWord(word) orelse return null;
+        if (pattern_mod.containsMeta(try staticWordPathnamePattern(shell, word))) return null;
+        fields[index] = literal;
     }
     if (shell.state.getFunction(fields[0]) != null) return null;
     return fields;
@@ -575,13 +581,12 @@ fn staticExternalPipelineStageRequest(
     const fields = try shell.scratchAllocator().alloc([]const u8, simple.words.len);
     for (simple.words, 0..) |word, index| {
         if (wordExpandsLeadingTilde(shell, word)) return null;
-        fields[index] = staticLiteralWord(word) orelse return null;
+        const literal = staticLiteralWord(word) orelse return null;
+        if (pattern_mod.containsMeta(try staticWordPathnamePattern(shell, word))) return null;
+        fields[index] = literal;
     }
     if (lookupBuiltin(shell, fields[0]) != null or shell.state.getFunction(fields[0]) != null) return null;
-    return makeExternalSpawnRequest(shell, fields, &.{}, fd_actions) catch |err| switch (err) {
-        error.OutOfMemory => return err,
-        else => return null,
-    };
+    return try makeExternalSpawnRequest(shell, fields, &.{}, fd_actions);
 }
 
 fn lookupBuiltin(shell: anytype, name: []const u8) ?builtin.Definition {
@@ -1178,7 +1183,8 @@ fn expandForWordFields(shell: anytype, words: []const ast.Word) ![]const []const
             try appendUnquotedStarFields(shell, &fields, word) or
             try appendUnquotedArrayIndexFields(shell, &fields, word) or
             try appendEmbeddedUnquotedPositionalFields(shell, &fields, word) or
-            try appendSpecialQuotedFields(shell, &fields, word))
+            try appendSpecialQuotedFields(shell, &fields, word) or
+            try appendUnquotedParameterOperatorWordFields(shell, &fields, word, null))
         {
             continue;
         } else if (wordIsFullyQuoted(word)) {
@@ -1873,9 +1879,9 @@ fn evalSimpleScoped(shell: anytype, command: ast.SimpleCommand, process: Command
         if (definition.id == .wait) return evalWaitBuiltin(shell, fields);
         return (try builtin.tryEval(shell, definition, fields)) orelse unreachable;
     }
-    // Only the top-level simple command of an already-forked pipeline stage
-    // can replace its process. Keep a shell around when it must reap helpers.
-    const replace_process = process == .pipeline_child and redirections.here_doc_writers.len == 0;
+    // Pipeline stages and simple asynchronous commands already own a child
+    // process. Keep a shell around only when it must reap helpers.
+    const replace_process = process == .replaceable_child and redirections.here_doc_writers.len == 0;
     return evalExternalWithSearchPath(shell, fields, command.assignments, null, replace_process);
 }
 
@@ -2390,7 +2396,7 @@ fn evalCommandBuiltin(
     const saved = try saveAssignmentVariables(shell, assignments);
     var restored_assignments = false;
     errdefer if (!restored_assignments) restoreVariables(shell, saved);
-    try applyAssignments(shell, assignments);
+    try applyExportedAssignments(shell, assignments);
 
     const search_path: ?[]const u8 = if (use_default_path) defaultUtilityPath() else null;
     if (lookup_mode != .none) {
@@ -2500,7 +2506,7 @@ fn evalCommandBuiltin(
             },
         }
     }
-    const evaluated = try evalExternalWithSearchPath(shell, args[index..], assignments, search_path, false);
+    const evaluated = try evalExternalWithSearchPath(shell, args[index..], &.{}, search_path, false);
     restoreVariables(shell, saved);
     restored_assignments = true;
     return evaluated;
@@ -2548,17 +2554,79 @@ fn testOperands(args: []const []const u8) TestEvalError![]const []const u8 {
 }
 
 fn evalTestOperands(shell: anytype, args: []const []const u8) EvalError!bool {
-    return switch (args.len) {
-        0 => false,
-        1 => args[0].len != 0,
-        2 => evalTwoArgumentTest(shell, args[0], args[1]),
-        3 => evalThreeArgumentTest(shell, args[0], args[1], args[2]),
+    // Preserve the POSIX argument-count rules before the legacy expression
+    // grammar used by Debian service scripts and Git's tests.
+    switch (args.len) {
+        0 => return false,
+        1 => return args[0].len != 0,
+        2 => return evalTwoArgumentTest(shell, args[0], args[1]),
+        3 => {
+            if (isTestBinaryOperator(args[1]) or std.mem.eql(u8, args[0], "!")) {
+                return evalThreeArgumentTest(shell, args[0], args[1], args[2]);
+            }
+            if (std.mem.eql(u8, args[0], "(") and std.mem.eql(u8, args[2], ")")) return args[1].len != 0;
+        },
         4 => if (std.mem.eql(u8, args[0], "!"))
-            !try evalThreeArgumentTest(shell, args[1], args[2], args[3])
-        else
-            error.Syntax,
-        else => error.Syntax,
-    };
+            return !try evalTestOperands(shell, args[1..]),
+        else => {},
+    }
+    var index: usize = 0;
+    const matches = try evalTestOr(shell, args, &index);
+    if (index != args.len) return error.Syntax;
+    return matches;
+}
+
+fn evalTestOr(shell: anytype, args: []const []const u8, index: *usize) EvalError!bool {
+    var matches = try evalTestAnd(shell, args, index);
+    while (index.* < args.len and std.mem.eql(u8, args[index.*], "-o")) {
+        index.* += 1;
+        const rhs = try evalTestAnd(shell, args, index);
+        matches = matches or rhs;
+    }
+    return matches;
+}
+
+fn evalTestAnd(shell: anytype, args: []const []const u8, index: *usize) EvalError!bool {
+    var matches = try evalTestPrimary(shell, args, index);
+    while (index.* < args.len and std.mem.eql(u8, args[index.*], "-a")) {
+        index.* += 1;
+        const rhs = try evalTestPrimary(shell, args, index);
+        matches = matches and rhs;
+    }
+    return matches;
+}
+
+fn evalTestPrimary(shell: anytype, args: []const []const u8, index: *usize) EvalError!bool {
+    if (index.* == args.len) return error.Syntax;
+    const start = index.*;
+    const operand = args[start];
+    index.* += 1;
+    if (std.mem.eql(u8, operand, "!")) return !try evalTestPrimary(shell, args, index);
+    if (start + 2 < args.len and isTestBinaryOperator(args[start + 1])) {
+        index.* += 2;
+        return evalThreeArgumentTest(shell, operand, args[start + 1], args[start + 2]);
+    }
+    if (std.mem.eql(u8, operand, "(")) {
+        const matches = try evalTestOr(shell, args, index);
+        if (index.* == args.len or !std.mem.eql(u8, args[index.*], ")")) return error.Syntax;
+        index.* += 1;
+        return matches;
+    }
+    if (operand.len == 2 and operand[0] == '-' and
+        std.mem.indexOfScalar(u8, "bcdefghLnprSstuwxz", operand[1]) != null)
+    {
+        if (index.* == args.len) return error.Syntax;
+        index.* += 1;
+        return evalTwoArgumentTest(shell, operand, args[start + 1]);
+    }
+    return operand.len != 0;
+}
+
+fn isTestBinaryOperator(operator: []const u8) bool {
+    return std.mem.eql(u8, operator, "=") or std.mem.eql(u8, operator, "!=") or
+        std.mem.eql(u8, operator, "<") or std.mem.eql(u8, operator, ">") or
+        std.mem.eql(u8, operator, "-ef") or std.mem.eql(u8, operator, "-nt") or
+        std.mem.eql(u8, operator, "-ot") or isIntegerComparisonOperator(operator);
 }
 
 fn evalTwoArgumentTest(shell: anytype, operator: []const u8, operand: []const u8) EvalError!bool {
@@ -2858,7 +2926,8 @@ fn evalWaitBuiltin(shell: anytype, args: []const []const u8) !result.EvalResult 
     if (args.len == 1) {
         var status: result.ExitStatus = 0;
         for (shell.state.background_pids.items) |pid| {
-            const waited = shell.host.waitInterruptible(pid) catch continue;
+            const waited = shell.state.takeBackgroundStatus(pid, shell.host.currentProcessId()) orelse
+                (shell.host.waitInterruptible(pid) catch continue);
             status = waited.shellStatus();
             if (status > 128) break;
         }
@@ -2877,15 +2946,16 @@ fn evalWaitBuiltin(shell: anytype, args: []const []const u8) !result.EvalResult 
             status = 1;
             continue;
         };
+        const cached_status = shell.state.takeBackgroundStatus(pid, shell.host.currentProcessId());
         if (!shell.state.removeBackgroundPid(pid)) {
             try shell.host.writeAll(.stderr, "wait: unknown pid\n");
             status = 127;
             continue;
         }
-        const waited = shell.host.waitInterruptible(pid) catch {
+        const waited = cached_status orelse (shell.host.waitInterruptible(pid) catch {
             status = 127;
             continue;
-        };
+        });
         status = waited.shellStatus();
     }
     return .{ .status = status };
@@ -2914,6 +2984,7 @@ fn waitBackgroundJob(shell: anytype, job: state_mod.BackgroundJob) !result.ExitS
 }
 
 fn waitBackgroundJobPid(shell: anytype, pid: host_mod.Pid) !host_mod.WaitStatus {
+    if (shell.state.takeBackgroundStatus(pid, shell.host.currentProcessId())) |status| return status;
     const HostType = switch (@typeInfo(@TypeOf(shell.host))) {
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
@@ -5214,7 +5285,8 @@ fn appendExpandedWordFields(
         try appendUnquotedStarFields(shell, fields, word) or
         try appendUnquotedArrayIndexFields(shell, fields, word) or
         try appendEmbeddedUnquotedPositionalFields(shell, fields, word) or
-        try appendSpecialQuotedFields(shell, fields, word))
+        try appendSpecialQuotedFields(shell, fields, word) or
+        try appendUnquotedParameterOperatorWordFields(shell, fields, word, substitution_status))
     {
         return;
     } else if (wordIsFullyQuoted(word)) {
@@ -5248,6 +5320,115 @@ fn appendExpandedWordFields(
         }
     }
 }
+
+fn appendUnquotedParameterOperatorWordFields(
+    shell: anytype,
+    fields: *std.ArrayList([]const u8),
+    word: ast.Word,
+    substitution_status: ?*?result.ExitStatus,
+) EvalError!bool {
+    if (word.data != .parts) return false;
+    for (word.data.parts) |part| {
+        if (part == .parameter and
+            (part.parameter.op == .default_value or part.parameter.op == .alternate_value)) break;
+    } else return false;
+
+    var expanded: ParameterWordFields = .{};
+    try expanded.appendWord(shell, word, false, false, substitution_status);
+    try appendSplitPatternFields(shell, fields, .{
+        .text = expanded.text.items,
+        .special = expanded.glob.items,
+    }, expanded.split.items, expanded.empty_fields.items);
+    return true;
+}
+
+// Selected parameter words are expansions: their unquoted literal bytes can
+// split, unlike literal bytes in the containing word. Keep this provenance
+// separate from pathname quoting, including zero-length quoted fields.
+const ParameterWordFields = struct {
+    text: std.ArrayList(u8) = .empty,
+    glob: std.ArrayList(bool) = .empty,
+    split: std.ArrayList(bool) = .empty,
+    empty_fields: std.ArrayList(usize) = .empty,
+
+    fn append(self: *ParameterWordFields, shell: anytype, bytes: []const u8, quoted: bool, split: bool) !void {
+        const allocator = shell.scratchAllocator();
+        if (quoted and bytes.len == 0) try self.empty_fields.append(allocator, self.text.items.len);
+        try self.text.appendSlice(allocator, bytes);
+        try self.glob.appendNTimes(allocator, !quoted, bytes.len);
+        try self.split.appendNTimes(allocator, !quoted and split, bytes.len);
+    }
+
+    fn appendWord(
+        self: *ParameterWordFields,
+        shell: anytype,
+        word: ast.Word,
+        quoted: bool,
+        split_literals: bool,
+        status: ?*?result.ExitStatus,
+    ) EvalError!void {
+        switch (word.data) {
+            .literal => |bytes| try self.appendLiteral(shell, bytes, true, quoted, split_literals),
+            .parts => |parts| {
+                for (parts, 0..) |*part, index| {
+                    if (index == 0 and part.* == .literal) {
+                        try self.appendLiteral(shell, part.literal, parts.len == 1, quoted, split_literals);
+                    } else try self.appendPart(shell, part, quoted, split_literals, status);
+                }
+            },
+            .declaration_array_assignment => unreachable,
+        }
+    }
+
+    fn appendLiteral(
+        self: *ParameterWordFields,
+        shell: anytype,
+        bytes: []const u8,
+        complete: bool,
+        quoted: bool,
+        split: bool,
+    ) EvalError!void {
+        if (!quoted) {
+            if (tildeExpansion(shell, bytes, false, complete)) |expansion| {
+                try self.append(shell, expansion.value, true, false);
+                return self.append(shell, bytes[expansion.prefix_len..], false, split);
+            }
+        }
+        try self.append(shell, bytes, quoted, split);
+    }
+
+    fn appendPart(
+        self: *ParameterWordFields,
+        shell: anytype,
+        part: *const ast.WordPart,
+        quoted: bool,
+        split_literals: bool,
+        status: ?*?result.ExitStatus,
+    ) EvalError!void {
+        switch (part.*) {
+            .literal => |bytes| try self.append(shell, bytes, quoted, split_literals),
+            .escaped, .single_quoted => |bytes| try self.append(shell, bytes, true, false),
+            .double_quoted => |parts| {
+                const start = self.text.items.len;
+                for (parts) |*nested| try self.appendPart(shell, nested, true, false, status);
+                if (self.text.items.len == start) try self.append(shell, "", true, false);
+            },
+            .parameter => |parameter| {
+                if (parameter.op == .default_value or parameter.op == .alternate_value) {
+                    const value = try parameterCurrentValue(shell, parameter.parameter);
+                    const set = isParameterSet(parameter, value);
+                    const selected = if (parameter.op == .default_value) !set else set;
+                    if (selected) return self.appendWord(shell, parameter.word.?, quoted, true, status);
+                    return self.append(shell, if (parameter.op == .default_value) value.? else "", quoted, true);
+                }
+                try self.append(shell, try expandWordPart(shell, part, status), quoted, true);
+            },
+            .command_substitution, .arithmetic, .process_substitution => {
+                try self.append(shell, try expandWordPart(shell, part, status), quoted, true);
+            },
+        }
+    }
+};
 
 const BraceAtom = union(enum) {
     byte: u8,
@@ -5764,6 +5945,28 @@ fn expandQuotedDynamicWordPathnamePattern(
         ),
         .declaration_array_assignment => unreachable,
     }
+    return expandLeadingTildePattern(shell, word, .{
+        .text = try text.toOwnedSlice(allocator),
+        .special = try special.toOwnedSlice(allocator),
+    });
+}
+
+fn expandLeadingTildePattern(shell: anytype, word: ast.Word, pattern: PathnamePattern) !PathnamePattern {
+    const prefix = switch (word.data) {
+        .parts => |parts| if (parts.len != 0) switch (parts[0]) {
+            .literal => |literal| LeadingLiteral{ .text = literal, .complete = parts.len == 1 },
+            else => return pattern,
+        } else return pattern,
+        else => return pattern,
+    };
+    const expansion = tildeExpansion(shell, prefix.text, false, prefix.complete) orelse return pattern;
+    const allocator = shell.scratchAllocator();
+    const suffix = pattern.slice(expansion.prefix_len, pattern.text.len);
+    var text: std.ArrayList(u8) = .empty;
+    var special: std.ArrayList(bool) = .empty;
+    try appendPathnamePatternBytes(allocator, &text, &special, expansion.value, false);
+    try text.appendSlice(allocator, suffix.text);
+    if (suffix.special) |mask| try special.appendSlice(allocator, mask);
     return .{ .text = try text.toOwnedSlice(allocator), .special = try special.toOwnedSlice(allocator) };
 }
 
@@ -5866,6 +6069,81 @@ fn appendSplitFields(
     }
     // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     if (field_start < text.len) try appendMaybePathnameExpandedField(shell, fields, text[field_start..], pathname_expansion);
+}
+
+fn appendSplitPatternFields(
+    shell: anytype,
+    fields: *std.ArrayList([]const u8),
+    pattern: PathnamePattern,
+    split: []const bool,
+    empty_fields: []const usize,
+) !void {
+    std.debug.assert(pattern.text.len == split.len);
+    const splitting: PathnamePattern = .{ .text = pattern.text, .special = split };
+    const ifs = parameterValue(shell, "IFS") orelse " \t\n";
+    if (ifs.len == 0) {
+        if (pattern.text.len != 0 or empty_fields.len != 0) try appendPathnameExpandedPattern(shell, fields, pattern);
+        return;
+    }
+
+    var index: usize = 0;
+    while (patternIfsDelimiter(ifs, splitting, index)) |delimiter| {
+        if (!delimiter.whitespace or hasEmptyField(empty_fields, index, index)) break;
+        index += delimiter.len;
+    }
+
+    var field_start = index;
+    while (index < pattern.text.len) {
+        if (patternIfsDelimiter(ifs, splitting, index)) |delimiter| {
+            if (delimiter.whitespace) {
+                if (field_start < index or hasEmptyField(empty_fields, field_start, index)) {
+                    try appendPathnameExpandedPattern(shell, fields, pattern.slice(field_start, index));
+                }
+                index += delimiter.len;
+                while (patternIfsDelimiter(ifs, splitting, index)) |next| {
+                    if (!next.whitespace or hasEmptyField(empty_fields, index, index)) break;
+                    index += next.len;
+                }
+                if (patternIfsDelimiter(ifs, splitting, index)) |next| {
+                    if (!next.whitespace) {
+                        index += next.len;
+                        while (patternIfsDelimiter(ifs, splitting, index)) |after| {
+                            if (!after.whitespace or hasEmptyField(empty_fields, index, index)) break;
+                            index += after.len;
+                        }
+                    }
+                }
+                field_start = index;
+                continue;
+            }
+
+            try appendPathnameExpandedPattern(shell, fields, pattern.slice(field_start, index));
+            index += delimiter.len;
+            while (patternIfsDelimiter(ifs, splitting, index)) |next| {
+                if (!next.whitespace or hasEmptyField(empty_fields, index, index)) break;
+                index += next.len;
+            }
+            field_start = index;
+            continue;
+        }
+        index += utf8SequenceLength(pattern.text[index..]);
+    }
+    if (field_start < pattern.text.len or hasEmptyField(empty_fields, field_start, pattern.text.len)) {
+        try appendPathnameExpandedPattern(shell, fields, pattern.slice(field_start, pattern.text.len));
+    }
+}
+
+fn hasEmptyField(positions: []const usize, start: usize, end: usize) bool {
+    for (positions) |position| if (position >= start and position <= end) return true;
+    return false;
+}
+
+fn patternIfsDelimiter(ifs: []const u8, pattern: PathnamePattern, index: usize) ?IfsDelimiter {
+    const delimiter = ifsDelimiter(ifs, pattern.text, index) orelse return null;
+    if (pattern.special) |special| {
+        for (special[index..][0..delimiter.len]) |active| if (!active) return null;
+    }
+    return delimiter;
 }
 
 fn appendMaybePathnameExpandedField(
@@ -6223,7 +6501,6 @@ fn expandAssignmentLiteralTildes(shell: anytype, literal: []const u8) ![]const u
 }
 
 fn expandLeadingTilde(shell: anytype, word: ast.Word, expanded: []const u8) ![]const u8 {
-    if (word.quoted) return expanded;
     const prefix = switch (word.data) {
         .literal => |literal| LeadingLiteral{ .text = literal, .complete = true },
         .parts => |parts| if (parts.len != 0) switch (parts[0]) {
@@ -6241,7 +6518,6 @@ fn expandLeadingTilde(shell: anytype, word: ast.Word, expanded: []const u8) ![]c
 }
 
 fn wordExpandsLeadingTilde(shell: anytype, word: ast.Word) bool {
-    if (word.quoted) return false;
     const prefix = switch (word.data) {
         .literal => |literal| LeadingLiteral{ .text = literal, .complete = true },
         .parts => |parts| if (parts.len != 0) switch (parts[0]) {
@@ -6271,6 +6547,7 @@ fn tildeExpansion(
 ) ?TildeExpansion {
     if (literal.len == 0 or literal[0] != '~') return null;
     if (literal.len == 1 or literal[1] == '/' or (colon_terminates and literal[1] == ':')) {
+        if (literal.len == 1 and !prefix_complete) return null;
         return .{ .prefix_len = 1, .value = homeValue(shell) orelse return null };
     }
     if (shell.state.options.mode == .posix) return null;
@@ -6340,7 +6617,7 @@ fn expandWordPart(
     };
 }
 
-fn expandArithmetic(shell: anytype, text: []const u8) ![]const u8 {
+fn expandArithmetic(shell: anytype, text: []const u8) EvalError![]const u8 {
     const value = try parseArithmeticValue(shell, text);
     return std.fmt.allocPrint(shell.scratchAllocator(), "{}", .{value});
 }
@@ -6351,7 +6628,7 @@ fn evalArithmeticValue(shell: anytype, text: []const u8) !i64 {
     return parseArithmeticValue(shell, text);
 }
 
-fn parseArithmeticValue(shell: anytype, text: []const u8) !i64 {
+fn parseArithmeticValue(shell: anytype, text: []const u8) EvalError!i64 {
     const expanded = try expandArithmeticText(shell, text);
     var parser_state: ArithmeticParser(@TypeOf(shell)) = .{ .shell = shell, .text = expanded };
     return parser_state.parse();
@@ -6425,16 +6702,24 @@ fn expandProcessSubstitution(shell: anytype, substitution: ast.ProcessSubstituti
     return std.fmt.allocPrint(shell.scratchAllocator(), "/dev/fd/{}", .{parent_fd.raw()});
 }
 
-fn expandArithmeticText(shell: anytype, text: []const u8) ![]const u8 {
+fn expandArithmeticText(shell: anytype, text: []const u8) EvalError![]const u8 {
     // Expansion only rewrites `$` forms and strips quotes; text without them
     // expands to itself, so skip the byte-by-byte copy.
-    if (std.mem.indexOfAny(u8, text, "$'\"") == null) return text;
+    if (std.mem.indexOfAny(u8, text, "$'\"\\") == null) return text;
 
     var output: std.ArrayList(u8) = .empty;
     const allocator = shell.scratchAllocator();
     var index: usize = 0;
     while (index < text.len) {
         switch (text[index]) {
+            '\\' => {
+                if (index + 1 < text.len and text[index + 1] == '\n') {
+                    index += 2;
+                } else {
+                    try output.append(allocator, text[index]);
+                    index += 1;
+                }
+            },
             '\'', '"' => |quote| {
                 index += 1;
                 while (index < text.len and text[index] != quote) : (index += 1) {
@@ -6449,7 +6734,15 @@ fn expandArithmeticText(shell: anytype, text: []const u8) ![]const u8 {
                     index += 1;
                     continue;
                 }
-                if (text[index + 1] == '(' and (index + 2 >= text.len or text[index + 2] != '(')) {
+                if (text[index + 1] == '(' and index + 2 < text.len and text[index + 2] == '(') {
+                    const expansion_end = parse_scan.scanArithmeticExpansion(text, index, text.len) catch {
+                        return error.InvalidArithmetic;
+                    };
+                    try output.appendSlice(allocator, try expandArithmetic(shell, text[index + 3 .. expansion_end]));
+                    index = expansion_end + 2;
+                    continue;
+                }
+                if (text[index + 1] == '(') {
                     const substitution_end = try scanArithmeticCommandSubstitution(text, index + 1);
                     // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                     const substitution: ast.CommandSubstitution = .{ .source_text = text[index + 2 .. substitution_end] };
@@ -7172,10 +7465,7 @@ fn dynamicExternalCommandRequest(
     const fields = try expandWordFields(shell, simple.words, &expansion_status);
     if (expansion_status != null or fields.len == 0) return null;
     if (lookupBuiltin(shell, fields[0]) != null or shell.state.getFunction(fields[0]) != null) return null;
-    return makeExternalSpawnRequest(shell, fields, &.{}, fd_actions) catch |err| switch (err) {
-        error.OutOfMemory => return err,
-        else => return null,
-    };
+    return try makeExternalSpawnRequest(shell, fields, &.{}, fd_actions);
 }
 
 fn wordIsSafeForSpeculativeExpansion(word: ast.Word) bool {
@@ -8522,20 +8812,15 @@ fn makeExecEnvp(shell: anytype, assignments: []const ast.Assignment) ![:null]con
     for (assignments) |assignment| {
         assignment_entries[entry_count] = .{
             .name = assignment.name,
-            .value = try execEnvAssignmentValue(shell, assignment),
+            // Prefix assignments have already been expanded and committed
+            // to the command's temporary scope. Never evaluate their AST again.
+            .value = parameterValue(shell, assignment.name) orelse "",
         };
         entry_count += 1;
     }
     std.debug.assert(entry_count == assignment_entries.len);
 
     return makeEnvpFromEntries(shell, assignment_entries);
-}
-
-fn execEnvAssignmentValue(shell: anytype, assignment: ast.Assignment) ![]const u8 {
-    if (assignment.append) {
-        if (shell.state.getVariable(assignment.name)) |variable| return variable.value;
-    }
-    return expandAssignmentWordTracking(shell, assignment.value, null);
 }
 
 fn makeEnvpFromEntries(shell: anytype, assignment_entries: []const AssignmentEnvEntry) ![:null]const ?[*:0]const u8 {

@@ -221,7 +221,7 @@ pub fn scanCommandSubstitution(text: []const u8, open_index: usize, end: usize) 
     var index = open_index + 1;
     var depth: usize = 1;
     while (index < end) {
-        if (startsReservedWordAt(text, index, "case")) {
+        if (startsReservedWordAt(text, index, "case") and startsCommandAt(text, open_index + 1, index)) {
             index = try scanCaseCommandText(text, index, end);
             continue;
         }
@@ -302,19 +302,38 @@ fn scanCaseCommandText(text: []const u8, start: usize, end: usize) ScanError!usi
     return error.UnclosedCommandSubstitution;
 }
 
-fn startsReservedWordAt(text: []const u8, index: usize, word: []const u8) bool {
+pub fn startsReservedWordAt(text: []const u8, index: usize, word: []const u8) bool {
     if (index + word.len > text.len) return false;
     if (!std.mem.eql(u8, text[index..][0..word.len], word)) return false;
-    if (index != 0 and isNameContinue(text[index - 1])) return false;
-    if (index + word.len < text.len and isNameContinue(text[index + word.len])) return false;
+    if (index != 0 and !isTokenBoundary(text[index - 1])) return false;
+    if (index + word.len < text.len and !isTokenBoundary(text[index + word.len])) return false;
     return true;
 }
 
-fn isNameContinue(byte: u8) bool {
+fn isTokenBoundary(byte: u8) bool {
     return switch (byte) {
-        'A'...'Z', 'a'...'z', '_', '0'...'9' => true,
+        ' ', '\t', '\r', '\n', ';', '&', '|', '(', ')' => true,
         else => false,
     };
+}
+
+pub fn startsCommandAt(text: []const u8, start: usize, index: usize) bool {
+    var cursor = index;
+    while (cursor > start and (text[cursor - 1] == ' ' or text[cursor - 1] == '\t' or text[cursor - 1] == '\r')) {
+        cursor -= 1;
+    }
+    if (cursor == start) return true;
+    switch (text[cursor - 1]) {
+        '\n', ';', '&', '|', '(' => return true,
+        else => {},
+    }
+    const word_end = cursor;
+    while (cursor > start and !isTokenBoundary(text[cursor - 1])) cursor -= 1;
+    const previous = text[cursor..word_end];
+    for ([_][]const u8{ "if", "then", "elif", "else", "while", "until", "do", "!", "{" }) |word| {
+        if (std.mem.eql(u8, previous, word)) return startsCommandAt(text, start, cursor);
+    }
+    return false;
 }
 
 test "balanced scanners preserve exact closing offsets" {
@@ -346,6 +365,18 @@ test "balanced scanners handle case text and top-level delimiters" {
     try std.testing.expectEqual(@as(?usize, 13), topLevelParameterColon("$(printf ':'):$x"));
     try std.testing.expectEqual(@as(?usize, 5), topLevelParameterSlash("(a/b)/c/d", 0));
     try std.testing.expectEqual(@as(?usize, 8), topLevelArithmeticSemicolon("f('a;b'); x", 0));
+}
+
+test "command substitution recognizes case only in reserved-word position" {
+    const commands = [_][]const u8{
+        "$(printf -- --ignore-case MYTAG)tail",
+        "$(printf '%s' case)tail",
+        "$(printf '%s' x; case x in x) :;; esac)tail",
+        "$(\ncase x in x) :;; esac)tail",
+    };
+    for (commands) |command| {
+        try std.testing.expectEqual(command.len - "tail".len - 1, try scanCommandSubstitution(command, 1, command.len));
+    }
 }
 
 test "command substitution quotes preserve escapes and nested substitutions" {

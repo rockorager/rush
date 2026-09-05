@@ -69,7 +69,7 @@ pub fn parseBracedParameterExpansion(
 ) ParserError!?ast.ParameterExpansion {
     const src: source_mod.Source = .{ .id = 0, .kind = .command_string, .name = "${}", .text = raw_content };
     var parser_state: Parser = .{ .allocator = allocator, .source = src, .tokens = &.{}, .alias_state = null };
-    return parser_state.parseBracedParameter(raw_content, span);
+    return parser_state.parseBracedParameter(raw_content, span, .plain);
 }
 
 /// Returns an allocator-backed word whose textual parts may borrow `text`.
@@ -167,6 +167,7 @@ pub fn parseParameterExpansionText(
             const expansion = try parser_state.parseBracedParameter(
                 text[name_start + 1 .. expansion_end],
                 expansion_span,
+                .plain,
             ) orelse return error.InvalidParameterExpansion;
             try expansions.append(allocator, expansion);
             index = expansion_end + 1;
@@ -385,6 +386,7 @@ const Parser = struct {
     alias_state: ?state_mod.State,
     require_complete_here_docs: bool = false,
     index: usize = 0,
+    split_ampersand_redirection: bool = false,
     pending_here_docs: std.ArrayList(PendingHereDoc) = .empty,
 
     const PendingHereDoc = struct {
@@ -1003,6 +1005,12 @@ const Parser = struct {
     }
 
     fn parseRedirection(self: *Parser) !?ast.Redirection {
+        if (self.mode() == .posix and !self.split_ampersand_redirection and
+            (self.tokens[self.index].kind == .ampersand_greater or
+                self.tokens[self.index].kind == .ampersand_greater_greater))
+        {
+            return null;
+        }
         const fd_token = self.eat(.io_number);
         const operator_token = if (self.eatRedirectionOperator()) |tok| tok else {
             if (fd_token != null) return error.UnexpectedToken;
@@ -1165,6 +1173,7 @@ const Parser = struct {
     const QuoteContext = enum {
         plain,
         double,
+        parameter_double,
         here_doc,
     };
 
@@ -1193,7 +1202,7 @@ const Parser = struct {
                     literal_start = index;
                     continue;
                 },
-                '"' => if (context == .plain) {
+                '"' => if (context == .plain or context == .parameter_double) {
                     // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                     if (literal_start < index) try parts.append(self.allocator, .{ .literal = text[literal_start..index] });
                     const quote_start = index + 1;
@@ -1213,7 +1222,7 @@ const Parser = struct {
                 '\\' => {
                     const backslash_literal = switch (context) {
                         .plain => false,
-                        .double => index + 1 < end and !doubleQuoteEscapes(text[index + 1]),
+                        .double, .parameter_double => index + 1 < end and !doubleQuoteEscapes(text[index + 1]),
                         .here_doc => index + 1 < end and !hereDocEscapes(text[index + 1]),
                     };
                     if (backslash_literal) {
@@ -1314,7 +1323,11 @@ const Parser = struct {
                         };
                         const expansion_span = spanFromRelativeOffsets(span, text, index, expansion_end + 1);
                         // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
-                        if (try self.parseBracedParameter(text[name_start + 1 .. expansion_end], expansion_span)) |parameter| {
+                        if (try self.parseBracedParameter(
+                            text[name_start + 1 .. expansion_end],
+                            expansion_span,
+                            context,
+                        )) |parameter| {
                             // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                             if (literal_start < index) try parts.append(self.allocator, .{ .literal = text[literal_start..index] });
                             try parts.append(self.allocator, .{ .parameter = parameter });
@@ -1421,6 +1434,7 @@ const Parser = struct {
         self: *Parser,
         raw_content: []const u8,
         span: source_mod.Span,
+        context: QuoteContext,
     ) ParserError!?ast.ParameterExpansion {
         const content = try self.removeBackslashNewlines(raw_content);
         if (parseBracedSimpleParameter(content)) |parameter| return .{ .parameter = parameter, .span = span };
@@ -1471,11 +1485,19 @@ const Parser = struct {
         if (colon or isParameterOperator(rest[0])) {
             const operator_byte = if (colon) rest[1] else rest[0];
             const word_text = if (colon) rest[2..] else rest[1..];
+            const word = if (context == .double or context == .parameter_double) word: {
+                // Within a quoted ${...}, single quotes are literal but
+                // nested double quotes still delimit quoted word parts.
+                var parts: std.ArrayList(ast.WordPart) = .empty;
+                errdefer parts.deinit(self.allocator);
+                try self.appendWordParts(&parts, word_text, 0, word_text.len, .parameter_double, .{});
+                break :word ast.Word{ .data = .{ .parts = try parts.toOwnedSlice(self.allocator) }, .quoted = true };
+            } else try self.parseWordText(word_text, .{});
             return .{
                 .parameter = prefix.parameter,
                 .colon = colon,
                 .op = parameterOperator(operator_byte),
-                .word = try self.parseWordText(word_text, .{}),
+                .word = word,
                 .span = span,
             };
         }
@@ -1780,9 +1802,32 @@ const Parser = struct {
     }
 
     fn eat(self: *Parser, kind: token.Kind) ?token.Token {
+        if (self.mode() == .posix and !self.split_ampersand_redirection and kind == .ampersand and
+            (self.tokens[self.index].kind == .ampersand_greater or
+                self.tokens[self.index].kind == .ampersand_greater_greater))
+        {
+            self.split_ampersand_redirection = true;
+            const tok = self.tokens[self.index];
+            return .{ .kind = .ampersand, .span = spanTo(tok.span, tok.span.start + 1) };
+        }
         if (!self.at(kind)) return null;
-        defer self.index += 1;
-        return self.tokens[self.index];
+        const tok = self.tokens[self.index];
+        if (self.split_ampersand_redirection) {
+            self.split_ampersand_redirection = false;
+            self.index += 1;
+            return .{
+                .kind = kind,
+                .span = .{
+                    .source_id = tok.span.source_id,
+                    .start = tok.span.start + 1,
+                    .end = tok.span.end,
+                    .start_line = tok.span.start_line,
+                    .start_column = tok.span.start_column + 1,
+                },
+            };
+        }
+        self.index += 1;
+        return tok;
     }
 
     fn eatSimpleCommandWord(self: *Parser, after_command_name: bool) ?token.Token {
@@ -1833,6 +1878,13 @@ const Parser = struct {
     }
 
     fn eatRedirectionOperator(self: *Parser) ?token.Token {
+        if (self.split_ampersand_redirection) {
+            const kind: token.Kind = if (self.tokens[self.index].kind == .ampersand_greater_greater)
+                .greater_greater
+            else
+                .greater;
+            return self.eat(kind);
+        }
         return switch (self.tokens[self.index].kind) {
             .less,
             .less_less,
@@ -1900,6 +1952,13 @@ const Parser = struct {
 
     fn at(self: Parser, kind: token.Kind) bool {
         std.debug.assert(self.index < self.tokens.len);
+        if (self.split_ampersand_redirection) {
+            const split_kind: token.Kind = if (self.tokens[self.index].kind == .ampersand_greater_greater)
+                .greater_greater
+            else
+                .greater;
+            return kind == split_kind;
+        }
         return self.tokens[self.index].kind == kind;
     }
 

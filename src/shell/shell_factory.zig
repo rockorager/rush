@@ -20,6 +20,7 @@ pub const InitOptions = struct {
     arg_zero: []const u8 = "rush",
     positionals: []const []const u8 = &.{},
     initial_pwd: ?[]const u8 = null,
+    initial_pwd_unavailable: bool = false,
 };
 
 pub fn Shell(comptime Host: type) type {
@@ -56,9 +57,12 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
             };
             shell.state.putVariable(.{ .name = "PS4", .value = "+ " }) catch unreachable;
             shell.state.putVariable(.{ .name = "IFS", .value = " \t\n" }) catch unreachable;
+            std.debug.assert(options.initial_pwd == null or !options.initial_pwd_unavailable);
             if (options.initial_pwd) |pwd| {
                 std.debug.assert(pwd.len != 0 and pwd[0] == '/');
                 shell.state.putVariable(.{ .name = "PWD", .value = pwd, .exported = true }) catch unreachable;
+            } else if (options.initial_pwd_unavailable) {
+                shell.state.putVariableAttributes(.{ .name = "PWD" }) catch unreachable;
             }
             if (comptime @hasDecl(Host, "wallTimeNs")) shell.state.resetStartTime(shell.host.wallTimeNs());
             shell.state.arg_zero = options.arg_zero;

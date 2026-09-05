@@ -3,6 +3,37 @@
     .mode = .posix,
     .cases = .{
         .{
+            .name = "system shell redirected asynchronous external keeps the job pid",
+            .script =
+            \\ln -s "$(command -v "$0")" sh
+            \\mkfifo ready
+            \\PROBE=value ./sh -c 'echo "$$" >ready; echo "$PROBE"; exec sleep 30' >output & pid=$!
+            \\read actual <ready
+            \\test "$actual" = "$pid"; printf 'same-pid:%s\n' "$?"
+            \\kill "$actual"
+            \\wait "$pid" 2>/dev/null
+            \\printf 'waited\n'
+            ,
+            .stdout = "same-pid:0\nwaited\n",
+        },
+        .{
+            // Observe termination rather than assuming a fixed sleep is enough.
+            // ps stat is supplied by the system-shell test environment.
+            .name = "system shell kill of terminated child preserves its wait status",
+            .script =
+            \\ln -s "$(command -v "$0")" sh
+            \\./sh -c 'exit 7' & pid=$!
+            \\while state=$(ps -o stat= -p "$pid"); do
+            \\    case $state in *Z*) break;; esac
+            \\done
+            \\kill "$pid" 2>/dev/null; printf 'kill:%s\n' "$?"
+            \\kill -0 "$pid" 2>/dev/null; printf 'exists:%s\n' "$?"
+            \\(wait "$pid" 2>/dev/null; printf 'subshell:%s\n' "$?")
+            \\wait "$pid"; printf 'wait:%s\n' "$?"
+            ,
+            .stdout = "kill:1\nexists:1\nsubshell:127\nwait:7\n",
+        },
+        .{
             .name = "AND list executes next command after zero status",
             .script =
             \\true && printf '%s\n' ok

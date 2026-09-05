@@ -3,22 +3,47 @@
     .mode = .posix,
     .cases = .{
         .{
-            .name = "ampersand output redirection is rejected in POSIX mode",
+            .name = "ampersand before output redirection remains a command separator in POSIX mode",
             .script =
-            \\printf 'bad\n' &>out
+            \\false && printf 'bad\n' &>out
+            \\printf 'survived\n'
             ,
-            .stdout = "",
-            .stderr_match = .nonempty,
-            .status = 2,
+            .stdout = "survived\n",
+            .stderr = "",
+            .status = 0,
         },
         .{
-            .name = "ampersand append redirection is rejected in POSIX mode",
+            .name = "ampersand before append redirection remains a command separator in POSIX mode",
             .script =
-            \\printf 'bad\n' &>>out
+            \\false && printf 'bad\n' &>>out
+            \\printf 'survived\n'
             ,
-            .stdout = "",
-            .stderr_match = .nonempty,
-            .status = 2,
+            .stdout = "survived\n",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "case suffix in command substitution is ordinary argument text",
+            .script =
+            \\eval 'test $(printf -- --ignore-case MYTAG) = --ignore-case'
+            \\echo status=$?
+            ,
+            .stdout = "status=0\n",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "literal case argument does not start a case command in command substitution",
+            .script =
+            \\printf '<%s>\n' "$(printf '%s' case)"
+            \\printf '<%s>\n' "$(printf '%s ' then case)"
+            \\printf '<%s>\n' "$(if true; then case x in x) printf yes;; esac; fi)"
+            \\printf '<%s>\n' "$(for x in x; do case x in x) printf loop;; esac; done)"
+            \\printf '<%s>\n' "$({ case x in x) printf group;; esac; })"
+            ,
+            .stdout = "<case>\n<then case >\n<yes>\n<loop>\n<group>\n",
+            .stderr = "",
+            .status = 0,
         },
         .{
             .name = "output redirection creates and truncates the target file",
@@ -1147,6 +1172,13 @@
             .name = "here document dash line continuation preserves continued tabs",
             .script = "v=$(cat <<-END\n\tabc\n\tdef \x5c\n\tghi\n\tjkl\x5c\n\tEND\n\tEND\n)\nprintf '%s\\n' \"$v\"\n",
             .stdout = "abc\ndef \tghi\njkl\tEND\n",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "here document dash strips tabs after an even backslash run",
+            .script = "cat <<-EOF\n\ta\\\\\n\tSHORTLOG\n\tEOF\n",
+            .stdout = "a\\\nSHORTLOG\n",
             .stderr = "",
             .status = 0,
         },

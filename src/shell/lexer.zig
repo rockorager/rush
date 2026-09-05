@@ -605,7 +605,13 @@ const Lexer = struct {
                 try stripped.appendSlice(self.allocator, candidate);
                 if (newline_index != null) try stripped.append(self.allocator, '\n');
             }
-            continued = !pending.quoted and candidate.len != 0 and candidate[candidate.len - 1] == '\\';
+            var trailing_backslashes: usize = 0;
+            while (trailing_backslashes < candidate.len and
+                candidate[candidate.len - trailing_backslashes - 1] == '\\')
+            {
+                trailing_backslashes += 1;
+            }
+            continued = !pending.quoted and trailing_backslashes % 2 == 1;
             body_end = next_offset;
             if (next_offset == offset) break;
             offset = next_offset;
@@ -1090,9 +1096,12 @@ const Lexer = struct {
     }
 
     fn skipCommandSubstitution(self: *Lexer) std.mem.Allocator.Error!void {
+        const start = self.position.byte_offset;
         var depth: usize = 1;
         while (!self.atEnd() and depth != 0) {
-            if (self.startsReservedWord("case")) {
+            if (parse_scan.startsReservedWordAt(self.source.text, self.position.byte_offset, "case") and
+                parse_scan.startsCommandAt(self.source.text, start, self.position.byte_offset))
+            {
                 try self.skipCaseCommandText();
                 continue;
             }
@@ -1161,7 +1170,7 @@ const Lexer = struct {
     fn skipCaseCommandText(self: *Lexer) std.mem.Allocator.Error!void {
         self.advanceBytes("case".len);
         while (!self.atEnd()) {
-            if (self.startsReservedWord("esac")) {
+            if (parse_scan.startsReservedWordAt(self.source.text, self.position.byte_offset, "esac")) {
                 self.advanceBytes("esac".len);
                 return;
             }
@@ -1188,16 +1197,6 @@ const Lexer = struct {
             }
             self.advanceOne();
         }
-    }
-
-    fn startsReservedWord(self: Lexer, word: []const u8) bool {
-        const index = self.position.byte_offset;
-        const text = self.source.text;
-        if (index + word.len > text.len) return false;
-        if (!std.mem.eql(u8, text[index..][0..word.len], word)) return false;
-        if (index != 0 and isNameContinue(text[index - 1])) return false;
-        if (index + word.len < text.len and isNameContinue(text[index + word.len])) return false;
-        return true;
     }
 
     fn advanceBytes(self: *Lexer, count: usize) void {

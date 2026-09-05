@@ -583,6 +583,43 @@ pub fn currentDir(_: RealHost, allocator: std.mem.Allocator) CurrentDirError![]c
     };
 }
 
+/// Returns an owned startup PWD. A logical inherited path is retained only
+/// when it is absolute, normalized, and identifies the current directory.
+/// Null means that the current directory cannot be named at startup.
+pub fn startupPwd(
+    self: RealHost,
+    allocator: std.mem.Allocator,
+    inherited_pwd: ?[]const u8,
+) std.mem.Allocator.Error!?[]const u8 {
+    if (inherited_pwd) |pwd| {
+        if (isNormalizedAbsolutePath(pwd)) {
+            const pwd_z = try allocator.dupeZ(u8, pwd);
+            defer allocator.free(pwd_z);
+            const inherited_status = self.fileTestStatusZ(pwd_z, true);
+            const current_status = self.fileTestStatusZ(".", true);
+            if (inherited_status != null and current_status != null and
+                inherited_status.?.sameFile(current_status.?))
+            {
+                return try allocator.dupe(u8, pwd);
+            }
+        }
+    }
+
+    return self.currentDir(allocator) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => null,
+    };
+}
+
+fn isNormalizedAbsolutePath(path: []const u8) bool {
+    if (!std.fs.path.isAbsolute(path)) return false;
+    var components = std.mem.splitScalar(u8, path, '/');
+    while (components.next()) |component| {
+        if (std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) return false;
+    }
+    return true;
+}
+
 pub fn setFileCreationMask(_: RealHost, mask: u32) u32 {
     return @intCast(std.c.umask(@intCast(mask)));
 }
