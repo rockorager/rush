@@ -641,6 +641,31 @@
             .status = 0,
         },
         .{
+            .name = "active function body survives removal redefinition and function table growth",
+            .script =
+            \\f() {
+            \\    unset -f f
+            \\    f() { printf 'new:%s\n' "$1"; }
+            \\    i=0
+            \\    while [ "$i" -lt 64 ]; do eval "g$i() { :; }"; i=$((i+1)); done
+            \\    if true; then printf 'old:%s\n' "$1"; fi
+            \\    f nested
+            \\    printf 'after:%s\n' "$1"
+            \\}
+            \\f outer
+            \\f final
+            ,
+            .stdout =
+            \\old:outer
+            \\new:nested
+            \\after:outer
+            \\new:final
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "function body expansions occur when the function is invoked",
             .script =
             \\x=definition

@@ -43,6 +43,11 @@ CASES = {
         b"hello\n",
         1,
     ),
+    "substitution-large-output": (
+        'i=0; while [ "$i" -lt 50 ]; do x=$(printf "%65536s\\n\\n" x); i=$((i+1)); done; printf "%s\\n" "$x"',
+        b" " * 65535 + b"x\n",
+        1,
+    ),
     "pipeline": (
         f'i=0; while [ "$i" -lt {PROCESSES} ]; do printf hello | /usr/bin/cat >/dev/null; i=$((i+1)); done; printf "%s\\n" "$i"',
         f"{PROCESSES}\n".encode(),

@@ -289,7 +289,7 @@ fn evalAndOr(shell: anytype, and_or: ast.AndOr) EvalError!result.EvalResult {
 fn evalPipeline(shell: anytype, pipeline: ast.Pipeline) EvalError!result.EvalResult {
     validateAst(pipeline);
     var evaluated = if (pipeline.stages.len == 1) evaluated: {
-        const command_result = try evalCommand(shell, pipeline.stages[0], .retained);
+        const command_result = try evalCommand(shell, &pipeline.stages[0], .retained);
         try shell.state.setLastPipelineStatuses(&.{command_result.status});
         break :evaluated command_result;
     } else try evalExternalPipeline(shell, pipeline);
@@ -510,7 +510,7 @@ fn forkPipelineStage(
                 if (request) |spawn_request| shell.host.exec(spawn_request) catch shell.host.exit(127);
             }
             if (suppress_child_xtrace) shell.state.options.xtrace = false;
-            const evaluated = evalCommand(shell, command, .pipeline_child) catch shell.host.exit(2);
+            const evaluated = evalCommand(shell, &command, .pipeline_child) catch shell.host.exit(2);
             shell.host.exit(evaluated.status);
         },
     };
@@ -651,7 +651,7 @@ fn pipelineFdActions(
     return actions.toOwnedSlice(allocator);
 }
 
-fn evalCommand(shell: anytype, command: ast.Command, process: CommandProcess) EvalError!result.EvalResult {
+fn evalCommand(shell: anytype, command: *const ast.Command, process: CommandProcess) EvalError!result.EvalResult {
     reapProcessSubstitutions(shell);
     const process_substitution_start = shell.state.process_substitutions.items.len;
     defer {
@@ -659,9 +659,9 @@ fn evalCommand(shell: anytype, command: ast.Command, process: CommandProcess) Ev
         reapProcessSubstitutions(shell);
     }
 
-    return switch (command) {
+    return switch (command.*) {
         .simple => |simple| evalSimple(shell, simple, process),
-        .compound => |compound| evalCompound(shell, compound),
+        .compound => |*compound| evalCompound(shell, compound),
         .function_definition => |definition| evalFunctionDefinition(shell, definition),
     };
 }
@@ -715,14 +715,14 @@ fn closeInheritedProcessSubstitutionFds(shell: anytype) void {
     shell.state.process_substitutions.clearRetainingCapacity();
 }
 
-fn evalCompound(shell: anytype, command: ast.CompoundInvocation) EvalError!result.EvalResult {
+fn evalCompound(shell: anytype, command: *const ast.CompoundInvocation) EvalError!result.EvalResult {
     validateAst(command);
     if (command.body == .subshell) return evalSubshell(shell, command.body.subshell, command.redirections);
 
     const scratch = try shell.beginScratchScope();
     defer scratch.end();
 
-    if (command.redirections.len == 0) return evalCompoundBody(shell, command.body);
+    if (command.redirections.len == 0) return evalCompoundBody(shell, &command.body);
 
     var redirections = applyRedirections(shell, command.redirections) catch |err| switch (err) {
         error.OutOfMemory => return err,
@@ -730,11 +730,11 @@ fn evalCompound(shell: anytype, command: ast.CompoundInvocation) EvalError!resul
     };
     defer redirections.restore(shell) catch {};
 
-    return evalCompoundBody(shell, command.body);
+    return evalCompoundBody(shell, &command.body);
 }
 
-fn evalCompoundBody(shell: anytype, command: ast.CompoundCommand) EvalError!result.EvalResult {
-    return switch (command) {
+fn evalCompoundBody(shell: anytype, command: *const ast.CompoundCommand) EvalError!result.EvalResult {
+    return switch (command.*) {
         .brace_group => |body| evalList(shell, body),
         .if_command => |if_command| evalIf(shell, if_command),
         .loop => |loop| evalLoop(shell, loop),
@@ -4596,7 +4596,7 @@ fn evalFunction(
         const saved_loop_depth = shell.state.loop_depth;
         shell.state.loop_depth = 0;
         defer shell.state.loop_depth = saved_loop_depth;
-        break :blk try evalCommand(shell, .{ .compound = .{
+        break :blk try evalCommand(shell, &.{ .compound = .{
             .body = function.definition.body,
             .redirections = function.definition.redirections,
         } }, .retained);
@@ -6306,7 +6306,7 @@ pub fn expandParametersScalar(shell: anytype, text: []const u8) ![]const u8 {
 
     var output: std.ArrayList(u8) = .empty;
     var cursor: usize = 0;
-    for (expansions) |expansion| {
+    for (expansions) |*expansion| {
         std.debug.assert(expansion.span.start >= cursor);
         std.debug.assert(expansion.span.end <= text.len);
         try output.appendSlice(allocator, text[cursor..expansion.span.start]);
@@ -6466,7 +6466,7 @@ fn expandWordPart(
         .literal, .escaped, .single_quoted => |bytes| bytes,
         .arithmetic => |text| expandArithmetic(shell, text),
         .double_quoted => |parts| expandWordParts(shell, parts, substitution_status),
-        .parameter => |parameter| expandParameter(shell, parameter),
+        .parameter => |*parameter| expandParameter(shell, parameter),
         .command_substitution => |substitution| expandCommandSubstitution(shell, substitution, substitution_status),
         .process_substitution => |substitution| expandProcessSubstitution(shell, substitution),
     };
@@ -6615,7 +6615,7 @@ fn expandArithmeticParameter(shell: anytype, text: []const u8, index: *usize) ![
     }
     if (arithmeticSpecialParameter(text[parameter_start])) |special| {
         index.* = parameter_start + 1;
-        return expandParameter(shell, .{ .parameter = .{ .special = special } });
+        return expandParameter(shell, &.{ .parameter = .{ .special = special } });
     }
     if (text[parameter_start] == '{') return expandArithmeticBracedParameter(shell, text, index);
     if (!isArithmeticNameStart(text[parameter_start])) {
@@ -6654,7 +6654,7 @@ fn expandArithmeticBracedParameter(shell: anytype, text: []const u8, index: *usi
     };
 
     index.* = content_end + 1;
-    return expandParameter(shell, parameter);
+    return expandParameter(shell, &parameter);
 }
 
 fn scanArithmeticBracedParameterEnd(text: []const u8, start: usize) ?usize {
@@ -7341,9 +7341,16 @@ fn readCommandSubstitutionOutput(shell: anytype, fd: host_mod.Fd) ![]const u8 {
     while (true) {
         const read_len = try shell.host.read(fd, &buffer);
         if (read_len == 0) break;
-        for (buffer[0..read_len]) |byte| {
-            if (byte != 0) try output.append(allocator, byte);
+        var kept = read_len;
+        if (std.mem.findScalar(u8, buffer[0..read_len], 0)) |first_null| {
+            kept = first_null;
+            for (buffer[first_null + 1 .. read_len]) |byte| {
+                if (byte == 0) continue;
+                buffer[kept] = byte;
+                kept += 1;
+            }
         }
+        try output.appendSlice(allocator, buffer[0..kept]);
     }
     while (output.items.len != 0 and output.items[output.items.len - 1] == '\n') {
         output.items.len -= 1;
@@ -7352,36 +7359,81 @@ fn readCommandSubstitutionOutput(shell: anytype, fd: host_mod.Fd) ![]const u8 {
     return output.toOwnedSlice(allocator);
 }
 
-fn expandParameter(shell: anytype, parameter: ast.ParameterExpansion) EvalError![]const u8 {
+test "command substitution capture filters nulls and trims newlines across reads" {
+    const TestHost = struct {
+        const Self = @This();
+
+        chunks: []const []const u8,
+        index: usize = 0,
+
+        fn read(self: *Self, _: host_mod.Fd, buffer: []u8) !usize {
+            if (self.index == self.chunks.len) return 0;
+            const chunk = self.chunks[self.index];
+            std.debug.assert(chunk.len != 0);
+            std.debug.assert(chunk.len <= buffer.len);
+            @memcpy(buffer[0..chunk.len], chunk);
+            self.index += 1;
+            return chunk.len;
+        }
+    };
+    const TestShell = struct {
+        const Self = @This();
+
+        host: TestHost,
+        scratch: std.heap.ArenaAllocator,
+
+        fn scratchAllocator(self: *Self) std.mem.Allocator {
+            return self.scratch.allocator();
+        }
+    };
+    const cases = [_]struct { chunks: []const []const u8, expected: []const u8 }{
+        .{ .chunks = &.{}, .expected = "" },
+        .{ .chunks = &.{ "\x00\x00", "\n\x00", "\n" }, .expected = "" },
+        .{ .chunks = &.{ "first\n", "second\n", "\n" }, .expected = "first\nsecond" },
+        .{ .chunks = &.{ "\x00a\x00\n", "\x00b\x00", "\n\x00\n" }, .expected = "a\nb" },
+        .{ .chunks = &.{ "a" ** 4096, "b" ** 4096, "\n\n" }, .expected = "a" ** 4096 ++ "b" ** 4096 },
+        .{ .chunks = &.{ "a" ** 4095 ++ "\x00", "\x00b\n", "\n" }, .expected = "a" ** 4095 ++ "b" },
+    };
+    for (cases) |case| {
+        var shell: TestShell = .{
+            .host = .{ .chunks = case.chunks },
+            .scratch = std.heap.ArenaAllocator.init(std.testing.allocator),
+        };
+        defer shell.scratch.deinit();
+        try std.testing.expectEqualStrings(case.expected, try readCommandSubstitutionOutput(&shell, .stdin));
+    }
+}
+
+fn expandParameter(shell: anytype, parameter: *const ast.ParameterExpansion) EvalError![]const u8 {
     validateAst(parameter);
-    if (parameter.length) return expandParameterLength(shell, parameter);
+    if (parameter.length) return expandParameterLength(shell, parameter.*);
     if (parameter.array_indices) return (try arrayIndicesParameterValue(shell, parameter.parameter.array)) orelse "";
 
     if (parameter.op) |operator| {
         return switch (operator) {
-            .default_value => expandParameterDefault(shell, parameter),
-            .assign_default => expandParameterAssignDefault(shell, parameter),
-            .alternate_value => expandParameterAlternate(shell, parameter),
-            .error_if_unset => expandParameterErrorIfUnset(shell, parameter),
+            .default_value => expandParameterDefault(shell, parameter.*),
+            .assign_default => expandParameterAssignDefault(shell, parameter.*),
+            .alternate_value => expandParameterAlternate(shell, parameter.*),
+            .error_if_unset => expandParameterErrorIfUnset(shell, parameter.*),
             .remove_small_prefix,
             .remove_large_prefix,
             .remove_small_suffix,
             .remove_large_suffix,
-            => expandParameterPatternRemoval(shell, parameter, operator),
-            .substring => expandParameterSubstring(shell, parameter),
+            => expandParameterPatternRemoval(shell, parameter.*, operator),
+            .substring => expandParameterSubstring(shell, parameter.*),
             .substitute_first,
             .substitute_all,
             .substitute_prefix,
             .substitute_suffix,
-            => expandParameterSubstitution(shell, parameter, operator),
-            .transform_prompt => expandParameterPrompt(shell, parameter),
+            => expandParameterSubstitution(shell, parameter.*, operator),
+            .transform_prompt => expandParameterPrompt(shell, parameter.*),
         };
     }
 
     return switch (parameter.parameter) {
         .variable => |name| parameterExpansionValue(shell, name, parameter.span) orelse {
             if (shell.state.options.nounset) {
-                try writeExpansionDiagnostic(shell, parameter, "parameter", "parameter not set");
+                try writeExpansionDiagnostic(shell, parameter.*, "parameter", "parameter not set");
                 return if (shell.state.options.mode == .bash) error.FatalExpansionError else error.ExpansionError;
             }
             return "";
@@ -7391,7 +7443,7 @@ fn expandParameter(shell: anytype, parameter: ast.ParameterExpansion) EvalError!
             else => return err,
         } orelse {
             if (shell.state.options.nounset) {
-                try writeExpansionDiagnostic(shell, parameter, "parameter", "parameter not set");
+                try writeExpansionDiagnostic(shell, parameter.*, "parameter", "parameter not set");
                 return if (shell.state.options.mode == .bash) error.FatalExpansionError else error.ExpansionError;
             }
             return "";
@@ -7411,7 +7463,7 @@ fn expandParameter(shell: anytype, parameter: ast.ParameterExpansion) EvalError!
         .positional => |position| positionalValue(shell, position) orelse {
             if (shell.state.options.nounset) {
                 // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
-                try writeExpansionDiagnostic(shell, parameter, parameterDiagnosticName(parameter.parameter), "parameter not set");
+                try writeExpansionDiagnostic(shell, parameter.*, parameterDiagnosticName(parameter.parameter), "parameter not set");
                 return if (shell.state.options.mode == .bash) error.FatalExpansionError else error.ExpansionError;
             }
             return "";
