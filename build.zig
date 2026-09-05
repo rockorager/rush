@@ -134,6 +134,14 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the application");
     run_step.dependOn(&run_cmd.step);
 
+    const benchmark_cmd = b.addSystemCommand(&.{ "python3", "tests/benchmark.py" });
+    benchmark_cmd.addArg("--rush");
+    benchmark_cmd.addArtifactArg(exe);
+    benchmark_cmd.addArgs(&.{ "--optimize", @tagName(optimize), "--lto", @tagName(lto) });
+    if (b.args) |args| benchmark_cmd.addArgs(args);
+    const benchmark_step = b.step("benchmark", "Benchmark Rush against an installed POSIX shell");
+    benchmark_step.dependOn(&benchmark_cmd.step);
+
     const test_step = b.step("test", "Run unit tests");
     const test_no_run = b.option(
         bool,

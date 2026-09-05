@@ -134,6 +134,16 @@ zig build test
 zig build conformance
 ```
 
+For local performance comparisons against installed `dash`, build and run the
+stdlib-only benchmark harness without installing Rush:
+
+```sh
+mise exec -- zig build benchmark -Doptimize=ReleaseFast -- --output benchmark.json
+```
+
+Use `--case NAME` (repeatable), `--rounds N`, or Linux `--cpu N` after `--` to
+narrow or stabilize a run; `--reference bash` explicitly selects Bash POSIX mode.
+
 GitHub Actions runs these checks for every pull request and push to `main`.
 
 ## Configuration

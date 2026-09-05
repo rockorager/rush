@@ -21,6 +21,7 @@ const token_mod = @import("token.zig");
 
 pub const EvalError = anyerror;
 const CommandLookupMode = enum { none, terse, verbose };
+const CommandProcess = enum { retained, pipeline_child };
 const command_suggestion_limit = 2;
 const command_suggestion_max_distance = 2;
 const cd_suggestion_max_distance = 2;
@@ -288,7 +289,7 @@ fn evalAndOr(shell: anytype, and_or: ast.AndOr) EvalError!result.EvalResult {
 fn evalPipeline(shell: anytype, pipeline: ast.Pipeline) EvalError!result.EvalResult {
     validateAst(pipeline);
     var evaluated = if (pipeline.stages.len == 1) evaluated: {
-        const command_result = try evalCommand(shell, pipeline.stages[0]);
+        const command_result = try evalCommand(shell, pipeline.stages[0], .retained);
         try shell.state.setLastPipelineStatuses(&.{command_result.status});
         break :evaluated command_result;
     } else try evalExternalPipeline(shell, pipeline);
@@ -509,7 +510,7 @@ fn forkPipelineStage(
                 if (request) |spawn_request| shell.host.exec(spawn_request) catch shell.host.exit(127);
             }
             if (suppress_child_xtrace) shell.state.options.xtrace = false;
-            const evaluated = evalCommand(shell, command) catch shell.host.exit(2);
+            const evaluated = evalCommand(shell, command, .pipeline_child) catch shell.host.exit(2);
             shell.host.exit(evaluated.status);
         },
     };
@@ -650,7 +651,7 @@ fn pipelineFdActions(
     return actions.toOwnedSlice(allocator);
 }
 
-fn evalCommand(shell: anytype, command: ast.Command) EvalError!result.EvalResult {
+fn evalCommand(shell: anytype, command: ast.Command, process: CommandProcess) EvalError!result.EvalResult {
     reapProcessSubstitutions(shell);
     const process_substitution_start = shell.state.process_substitutions.items.len;
     defer {
@@ -659,7 +660,7 @@ fn evalCommand(shell: anytype, command: ast.Command) EvalError!result.EvalResult
     }
 
     return switch (command) {
-        .simple => |simple| evalSimple(shell, simple),
+        .simple => |simple| evalSimple(shell, simple, process),
         .compound => |compound| evalCompound(shell, compound),
         .function_definition => |definition| evalFunctionDefinition(shell, definition),
     };
@@ -1720,12 +1721,12 @@ fn evalFunctionDefinition(shell: anytype, definition: ast.FunctionDefinition) Ev
     return .{};
 }
 
-fn evalSimple(shell: anytype, command: ast.SimpleCommand) EvalError!result.EvalResult {
+fn evalSimple(shell: anytype, command: ast.SimpleCommand, process: CommandProcess) EvalError!result.EvalResult {
     validateAst(command);
     const scratch = try shell.beginScratchScope();
     defer scratch.end();
 
-    return evalSimpleScoped(shell, command) catch |err| switch (err) {
+    return evalSimpleScoped(shell, command, process) catch |err| switch (err) {
         error.AssignmentError => .{ .status = 1, .flow = .{ .fatal = 1 } },
         error.ExpansionError => .{ .status = 1, .flow = .{ .fatal = 1 } },
         error.FatalExpansionError => {
@@ -1759,7 +1760,7 @@ fn writeReadonlyDiagnostic(shell: anytype, name: []const u8) !void {
     try shell.host.writeAll(.stderr, try std.fmt.allocPrint(shell.scratchAllocator(), "{s}: readonly variable\n", .{name}));
 }
 
-fn evalSimpleScoped(shell: anytype, command: ast.SimpleCommand) EvalError!result.EvalResult {
+fn evalSimpleScoped(shell: anytype, command: ast.SimpleCommand, process: CommandProcess) EvalError!result.EvalResult {
     if (command.words.len == 0 and command.assignments.len != 0) {
         const expanded_assignments = try expandAndApplyAssignments(shell, command.assignments);
         const has_redirections = command.redirections.len != 0;
@@ -1886,7 +1887,10 @@ fn evalSimpleScoped(shell: anytype, command: ast.SimpleCommand) EvalError!result
         if (definition.id == .wait) return evalWaitBuiltin(shell, fields);
         return (try builtin.tryEval(shell, definition, fields)) orelse unreachable;
     }
-    return evalExternal(shell, fields, command.assignments);
+    // Only the top-level simple command of an already-forked pipeline stage
+    // can replace its process. Keep a shell around when it must reap helpers.
+    const replace_process = process == .pipeline_child and redirections.here_doc_writers.len == 0;
+    return evalExternalWithSearchPath(shell, fields, command.assignments, null, replace_process);
 }
 
 const ExpandedAssignment = struct {
@@ -2517,7 +2521,7 @@ fn evalCommandBuiltin(
             },
         }
     }
-    const evaluated = try evalExternalWithSearchPath(shell, args[index..], assignments, search_path);
+    const evaluated = try evalExternalWithSearchPath(shell, args[index..], assignments, search_path, false);
     restoreVariables(shell, saved);
     restored_assignments = true;
     return evaluated;
@@ -4595,7 +4599,7 @@ fn evalFunction(
         break :blk try evalCommand(shell, .{ .compound = .{
             .body = function.definition.body,
             .redirections = function.definition.redirections,
-        } });
+        } }, .retained);
     };
     local_frame_popped = true;
     try shell.state.popLocalFrame();
@@ -8093,16 +8097,12 @@ fn formatExitStatus(shell: anytype, status: result.ExitStatus) ![]const u8 {
     return shell.scratchAllocator().dupe(u8, text);
 }
 
-// ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
-fn evalExternal(shell: anytype, fields: []const []const u8, assignments: []const ast.Assignment) EvalError!result.EvalResult {
-    return evalExternalWithSearchPath(shell, fields, assignments, null);
-}
-
 fn evalExternalWithSearchPath(
     shell: anytype,
     fields: []const []const u8,
     assignments: []const ast.Assignment,
     search_path: ?[]const u8,
+    replace_process: bool,
 ) EvalError!result.EvalResult {
     if (fields[0].len == 0) return .{ .status = 127 };
     const saved = try saveAssignmentVariables(shell, assignments);
@@ -8133,6 +8133,18 @@ fn evalExternalWithSearchPath(
         argv,
         command_path,
     );
+    // Assignment expansion can also launch process substitutions. Check after
+    // expansion so an exec never discards the shell responsible for their cleanup.
+    if (replace_process and shell.state.process_substitutions.items.len == 0 and
+        shell.state.reap_process_substitutions.items.len == 0)
+    {
+        shell.host.exec(request) catch {
+            restoreVariables(shell, saved);
+            restored_assignments = true;
+            return .{ .status = 127 };
+        };
+        unreachable;
+    }
     notifyForegroundCommand(shell, std.fs.path.basename(fields[0]));
     defer notifyForegroundCommand(shell, null);
     const HostType = switch (@typeInfo(@TypeOf(shell.host))) {

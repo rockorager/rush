@@ -704,6 +704,38 @@
             .status = 0,
         },
         .{
+            .name = "external pipeline stage expands arguments and redirections once in order",
+            .script =
+            \\n=0
+            \\printf unused | value=assigned sh -c 'printf "%s:%s\n" "$1" "$value"' sh "$((n+=1))" >"out$((n+=1))"
+            \\cat out2
+            \\printf 'parent:%s\n' "$n"
+            ,
+            .stdout =
+            \\1:assigned
+            \\parent:0
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "pipeline compound and function bodies retain commands after redirected external",
+            .script =
+            \\f() { cat >function-out; printf 'function-after\n'; }
+            \\printf function-data | f
+            \\printf compound-data | { cat >compound-out; printf 'compound-after\n'; }
+            \\cat function-out compound-out
+            ,
+            .stdout =
+            \\function-after
+            \\compound-after
+            \\function-datacompound-data
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "external pipeline stage can redirect stderr in a longer pipeline",
             .script =
             \\printf x | cat 2>/dev/null | wc -c | sed 's/^ *//'
