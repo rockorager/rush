@@ -82,12 +82,15 @@ pub const ScratchScope = struct {
 
 pub const ScratchArena = struct {
     parent_allocator: std.mem.Allocator,
-    chunks: std.ArrayList(Chunk) = .empty,
-    active_index: usize = 0,
+    chunks: ?*Chunk = null,
+    active: ?*Chunk = null,
 
     const default_chunk_size = 4096;
 
+    // Each allocation contains this header followed by its usable bytes.
+    // Linking headers avoids a separate allocation for chunk bookkeeping.
     const Chunk = struct {
+        next: ?*Chunk = null,
         bytes: []u8,
         used: usize = 0,
     };
@@ -97,8 +100,12 @@ pub const ScratchArena = struct {
     }
 
     pub fn deinit(self: *ScratchArena) void {
-        for (self.chunks.items) |chunk| self.parent_allocator.free(chunk.bytes);
-        self.chunks.deinit(self.parent_allocator);
+        var current = self.chunks;
+        while (current) |chunk| {
+            current = chunk.next;
+            const allocation: [*]align(@alignOf(Chunk)) u8 = @ptrCast(chunk);
+            self.parent_allocator.free(allocation[0 .. @sizeOf(Chunk) + chunk.bytes.len]);
+        }
         self.* = undefined;
     }
 
@@ -107,28 +114,36 @@ pub const ScratchArena = struct {
     }
 
     pub fn resetRetainingCapacity(self: *ScratchArena) void {
-        for (self.chunks.items) |*chunk| chunk.used = 0;
-        self.active_index = 0;
+        var current = self.chunks;
+        while (current) |chunk| : (current = chunk.next) chunk.used = 0;
+        self.active = self.chunks;
     }
 
     fn alloc(self: *ScratchArena, len: usize, alignment: std.mem.Alignment) ?[*]u8 {
         std.debug.assert(len != 0);
-        var index = self.active_index;
-        while (index < self.chunks.items.len) : (index += 1) {
-            if (allocFromChunk(&self.chunks.items[index], len, alignment)) |ptr| {
-                self.active_index = index;
+        var current = self.active;
+        var last: ?*Chunk = null;
+        while (current) |chunk| : (current = chunk.next) {
+            if (allocFromChunk(chunk, len, alignment)) |ptr| {
+                self.active = chunk;
                 return ptr;
             }
+            last = chunk;
         }
 
         const chunk_size = chunkSize(len, alignment) orelse return null;
-        const bytes = self.parent_allocator.alloc(u8, chunk_size) catch return null;
-        self.chunks.append(self.parent_allocator, .{ .bytes = bytes }) catch {
-            self.parent_allocator.free(bytes);
-            return null;
-        };
-        self.active_index = self.chunks.items.len - 1;
-        return allocFromChunk(&self.chunks.items[self.active_index], len, alignment).?;
+        const bytes = self.parent_allocator.alignedAlloc(u8, .of(Chunk), chunk_size) catch return null;
+        const chunk: *Chunk = @ptrCast(bytes.ptr);
+        chunk.* = .{ .bytes = bytes[@sizeOf(Chunk)..] };
+        if (last) |tail| {
+            std.debug.assert(tail.next == null);
+            tail.next = chunk;
+        } else {
+            std.debug.assert(self.chunks == null);
+            self.chunks = chunk;
+        }
+        self.active = chunk;
+        return allocFromChunk(chunk, len, alignment).?;
     }
 
     fn resize(self: *ScratchArena, memory: []u8, new_len: usize) bool {
@@ -156,7 +171,8 @@ pub const ScratchArena = struct {
 
     fn findChunk(self: *ScratchArena, memory: []u8) ?*Chunk {
         const ptr = @intFromPtr(memory.ptr);
-        for (self.chunks.items) |*chunk| {
+        var current = self.chunks;
+        while (current) |chunk| : (current = chunk.next) {
             const start = @intFromPtr(chunk.bytes.ptr);
             const end = start + chunk.bytes.len;
             if (ptr >= start and ptr + memory.len <= end) return chunk;
@@ -176,7 +192,8 @@ pub const ScratchArena = struct {
 
     fn chunkSize(len: usize, alignment: std.mem.Alignment) ?usize {
         const required = std.math.add(usize, len, alignment.toByteUnits()) catch return null;
-        return @max(default_chunk_size, required);
+        const with_header = std.math.add(usize, required, @sizeOf(Chunk)) catch return null;
+        return @max(default_chunk_size, with_header);
     }
 
     const vtable: std.mem.Allocator.VTable = .{
@@ -265,4 +282,61 @@ test "scratch arena can resize the most recent allocation in place" {
     bytes = bytes.ptr[0..16];
 
     try std.testing.expectEqual('x', bytes[0]);
+}
+
+test "scratch chunks allocate once and preserve retained storage on allocation failure" {
+    var parent = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    var scratch = ScratchArena.init(parent.allocator());
+    defer scratch.deinit();
+    const allocator = scratch.allocator();
+
+    try std.testing.expectError(error.OutOfMemory, allocator.alloc(u8, 32));
+    try std.testing.expect(scratch.chunks == null);
+    parent.fail_index = std.math.maxInt(usize);
+    const first = try allocator.alloc(u8, 32);
+    @memset(first, 'a');
+    try std.testing.expectEqual(@as(usize, 1), parent.allocations);
+    const first_chunk = scratch.chunks.?;
+
+    parent.fail_index = parent.alloc_index;
+    try std.testing.expectError(error.OutOfMemory, allocator.alloc(u8, 8192));
+    try std.testing.expect(first_chunk.next == null);
+    try std.testing.expectEqual(first_chunk, scratch.active.?);
+    try std.testing.expectEqualStrings("a" ** 32, first);
+
+    parent.fail_index = std.math.maxInt(usize);
+    const second = try allocator.alignedAlloc(u8, .fromByteUnits(4096), 8192);
+    @memset(second, 'b');
+    try std.testing.expectEqual(@as(usize, 2), parent.allocations);
+    try std.testing.expectEqual(@as(usize, 0), @intFromPtr(second.ptr) % 4096);
+    try std.testing.expectEqualStrings("a" ** 32, first);
+
+    parent.fail_index = parent.alloc_index;
+    scratch.resetRetainingCapacity();
+    const reused_first = try allocator.alloc(u8, 32);
+    const reused_second = try allocator.alignedAlloc(u8, .fromByteUnits(4096), 8192);
+    try std.testing.expectEqual(first.ptr, reused_first.ptr);
+    try std.testing.expectEqual(second.ptr, reused_second.ptr);
+    try std.testing.expectEqual(@as(usize, 2), parent.allocations);
+}
+
+test "scratch chunk headers survive frees and resizes across multiple chunks" {
+    var scratch = ScratchArena.init(std.testing.allocator);
+    defer scratch.deinit();
+    const allocator = scratch.allocator();
+
+    const first = try allocator.alloc(u8, 16);
+    @memset(first, 'a');
+    var second = try allocator.alloc(u8, 8192);
+    @memset(second, 'b');
+    try std.testing.expect(allocator.resize(first, 32));
+    const grown_first: []u8 = first.ptr[0..32];
+    try std.testing.expect(!allocator.resize(grown_first, 8192));
+    try std.testing.expect(allocator.resize(second, 4096));
+    second = second.ptr[0..4096];
+    allocator.free(second);
+    const reused = try allocator.alloc(u8, 8192);
+    try std.testing.expectEqual(second.ptr, reused.ptr);
+    try std.testing.expectEqualStrings("a" ** 16, first);
+    try std.testing.expectEqual(@as(usize, 8192), reused.len);
 }
