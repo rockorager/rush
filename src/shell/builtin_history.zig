@@ -313,7 +313,8 @@ fn shellEnvValue(shell: anytype, name: []const u8) ?[]const u8 {
         else => @TypeOf(shell),
     };
     if (!@hasField(ShellType, "env")) return null;
-    return envValue(shell.env, name);
+    const variable = shell.state.lookupVariable(shell.env, name) orelse return null;
+    return variable.value;
 }
 
 fn createFcTempFile(shell: anytype, contents: []const u8) ![]const u8 {
@@ -667,14 +668,4 @@ fn fcEditorError(shell: anytype) !result.EvalResult {
 
 fn defaultUtilityPath() []const u8 {
     return "/bin:/usr/bin";
-}
-
-fn envValue(env: []const [*:0]const u8, name: []const u8) ?[]const u8 {
-    for (env) |entry_z| {
-        const entry = std.mem.span(entry_z);
-        if (entry.len > name.len and entry[name.len] == '=' and std.mem.eql(u8, entry[0..name.len], name)) {
-            return entry[name.len + 1 ..];
-        }
-    }
-    return null;
 }

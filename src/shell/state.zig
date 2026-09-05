@@ -59,7 +59,7 @@ pub const VariableAttributes = struct {
 
     pub fn validate(self: VariableAttributes) void {
         std.debug.assert(self.name.len != 0);
-        std.debug.assert(self.exported or self.readonly or self.integer);
+        // An attribute-free unset binding masks an inherited environment entry.
     }
 };
 
@@ -171,6 +171,7 @@ pub const Binding = struct {
 
     pub fn attributes(self: Binding) ?VariableAttributes {
         if (self.value != .unset) return null;
+        if (!self.exported and !self.readonly and !self.integer) return null;
         return .{
             .name = self.name,
             .exported = self.exported,
@@ -426,6 +427,20 @@ pub const State = struct {
         return binding.variable();
     }
 
+    /// Returns a borrowed scalar, consulting the inherited environment only
+    /// when no shell binding (including an explicit unset) shadows it.
+    pub fn lookupVariable(self: State, env: []const [*:0]const u8, name: []const u8) ?Variable {
+        std.debug.assert(name.len != 0);
+        if (self.bindings.get(name)) |binding| return binding.variable();
+        for (env) |entry_z| {
+            const entry = std.mem.span(entry_z);
+            if (entry.len > name.len and entry[name.len] == '=' and std.mem.eql(u8, entry[0..name.len], name)) {
+                return .{ .name = name, .value = entry[name.len + 1 ..], .exported = true };
+            }
+        }
+        return null;
+    }
+
     pub fn promptMetadata(self: State, field: PromptMetadataField) ?[]const u8 {
         return self.prompt_metadata.value(field);
     }
@@ -551,6 +566,25 @@ pub const State = struct {
         const clears_autoload_misses = functionAutoloadSearchUsesVariable(name);
         if (self.bindings.fetchRemove(name)) |entry| entry.value.deinit(self.allocator);
         if (clears_autoload_misses) self.clearFunctionAutoloadMisses();
+    }
+
+    /// Commits a user-visible unset, preserving a mask over the inherited
+    /// environment. Internal binding removal and scope restoration must use
+    /// `removeVariable` instead. The caller must reject readonly variables.
+    pub fn unsetVariable(self: *State, name: []const u8) !void {
+        if (self.bindings.getPtr(name)) |binding| {
+            std.debug.assert(!binding.readonly);
+            const owned_name = binding.name;
+            switch (binding.value) {
+                .unset => {},
+                .scalar => |value| self.allocator.free(value),
+                .array => |elements| freeArrayElements(self.allocator, elements),
+            }
+            binding.* = .{ .name = owned_name, .value = .unset };
+        } else {
+            try self.putVariableAttributes(.{ .name = name });
+        }
+        self.clearFunctionAutoloadMissesIfSearchVariable(name);
     }
 
     pub fn putArray(self: *State, name: []const u8, values: []const []const u8) !void {
@@ -1495,6 +1529,27 @@ test "State replaces variable values without losing the binding" {
     try std.testing.expectEqualStrings("x", variable.name);
     try std.testing.expectEqualStrings("new", variable.value);
     try std.testing.expect(variable.exported);
+}
+
+test "explicit unset masks inherited scalars across scope snapshots" {
+    var shell_state = State.init(std.testing.allocator, .{});
+    defer shell_state.deinit();
+    const env = [_][*:0]const u8{"x=inherited"};
+    const inherited = shell_state.lookupVariable(&env, "x").?;
+    try std.testing.expect(inherited.exported);
+    try shell_state.unsetVariable("x");
+    try std.testing.expect(shell_state.lookupVariable(&env, "x") == null);
+    try std.testing.expect(shell_state.getVariableAttributes("x") == null);
+
+    try shell_state.pushVariableSnapshot();
+    try shell_state.putVariable(.{ .name = "x", .value = "temporary", .exported = true });
+    shell_state.popVariableSnapshot();
+    try std.testing.expect(shell_state.lookupVariable(&env, "x") == null);
+
+    try shell_state.putVariable(.{ .name = "x", .value = "new" });
+    try std.testing.expect(!shell_state.lookupVariable(&env, "x").?.exported);
+    shell_state.removeVariable("x");
+    try std.testing.expectEqualStrings("inherited", shell_state.lookupVariable(&env, "x").?.value);
 }
 
 test "State reuses pipeline status storage and preserves it on allocation failure" {

@@ -2321,8 +2321,7 @@ fn readDotScript(shell: anytype, path: []const u8) ![]const u8 {
 fn resolveDotPath(shell: anytype, operand: []const u8) !?[]const u8 {
     if (std.mem.indexOfScalar(u8, operand, '/') != null) return operand;
 
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
-    const path = if (shell.state.getVariable("PATH")) |variable| variable.value else envPath(shell.env) orelse defaultUtilityPath();
+    const path = shellPath(shell);
     const allocator = shell.scratchAllocator();
     var candidate_buffer: std.ArrayList(u8) = .empty;
     var iterator = std.mem.splitScalar(u8, path, ':');
@@ -3063,7 +3062,11 @@ fn evalReadBuiltin(shell: anytype, args: []const []const u8, assignments: []cons
     restored_assignments = true;
 
     for (names, 0..) |name, name_index| {
-        try shell.state.putVariable(.{ .name = name, .value = values[name_index] });
+        try shell.state.putVariable(.{
+            .name = name,
+            .value = values[name_index],
+            .exported = assignmentExported(shell, name),
+        });
     }
     if (line_result.timed_out) return .{ .status = 142 };
     return .{ .status = if (line_result.found_delimiter) 0 else 1 };
@@ -3361,7 +3364,7 @@ fn currentLogicalDir(shell: anytype) ![]const u8 {
 }
 
 fn exportedFlag(shell: anytype, name: []const u8) bool {
-    return if (shell.state.getVariable(name)) |variable| variable.exported else envValue(shell.env, name) != null;
+    return if (shell.state.lookupVariable(shell.env, name)) |variable| variable.exported else false;
 }
 
 fn cdPathTarget(shell: anytype, operand: []const u8, print_new_dir: *bool) !?[]const u8 {
@@ -3652,7 +3655,7 @@ fn evalDeclarationBuiltin(shell: anytype, id: builtin.Id, words: []const ast.Wor
         if (try declarationAssignment(shell, word)) |assignment| {
             const expanded_value = try expandAssignmentWordTracking(shell, assignment.value, null);
             const value = try assignmentValueForStorage(shell, assignment.name, expanded_value);
-            const existing = shell.state.getVariable(assignment.name);
+            const existing = shell.state.lookupVariable(shell.env, assignment.name);
             shell.state.putVariable(.{
                 .name = assignment.name,
                 .value = value,
@@ -3678,7 +3681,7 @@ fn evalDeclarationBuiltin(shell: anytype, id: builtin.Id, words: []const ast.Wor
                     .declaration_array_assignment => unreachable,
                 };
                 const value = try assignmentValueForStorage(shell, assignment.name, expanded_value);
-                const existing = shell.state.getVariable(assignment.name);
+                const existing = shell.state.lookupVariable(shell.env, assignment.name);
                 shell.state.putVariable(.{
                     .name = assignment.name,
                     .value = value,
@@ -3699,7 +3702,7 @@ fn evalDeclarationBuiltin(shell: anytype, id: builtin.Id, words: []const ast.Wor
                 status = if (shell.state.options.mode == .bash) 1 else 2;
                 continue;
             }
-            const existing = shell.state.getVariable(name);
+            const existing = shell.state.lookupVariable(shell.env, name);
             if (existing) |variable| {
                 shell.state.putVariable(.{
                     .name = name,
@@ -4546,6 +4549,8 @@ fn saveAssignmentVariables(shell: anytype, assignments: []const ast.Assignment) 
                     .readonly = attributes.readonly,
                     .integer = attributes.integer,
                 } }
+            else if (shell.state.bindings.contains(assignment.name))
+                .{ .attributes = .{ .name = assignment.name } }
             else
                 .missing,
         };
@@ -6288,8 +6293,7 @@ fn namedDirectoryCharacter(byte: u8) bool {
 }
 
 fn homeValue(shell: anytype) ?[]const u8 {
-    if (parameterValue(shell, "HOME")) |home| return home;
-    return envValue(shell.env, "HOME");
+    return parameterValue(shell, "HOME");
 }
 
 // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
@@ -6979,7 +6983,11 @@ fn ArithmeticParser(comptime ShellType: type) type {
         fn assignVariable(self: *Self, name: []const u8, value: i64) ArithmeticError!void {
             if (!self.evaluating) return;
             const text = try std.fmt.allocPrint(self.shell.scratchAllocator(), "{}", .{value});
-            self.shell.state.putVariable(.{ .name = name, .value = text }) catch |err| switch (err) {
+            self.shell.state.putVariable(.{
+                .name = name,
+                .value = text,
+                .exported = assignmentExported(self.shell, name),
+            }) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 error.ReadonlyVariable => return error.InvalidArithmetic,
             };
@@ -7525,7 +7533,11 @@ fn expandParameterAssignDefault(shell: anytype, parameter: ast.ParameterExpansio
     if (isParameterSet(parameter, value)) return value.?;
 
     const default = try expandWord(shell, parameter.word.?);
-    shell.state.putVariable(.{ .name = name, .value = default }) catch |err| switch (err) {
+    shell.state.putVariable(.{
+        .name = name,
+        .value = default,
+        .exported = assignmentExported(shell, name),
+    }) catch |err| switch (err) {
         error.ReadonlyVariable => {
             try writeReadonlyDiagnostic(shell, name);
             return error.ExpansionError;
@@ -7954,6 +7966,7 @@ fn writeExpansionDiagnostic(
 fn parameterValue(shell: anytype, name: []const u8) ?[]const u8 {
     if (dynamicParameterValue(shell, name)) |value| return value;
     if (shell.state.getVariable(name)) |variable| return variable.value;
+    if (shell.state.bindings.contains(name)) return null;
     if (std.mem.eql(u8, name, "PPID")) return std.fmt.allocPrint(
         shell.scratchAllocator(),
         "{}",
@@ -7961,10 +7974,11 @@ fn parameterValue(shell: anytype, name: []const u8) ?[]const u8 {
     ) catch null;
     if (std.mem.eql(u8, name, "PWD")) {
         if (comptime @hasDecl(@TypeOf(shell.host), "currentDir")) {
-            return shell.host.currentDir(shell.scratchAllocator()) catch envValue(shell.env, name);
+            if (shell.host.currentDir(shell.scratchAllocator()) catch null) |pwd| return pwd;
         }
     }
-    return envValue(shell.env, name);
+    const variable = shell.state.lookupVariable(shell.env, name) orelse return null;
+    return variable.value;
 }
 
 fn dynamicParameterValue(shell: anytype, name: []const u8) ?[]const u8 {
@@ -8201,8 +8215,7 @@ fn collectPathCommandSuggestions(
     };
     if (comptime !@hasDecl(HostType, "listDir") or !@hasDecl(HostType, "fileAccessZ")) return;
 
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
-    const path = search_path orelse if (shell.state.getVariable("PATH")) |variable| variable.value else envPath(shell.env) orelse defaultUtilityPath();
+    const path = search_path orelse shellPath(shell);
     var candidate_buffer: std.ArrayList(u8) = .empty;
     defer candidate_buffer.deinit(allocator);
     var iterator = std.mem.splitScalar(u8, path, ':');
@@ -8373,8 +8386,7 @@ fn searchExternalCommand(
     }
 
     var found_not_executable = false;
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
-    const path = search_path orelse if (shell.state.getVariable("PATH")) |variable| variable.value else envPath(shell.env) orelse defaultUtilityPath();
+    const path = search_path orelse shellPath(shell);
     var candidate_buffer: std.ArrayList(u8) = .empty;
     var iterator = std.mem.splitScalar(u8, path, ':');
     while (iterator.next()) |directory| {
@@ -8489,7 +8501,7 @@ const AssignmentEnvEntry = struct {
 
 fn makeExecEnvp(shell: anytype, assignments: []const ast.Assignment) ![:null]const ?[*:0]const u8 {
     const exported_count = countExportedVariables(shell);
-    if (assignments.len == 0 and exported_count == 0) {
+    if (assignments.len == 0 and exported_count == 0 and countBaseEnv(shell, &.{}) == shell.env.len) {
         if (comptime @hasDecl(@TypeOf(shell.*), "execEnvp")) return shell.execEnvp();
 
         const envp = try shell.scratchAllocator().allocSentinel(?[*:0]const u8, shell.env.len, null);
@@ -8528,7 +8540,7 @@ fn execEnvAssignmentValue(shell: anytype, assignment: ast.Assignment) ![]const u
 
 fn makeEnvpFromEntries(shell: anytype, assignment_entries: []const AssignmentEnvEntry) ![:null]const ?[*:0]const u8 {
     const allocator = shell.scratchAllocator();
-    var env_len: usize = countBaseEnv(shell.env, assignment_entries);
+    var env_len: usize = countBaseEnv(shell, assignment_entries);
     for (assignment_entries, 0..) |entry, index| {
         if (lastAssignmentIndex(assignment_entries, entry.name) == index) env_len += 1;
     }
@@ -8538,7 +8550,7 @@ fn makeEnvpFromEntries(shell: anytype, assignment_entries: []const AssignmentEnv
     for (shell.env) |entry| {
         const text = std.mem.span(entry);
         const name = envEntryName(text);
-        if (containsAssignmentName(assignment_entries, name)) continue;
+        if (shell.state.bindings.contains(name) or containsAssignmentName(assignment_entries, name)) continue;
         envp[env_index] = entry;
         env_index += 1;
     }
@@ -8569,11 +8581,11 @@ fn makeEnvEntryZ(allocator: std.mem.Allocator, name: []const u8, value: []const 
     return entry;
 }
 
-fn countBaseEnv(env: []const [*:0]const u8, assignments: []const AssignmentEnvEntry) usize {
+fn countBaseEnv(shell: anytype, assignments: []const AssignmentEnvEntry) usize {
     var count: usize = 0;
-    for (env) |entry| {
+    for (shell.env) |entry| {
         const name = envEntryName(std.mem.span(entry));
-        if (!containsAssignmentName(assignments, name)) count += 1;
+        if (!shell.state.bindings.contains(name) and !containsAssignmentName(assignments, name)) count += 1;
     }
     return count;
 }
@@ -8605,8 +8617,7 @@ fn resolveCommandPath(shell: anytype, command: [:0]const u8) ![:0]const u8 {
 fn resolveCommandPathWithSearchPath(shell: anytype, command: [:0]const u8, search_path: ?[]const u8) ![:0]const u8 {
     if (std.mem.indexOfScalar(u8, command, '/') != null) return command;
 
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
-    const path = search_path orelse if (shell.state.getVariable("PATH")) |variable| variable.value else envPath(shell.env) orelse defaultUtilityPath();
+    const path = search_path orelse shellPath(shell);
     const allocator = shell.scratchAllocator();
     var candidate_buffer: std.ArrayList(u8) = .empty;
     var iterator = std.mem.splitScalar(u8, path, ':');
@@ -8631,8 +8642,7 @@ fn findCommandPath(shell: anytype, command: []const u8, search_path: ?[]const u8
         return if (shell.host.isExecutableZ(command_z)) command else null;
     }
 
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
-    const path = search_path orelse if (shell.state.getVariable("PATH")) |variable| variable.value else envPath(shell.env) orelse defaultUtilityPath();
+    const path = search_path orelse shellPath(shell);
     var candidate_buffer: std.ArrayList(u8) = .empty;
     var iterator = std.mem.splitScalar(u8, path, ':');
     while (iterator.next()) |directory| {
@@ -8652,17 +8662,9 @@ fn defaultUtilityPath() []const u8 {
     return "/bin:/usr/bin";
 }
 
-fn envPath(env: []const [*:0]const u8) ?[]const u8 {
-    return envValue(env, "PATH");
-}
-
-fn envValue(env: []const [*:0]const u8, name: []const u8) ?[]const u8 {
-    for (env) |entry| {
-        const text = std.mem.span(entry);
-        const equals = std.mem.indexOfScalar(u8, text, '=') orelse continue;
-        if (std.mem.eql(u8, text[0..equals], name)) return text[equals + 1 ..];
-    }
-    return null;
+fn shellPath(shell: anytype) []const u8 {
+    const variable = shell.state.lookupVariable(shell.env, "PATH") orelse return defaultUtilityPath();
+    return variable.value;
 }
 
 test "missing commands in interactive startup files do not scan PATH for suggestions" {

@@ -632,27 +632,14 @@ fn defaultUtilityPath() []const u8 {
     return "/bin:/usr/bin";
 }
 
-fn envPath(env: []const [*:0]const u8) ?[]const u8 {
-    return envValue(env, "PATH");
-}
-
-fn envValue(env: []const [*:0]const u8, name: []const u8) ?[]const u8 {
-    for (env) |entry_z| {
-        const entry = std.mem.span(entry_z);
-        if (entry.len > name.len and entry[name.len] == '=' and std.mem.eql(u8, entry[0..name.len], name)) {
-            return entry[name.len + 1 ..];
-        }
-    }
-    return null;
-}
-
 fn shellEnvValue(shell: anytype, name: []const u8) ?[]const u8 {
     const ShellType = switch (@typeInfo(@TypeOf(shell))) {
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell),
     };
     if (!@hasField(ShellType, "env")) return null;
-    return envValue(shell.env, name);
+    const variable = shell.state.lookupVariable(shell.env, name) orelse return null;
+    return variable.value;
 }
 
 fn evalGetopts(shell: anytype, args: []const []const u8) !result.EvalResult {
@@ -1931,7 +1918,7 @@ fn evalUnset(shell: anytype, args: []const []const u8) !result.EvalResult {
                 try shell.host.writeAll(.stderr, try std.fmt.allocPrint(shell.scratchAllocator(), "{s}: readonly variable\n", .{name}));
                 status = 1;
             } else {
-                shell.state.removeVariable(name);
+                try shell.state.unsetVariable(name);
             }
         } else if (shell.state.getVariableAttributes(name)) |attributes| {
             if (attributes.readonly) {
@@ -1939,7 +1926,7 @@ fn evalUnset(shell: anytype, args: []const []const u8) !result.EvalResult {
                 try shell.host.writeAll(.stderr, try std.fmt.allocPrint(shell.scratchAllocator(), "{s}: readonly variable\n", .{name}));
                 status = 1;
             } else {
-                shell.state.removeVariableAttributes(name);
+                try shell.state.unsetVariable(name);
             }
         } else if (shell.state.getArray(name)) |array| {
             if (array.readonly) {
@@ -1947,8 +1934,10 @@ fn evalUnset(shell: anytype, args: []const []const u8) !result.EvalResult {
                 try shell.host.writeAll(.stderr, try std.fmt.allocPrint(shell.scratchAllocator(), "{s}: readonly variable\n", .{name}));
                 status = 1;
             } else {
-                shell.state.removeArray(name);
+                try shell.state.unsetVariable(name);
             }
+        } else {
+            try shell.state.unsetVariable(name);
         }
     }
     return .{ .status = status, .flow = if (status == 1) .{ .fatal = status } else .normal };

@@ -260,13 +260,8 @@ fn HostType(comptime host_field: type) type {
 }
 
 fn shellValue(shell: anytype, name: []const u8) ?[]const u8 {
-    if (shell.state.getVariable(name)) |variable| return variable.value;
-    for (shell.env) |entry_ptr| {
-        const entry = std.mem.span(entry_ptr);
-        if (entry.len <= name.len or entry[name.len] != '=') continue;
-        if (std.mem.eql(u8, entry[0..name.len], name)) return entry[name.len + 1 ..];
-    }
-    return null;
+    const variable = shell.state.lookupVariable(shell.env, name) orelse return null;
+    return variable.value;
 }
 
 test "decode expands Bash prompt escapes" {

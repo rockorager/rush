@@ -3,6 +3,75 @@
     .mode = .posix,
     .cases = .{
         .{
+            .name = "inherited exports survive read arithmetic and readonly assignments",
+            .script =
+            \\ln -s "$(command -v "$0")" sh
+            \\PROBE=1 ./sh -c ': "$((PROBE=2))"; printenv PROBE'
+            \\PROBE=1 ./sh -c 'read PROBE; printenv PROBE' <<EOF
+            \\2
+            \\EOF
+            \\PROBE=1 ./sh -c 'readonly PROBE=2; printenv PROBE'
+            \\PROBE=1 ./sh -c 'readonly PROBE; printenv PROBE'
+            \\./sh -c 'export PROBE=1; : "$((PROBE=2))"; printenv PROBE'
+            \\PROBE= ./sh -c ': "${PROBE:=2}"; printenv PROBE'
+            ,
+            .stdout = "2\n2\n2\n1\n2\n2\n",
+        },
+        .{
+            .name = "unset masks inherited values and removes their export attribute",
+            .script =
+            \\ln -s "$(command -v "$0")" sh
+            \\PROBE=1 ./sh <<'EOF'
+            \\unset PROBE
+            \\printf 'value:%s\n' "${PROBE-unset}"
+            \\printenv PROBE; printf 'status:%s\n' "$?"
+            \\PROBE=2
+            \\printf 'value:%s\n' "$PROBE"
+            \\printenv PROBE; printf 'status:%s\n' "$?"
+            \\export PROBE
+            \\printenv PROBE
+            \\unset PROBE
+            \\PROBE=temp printenv PROBE
+            \\PROBE=temp true
+            \\printf 'value:%s\n' "${PROBE-unset}"
+            \\printenv PROBE; printf 'status:%s\n' "$?"
+            \\EOF
+            ,
+            .stdout = "value:unset\nstatus:1\nvalue:2\nstatus:1\n2\ntemp\nvalue:unset\nstatus:1\n",
+        },
+        .{
+            .name = "unset inherited values remain scoped to subshells and local variables",
+            .script =
+            \\ln -s "$(command -v "$0")" sh
+            \\PROBE=1 ./sh <<'EOF'
+            \\(unset PROBE; printf 'subshell:%s\n' "${PROBE-unset}")
+            \\printenv PROBE
+            \\f() { local PROBE=local; unset PROBE; printf 'local:%s\n' "${PROBE-unset}"; }
+            \\f
+            \\printenv PROBE
+            \\unset PROBE
+            \\f
+            \\printf 'outer:%s\n' "${PROBE-unset}"
+            \\EOF
+            ,
+            .stdout = "subshell:unset\n1\nlocal:unset\n1\nlocal:unset\nouter:unset\n",
+        },
+        .{
+            .name = "unset inherited HOME and PATH cannot fall back to startup values",
+            .script =
+            \\ln -s "$(command -v "$0")" sh
+            \\mkdir bin
+            \\printf '%s\n' '#!/bin/sh' 'echo BAD' >bin/probe-inherited-path
+            \\chmod +x bin/probe-inherited-path
+            \\PATH="$PWD/bin:$PATH" HOME=/inherited ./sh <<'EOF'
+            \\unset PATH HOME
+            \\if command -v probe-inherited-path >/dev/null; then echo BAD; else echo absent; fi
+            \\printf '%s:%s\n' "${HOME-unset}" "${PATH-unset}"
+            \\EOF
+            ,
+            .stdout = "absent\nunset:unset\n",
+        },
+        .{
             // Coreutils and findutils prepend build helpers to inherited PATH.
             .name = "assignments preserve inherited export attributes",
             .script =
