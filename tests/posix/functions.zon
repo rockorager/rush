@@ -666,6 +666,35 @@
             .status = 0,
         },
         .{
+            .name = "recursive invocations retain retired bodies and nested definitions",
+            .script =
+            \\f() {
+            \\    if [ "$1" -gt 0 ]; then
+            \\        f "$(($1-1))"
+            \\    else
+            \\        unset -f f
+            \\        f() { printf 'new\n'; }
+            \\        saved() { printf 'saved:%s\n' "$(printf nested)"; }
+            \\    fi
+            \\    printf 'old:%s\n' "$1"
+            \\}
+            \\f 3
+            \\f
+            \\saved
+            ,
+            .stdout =
+            \\old:0
+            \\old:1
+            \\old:2
+            \\old:3
+            \\new
+            \\saved:nested
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "function body expansions occur when the function is invoked",
             .script =
             \\x=definition

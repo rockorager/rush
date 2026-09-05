@@ -3,8 +3,8 @@
 const std = @import("std");
 
 const ast = @import("ast.zig");
+pub const Function = @import("Function.zig");
 const host = @import("../host.zig");
-const memory = @import("memory.zig");
 const result = @import("result.zig");
 const source = @import("source.zig");
 
@@ -233,21 +233,6 @@ const LocalFrame = struct {
     }
 };
 
-pub const Function = struct {
-    name: []const u8,
-    source_name: []const u8,
-    source_text: []const u8,
-    definition: ast.FunctionDefinition,
-
-    pub fn validate(self: Function) void {
-        std.debug.assert(self.name.len != 0);
-        std.debug.assert(self.source_name.len != 0);
-        std.debug.assert(self.source_text.len != 0);
-        self.definition.validate();
-        std.debug.assert(std.mem.eql(u8, self.name, self.definition.name));
-    }
-};
-
 pub const FunctionCallFrame = struct {
     name: []const u8,
     source_name: []const u8,
@@ -334,12 +319,11 @@ pub const BackgroundJob = struct {
 
 pub const State = struct {
     allocator: std.mem.Allocator,
-    definition_arena: memory.Arena,
     options: Options = .{},
     bindings: std.StringHashMapUnmanaged(Binding) = .empty,
     local_frames: std.ArrayListUnmanaged(LocalFrame) = .empty,
     function_call_stack: std.ArrayListUnmanaged(FunctionCallFrame) = .empty,
-    functions: std.StringHashMapUnmanaged(Function) = .empty,
+    functions: std.StringHashMapUnmanaged(*Function) = .empty,
     function_autoload_states: std.StringHashMapUnmanaged(FunctionAutoloadState) = .empty,
     aliases: std.StringHashMapUnmanaged(Alias) = .empty,
     command_hashes: std.StringHashMapUnmanaged(CommandHash) = .empty,
@@ -385,7 +369,6 @@ pub const State = struct {
     pub fn init(allocator: std.mem.Allocator, options: Options) State {
         return .{
             .allocator = allocator,
-            .definition_arena = memory.Arena.init(allocator),
             .options = options,
         };
     }
@@ -397,6 +380,8 @@ pub const State = struct {
         for (self.local_frames.items) |*frame| frame.deinit(self.allocator);
         self.local_frames.deinit(self.allocator);
         self.function_call_stack.deinit(self.allocator);
+        var function_iterator = self.functions.valueIterator();
+        while (function_iterator.next()) |function| function.*.release(self.allocator);
         self.functions.deinit(self.allocator);
         var autoload_iterator = self.function_autoload_states.iterator();
         while (autoload_iterator.next()) |entry| self.allocator.free(entry.key_ptr.*);
@@ -432,12 +417,7 @@ pub const State = struct {
         self.prompt_metadata.deinit(self.allocator);
         self.freeOwnedPositionals();
         self.clearExitTrap();
-        self.definition_arena.deinit();
         self.* = undefined;
-    }
-
-    pub fn definitionAllocator(self: *State) std.mem.Allocator {
-        return self.definition_arena.allocator();
     }
 
     pub fn getVariable(self: State, name: []const u8) ?Variable {
@@ -989,8 +969,8 @@ pub const State = struct {
         };
     }
 
-    /// Pushes a frame that borrows the function's name and source name.
-    pub fn pushFunctionCall(self: *State, function: Function) !void {
+    /// Pushes a frame borrowing names from an invocation's retained function.
+    pub fn pushFunctionCall(self: *State, function: *const Function) !void {
         try self.function_call_stack.append(self.allocator, .{
             .name = function.name,
             .source_name = function.source_name,
@@ -1055,22 +1035,31 @@ pub const State = struct {
         self.owned_positionals = &.{};
     }
 
-    pub fn getFunction(self: State, name: []const u8) ?Function {
+    /// Borrows a definition until its table entry is removed or replaced.
+    /// Retain it before any evaluation that could mutate the function table.
+    pub fn getFunction(self: State, name: []const u8) ?*Function {
         std.debug.assert(name.len != 0);
         return self.functions.get(name);
     }
 
-    /// Installs a function definition whose name, source text, and AST storage
-    /// have already been allocated from `definitionAllocator()`.
-    pub fn putPersistentFunction(self: *State, function: Function) !void {
-        function.validate();
-        try self.functions.put(self.allocator, function.name, function);
+    /// Copies and installs a definition, releasing the previous table reference.
+    /// On allocation failure the existing definition is unchanged.
+    pub fn defineFunction(self: *State, definition: ast.FunctionDefinition, source_name: []const u8) !void {
+        const function = try Function.create(self.allocator, definition, source_name);
+        errdefer function.release(self.allocator);
+        const entry = try self.functions.getOrPut(self.allocator, function.name);
+        const previous = if (entry.found_existing) entry.value_ptr.* else null;
+        // The hash table retains its old key on replacement. Replace that too,
+        // before releasing the allocation that owns the old key and definition.
+        entry.key_ptr.* = function.name;
+        entry.value_ptr.* = function;
         self.clearFunctionAutoloadState(function.name);
+        if (previous) |old| old.release(self.allocator);
     }
 
     pub fn removeFunction(self: *State, name: []const u8) void {
         std.debug.assert(name.len != 0);
-        _ = self.functions.remove(name);
+        if (self.functions.fetchRemove(name)) |entry| entry.value.release(self.allocator);
     }
 
     pub fn suppressFunctionAutoload(self: *State, name: []const u8) !void {
@@ -1559,4 +1548,62 @@ test "positional frames preserve borrowed and owned views without allocating on 
     shell_state.popPositionalFrame(&outer);
     try std.testing.expectEqual(borrowed.ptr, shell_state.positionals.ptr);
     try std.testing.expectEqual(@as(usize, 0), shell_state.owned_positionals.len);
+}
+
+const test_function_definition: ast.FunctionDefinition = .{
+    .name = "f",
+    .body = .{ .brace_group = .{ .entries = &.{.{ .and_or = .{ .pipelines = &.{.{
+        .pipeline = .{ .stages = &.{.{ .simple = .{ .words = &.{.{ .data = .{ .literal = ":" } }} } }} },
+    }} } }} } },
+};
+
+test "function replacement reclaims storage while retained snapshots survive" {
+    var counted = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    const allocator = counted.allocator();
+    {
+        var shell_state = State.init(allocator, .{});
+        defer shell_state.deinit();
+        try shell_state.defineFunction(test_function_definition, "old");
+        const live_bytes = counted.allocated_bytes - counted.freed_bytes;
+        const old = shell_state.getFunction("f").?;
+        old.retain();
+        defer old.release(allocator);
+
+        for (0..200) |_| {
+            try shell_state.defineFunction(test_function_definition, "new");
+            try std.testing.expectEqual(live_bytes + old.allocation_len, counted.allocated_bytes - counted.freed_bytes);
+            try std.testing.expectEqual(@as(usize, 1), old.references);
+            try std.testing.expectEqual(@as(usize, 1), shell_state.getFunction("f").?.references);
+            try std.testing.expectEqualStrings("old", old.source_name);
+            try std.testing.expectEqualStrings("new", shell_state.getFunction("f").?.source_name);
+        }
+        shell_state.removeFunction("f");
+        try std.testing.expectEqual(live_bytes, counted.allocated_bytes - counted.freed_bytes);
+        try std.testing.expect(shell_state.getFunction("f") == null);
+        old.validate();
+    }
+    try std.testing.expectEqual(counted.allocated_bytes, counted.freed_bytes);
+}
+
+test "function definition allocation failures leave table and owners intact" {
+    // Failure of either the packed definition or the first table allocation.
+    for (0..2) |fail_index| {
+        var counted = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        var shell_state = State.init(counted.allocator(), .{});
+        defer shell_state.deinit();
+        try std.testing.expectError(error.OutOfMemory, shell_state.defineFunction(test_function_definition, "old"));
+        try std.testing.expectEqual(@as(u32, 0), shell_state.functions.count());
+        try std.testing.expectEqual(counted.allocated_bytes, counted.freed_bytes);
+    }
+
+    var counted = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var shell_state = State.init(counted.allocator(), .{});
+    defer shell_state.deinit();
+    try shell_state.defineFunction(test_function_definition, "old");
+    const old = shell_state.getFunction("f").?;
+    counted.fail_index = counted.alloc_index;
+    try std.testing.expectError(error.OutOfMemory, shell_state.defineFunction(test_function_definition, "new"));
+    try std.testing.expectEqual(old, shell_state.getFunction("f").?);
+    try std.testing.expectEqual(@as(usize, 1), old.references);
+    try std.testing.expectEqualStrings("old", old.source_name);
 }

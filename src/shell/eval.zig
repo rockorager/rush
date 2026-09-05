@@ -4,7 +4,6 @@ const std = @import("std");
 const zig_builtin = @import("builtin");
 
 const ast = @import("ast.zig");
-const ast_copy = @import("ast_copy.zig");
 const builtin = @import("builtin.zig");
 const command_history_mod = @import("command_history.zig");
 const host_mod = @import("../host.zig");
@@ -1705,19 +1704,7 @@ fn caseArmMatches(shell: anytype, arm: ast.CaseArm, word: []const u8) EvalError!
 
 fn evalFunctionDefinition(shell: anytype, definition: ast.FunctionDefinition) EvalError!result.EvalResult {
     validateAst(definition);
-    const copied = try ast_copy.copyFunction(
-        shell.state.definitionAllocator(),
-        definition,
-        shell.state.current_source_name,
-    );
-    validateAst(copied.definition);
-    const function: state_mod.Function = .{
-        .name = copied.name,
-        .source_name = copied.source_name,
-        .source_text = copied.name,
-        .definition = copied.definition,
-    };
-    try shell.state.putPersistentFunction(function);
+    try shell.state.defineFunction(definition, shell.state.current_source_name);
     return .{};
 }
 
@@ -4564,11 +4551,13 @@ const SavedVariable = struct {
 
 fn evalFunction(
     shell: anytype,
-    function: state_mod.Function,
+    function: *state_mod.Function,
     assignments: []const ast.Assignment,
     args: []const []const u8,
 ) EvalError!result.EvalResult {
     validateAst(function);
+    function.retain();
+    defer function.release(shell.state.allocator);
     try shell.state.pushFunctionCall(function);
     defer shell.state.popFunctionCall();
     const previous_source_name = shell.state.current_source_name;
@@ -4644,6 +4633,8 @@ test "function allocation failures preserve caller positional ownership and unwi
         try std.testing.expectEqual(@as(usize, 0), shell.state.function_call_stack.items.len);
         try std.testing.expectEqual(@as(usize, 0), shell.state.local_frames.items.len);
         try std.testing.expectEqual(@as(usize, 3), shell.state.loop_depth);
+        try std.testing.expectEqual(@as(usize, 1), shell.state.getFunction("f").?.references);
+        try std.testing.expectEqual(@as(usize, 1), shell.state.getFunction("g").?.references);
         if (!allocator.has_induced_failure) break;
     }
 }
