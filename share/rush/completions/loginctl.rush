@@ -1,0 +1,96 @@
+# Never open an ssh connection for completion. Preserve container scope as one
+# argument rather than splitting it into shell words.
+__rush_complete_loginctl_query() {
+  if rush_complete option-present --long host || rush_complete option-present --short H; then
+    return 1
+  fi
+  machine=$(rush_complete option-values --long machine 2>/dev/null)
+  if test -n "$machine"; then
+    set -- "--machine=$machine" "$@"
+  fi
+  SYSTEMD_COLORS=0 loginctl --no-pager --no-legend --no-ask-password "$@" 2>/dev/null
+}
+
+__rush_complete_loginctl_sessions() {
+  __rush_complete_loginctl_query list-sessions | while read -r session uid user rest; do
+    test -n "$session" || continue
+    rush_complete candidate "$session" --kind plain --description "session for $user"
+  done
+}
+
+__rush_complete_loginctl_users() {
+  __rush_complete_loginctl_query list-users | while read -r uid user rest; do
+    test -n "$user" || continue
+    rush_complete candidate "$user" --kind plain --description "user $uid"
+  done
+}
+
+__rush_complete_loginctl_accounts() {
+  if rush_complete option-present --long host || rush_complete option-present --short H; then
+    return
+  fi
+  if rush_complete option-present --long machine || rush_complete option-present --short M; then
+    __rush_complete_loginctl_users
+    return
+  fi
+  while IFS=: read -r user password uid rest; do
+    test -n "$user" || continue
+    rush_complete candidate "$user" --kind plain --description "local account $uid"
+  done < /etc/passwd
+}
+
+__rush_complete_loginctl_seats() {
+  __rush_complete_loginctl_query list-seats | while read -r seat rest; do
+    test -n "$seat" || continue
+    rush_complete candidate "$seat" --kind plain --description 'seat'
+  done
+}
+
+__rush_complete_loginctl_properties() {
+  __rush_complete_loginctl_query show-session --all | while IFS='=' read -r property value; do
+    test -n "$property" || continue
+    rush_complete candidate "$property" --kind plain --description 'login manager property'
+  done
+  object=$(rush_complete operand 0)
+  # The provider API exposes operands but not the selected subcommand. Query
+  # each object kind and let failed lookups contribute no candidates.
+  for kind in session user seat; do
+    __rush_complete_loginctl_query "show-$kind" --all -- "$object" |
+      while IFS='=' read -r property value; do
+        test -n "$property" || continue
+        rush_complete candidate "$property" --kind plain --description "$kind property"
+      done
+  done
+}
+
+__rush_complete_loginctl_signals() {
+  loginctl --signal=help 2>/dev/null | while read -r signal rest; do
+    test -n "$signal" || continue
+    rush_complete candidate "$signal" --kind plain --description 'signal'
+  done
+}
+
+__rush_complete_loginctl_outputs() {
+  loginctl --output=help 2>/dev/null | while read -r format rest; do
+    test -n "$format" || continue
+    rush_complete candidate "$format" --kind plain --description 'journal output format'
+  done
+}
+
+__rush_complete_loginctl_machines() {
+  rush_complete candidate .host --kind plain --description 'local host'
+  machinectl --no-pager --no-legend list 2>/dev/null | while read -r machine rest; do
+    test -n "$machine" || continue
+    rush_complete candidate "$machine" --kind plain --description 'local container'
+  done
+}
+
+__rush_complete_loginctl_hosts() {
+  while read -r address names; do
+    case "$address" in ''|'#'*) continue ;; esac
+    for name in $names; do
+      case "$name" in '#'* ) break ;; esac
+      rush_complete candidate "$name" --kind plain --description 'host'
+    done
+  done < /etc/hosts
+}

@@ -1,0 +1,454 @@
+{
+  "$schema": "https://rush.horse/completion/schema/v1.schema.json",
+  "manifestVersion": 1,
+  "command": {
+    "name": "loginctl",
+    "description": "query and control login sessions, users, and seats",
+    "platforms": [
+      "linux"
+    ],
+    "providers": {
+      "loginctl.sessions": {
+        "function": "__rush_complete_loginctl_sessions"
+      },
+      "loginctl.users": {
+        "function": "__rush_complete_loginctl_users"
+      },
+      "loginctl.accounts": {
+        "function": "__rush_complete_loginctl_accounts"
+      },
+      "loginctl.seats": {
+        "function": "__rush_complete_loginctl_seats"
+      },
+      "loginctl.properties": {
+        "function": "__rush_complete_loginctl_properties"
+      },
+      "loginctl.signals": {
+        "function": "__rush_complete_loginctl_signals"
+      },
+      "loginctl.outputs": {
+        "function": "__rush_complete_loginctl_outputs"
+      },
+      "loginctl.machines": {
+        "function": "__rush_complete_loginctl_machines"
+      },
+      "loginctl.hosts": {
+        "function": "__rush_complete_loginctl_hosts"
+      }
+    },
+    "options": [
+      {
+        "short": "h",
+        "long": "help",
+        "description": "show help"
+      },
+      {
+        "long": "version",
+        "description": "show version"
+      },
+      {
+        "long": "no-pager",
+        "description": "disable paging"
+      },
+      {
+        "long": "no-legend",
+        "description": "hide headers and footers"
+      },
+      {
+        "long": "no-ask-password",
+        "description": "disable authentication prompts"
+      },
+      {
+        "short": "H",
+        "long": "host",
+        "description": "operate on a remote host",
+        "value": {
+          "name": "host",
+          "provider": "loginctl.hosts"
+        }
+      },
+      {
+        "short": "M",
+        "long": "machine",
+        "description": "operate on a local container",
+        "value": {
+          "name": "container",
+          "provider": "loginctl.machines"
+        }
+      },
+      {
+        "short": "p",
+        "long": "property",
+        "description": "show selected properties",
+        "repeatable": true,
+        "value": {
+          "name": "property",
+          "grammar": {
+            "kind": "list",
+            "separator": ",",
+            "item": {
+              "provider": "loginctl.properties"
+            }
+          }
+        }
+      },
+      {
+        "short": "P",
+        "description": "show selected property values without names",
+        "repeatable": true,
+        "value": {
+          "name": "property",
+          "grammar": {
+            "kind": "list",
+            "separator": ",",
+            "item": {
+              "provider": "loginctl.properties"
+            }
+          }
+        }
+      },
+      {
+        "short": "a",
+        "long": "all",
+        "description": "show all properties, including empty ones"
+      },
+      {
+        "long": "value",
+        "description": "print property values without names"
+      },
+      {
+        "short": "l",
+        "long": "full",
+        "description": "show output without ellipsizing"
+      },
+      {
+        "long": "kill-whom",
+        "description": "select which session processes receive the signal",
+        "value": {
+          "name": "target",
+          "provider": {
+            "values": [
+              {
+                "value": "all",
+                "description": "signal all session processes"
+              },
+              {
+                "value": "leader",
+                "description": "signal only the session leader"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "short": "s",
+        "long": "signal",
+        "description": "select the signal to send",
+        "value": {
+          "name": "signal",
+          "provider": "loginctl.signals"
+        }
+      },
+      {
+        "short": "n",
+        "long": "lines",
+        "description": "set the number of journal entries to show",
+        "value": {
+          "name": "count"
+        }
+      },
+      {
+        "short": "o",
+        "long": "output",
+        "description": "select the journal output format",
+        "value": {
+          "name": "format",
+          "provider": "loginctl.outputs"
+        }
+      },
+      {
+        "short": "j",
+        "description": "show lists as json"
+      },
+      {
+        "long": "json",
+        "description": "select the json output format",
+        "value": {
+          "name": "format",
+          "provider": {
+            "values": [
+              {
+                "value": "pretty",
+                "description": "show indented json"
+              },
+              {
+                "value": "short",
+                "description": "show compact json"
+              },
+              {
+                "value": "off",
+                "description": "disable json output"
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "subcommands": [
+      {
+        "name": "list-sessions",
+        "description": "list login sessions"
+      },
+      {
+        "name": "session-status",
+        "description": "show session status",
+        "arguments": {
+          "states": [
+            {
+              "name": "session",
+              "repeatable": true,
+              "provider": "loginctl.sessions"
+            }
+          ]
+        }
+      },
+      {
+        "name": "show-session",
+        "description": "show session or login manager properties",
+        "arguments": {
+          "states": [
+            {
+              "name": "session",
+              "repeatable": true,
+              "provider": "loginctl.sessions"
+            }
+          ]
+        }
+      },
+      {
+        "name": "activate",
+        "description": "activate a session",
+        "arguments": {
+          "states": [
+            {
+              "name": "session",
+              "index": 0,
+              "provider": "loginctl.sessions"
+            }
+          ]
+        }
+      },
+      {
+        "name": "lock-session",
+        "description": "lock one or more sessions",
+        "arguments": {
+          "states": [
+            {
+              "name": "session",
+              "repeatable": true,
+              "provider": "loginctl.sessions"
+            }
+          ]
+        }
+      },
+      {
+        "name": "unlock-session",
+        "description": "unlock one or more sessions",
+        "arguments": {
+          "states": [
+            {
+              "name": "session",
+              "repeatable": true,
+              "provider": "loginctl.sessions"
+            }
+          ]
+        }
+      },
+      {
+        "name": "lock-sessions",
+        "description": "lock all sessions"
+      },
+      {
+        "name": "unlock-sessions",
+        "description": "unlock all sessions"
+      },
+      {
+        "name": "terminate-session",
+        "description": "terminate one or more sessions",
+        "arguments": {
+          "states": [
+            {
+              "name": "session",
+              "repeatable": true,
+              "provider": "loginctl.sessions"
+            }
+          ]
+        }
+      },
+      {
+        "name": "kill-session",
+        "description": "send a signal to session processes",
+        "arguments": {
+          "states": [
+            {
+              "name": "session",
+              "repeatable": true,
+              "provider": "loginctl.sessions"
+            }
+          ]
+        }
+      },
+      {
+        "name": "list-users",
+        "description": "list logged-in users"
+      },
+      {
+        "name": "user-status",
+        "description": "show user status",
+        "arguments": {
+          "states": [
+            {
+              "name": "user",
+              "repeatable": true,
+              "provider": "loginctl.users"
+            }
+          ]
+        }
+      },
+      {
+        "name": "show-user",
+        "description": "show user or login manager properties",
+        "arguments": {
+          "states": [
+            {
+              "name": "user",
+              "repeatable": true,
+              "provider": "loginctl.users"
+            }
+          ]
+        }
+      },
+      {
+        "name": "enable-linger",
+        "description": "keep user services running after logout",
+        "arguments": {
+          "states": [
+            {
+              "name": "user",
+              "repeatable": true,
+              "provider": "loginctl.accounts"
+            }
+          ]
+        }
+      },
+      {
+        "name": "disable-linger",
+        "description": "stop keeping user services running after logout",
+        "arguments": {
+          "states": [
+            {
+              "name": "user",
+              "repeatable": true,
+              "provider": "loginctl.accounts"
+            }
+          ]
+        }
+      },
+      {
+        "name": "terminate-user",
+        "description": "terminate all sessions of one or more users",
+        "arguments": {
+          "states": [
+            {
+              "name": "user",
+              "repeatable": true,
+              "provider": "loginctl.users"
+            }
+          ]
+        }
+      },
+      {
+        "name": "kill-user",
+        "description": "send a signal to user processes",
+        "arguments": {
+          "states": [
+            {
+              "name": "user",
+              "repeatable": true,
+              "provider": "loginctl.users"
+            }
+          ]
+        }
+      },
+      {
+        "name": "list-seats",
+        "description": "list seats"
+      },
+      {
+        "name": "seat-status",
+        "description": "show seat status",
+        "arguments": {
+          "states": [
+            {
+              "name": "seat",
+              "repeatable": true,
+              "provider": "loginctl.seats"
+            }
+          ]
+        }
+      },
+      {
+        "name": "show-seat",
+        "description": "show seat or login manager properties",
+        "arguments": {
+          "states": [
+            {
+              "name": "seat",
+              "repeatable": true,
+              "provider": "loginctl.seats"
+            }
+          ]
+        }
+      },
+      {
+        "name": "attach",
+        "description": "attach devices to a seat",
+        "arguments": {
+          "states": [
+            {
+              "name": "seat",
+              "index": 0,
+              "provider": "loginctl.seats"
+            },
+            {
+              "name": "device",
+              "index": 1,
+              "repeatable": true,
+              "description": "device path in sysfs",
+              "provider": {
+                "builtin": "directories"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "name": "flush-devices",
+        "description": "remove all device associations"
+      },
+      {
+        "name": "terminate-seat",
+        "description": "terminate all sessions on one or more seats",
+        "arguments": {
+          "states": [
+            {
+              "name": "seat",
+              "repeatable": true,
+              "provider": "loginctl.seats"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
