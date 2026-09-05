@@ -50,7 +50,7 @@
             .status = 0,
         },
         .{
-            .name = "env builtin sees append assignment prefixes",
+            .name = "env external utility sees append assignment prefixes",
             .script =
             \\x=outer
             \\x+=-env env | grep '^x='

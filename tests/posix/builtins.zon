@@ -642,14 +642,12 @@
             .status = 0,
         },
         .{
-            .name = "echo and env resolve as regular builtins",
+            .name = "echo resolves as a regular builtin",
             .script =
             \\command -v echo
-            \\command -v env
             ,
             .stdout =
             \\echo
-            \\env
             \\
             ,
             .stderr = "",
@@ -1124,6 +1122,24 @@
             \\histatus:0
             \\
             ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "env external utility supports POSIX ignore environment option",
+            .script =
+            \\env -i FOO=inner printenv FOO
+            ,
+            .stdout = "inner\n",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "env external utility supports GNU split string option",
+            .script =
+            \\env -S 'printf <%s> two' one
+            ,
+            .stdout = "<two><one>",
             .stderr = "",
             .status = 0,
         },

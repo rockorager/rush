@@ -3,6 +3,30 @@
     .mode = .posix,
     .cases = .{
         .{
+            // Coreutils and findutils prepend build helpers to inherited PATH.
+            .name = "assignments preserve inherited export attributes",
+            .script =
+            \\set -e
+            \\ln -s "$(command -v "$0")" sh
+            \\PROBE=before ./sh -c 'PROBE=after; printenv PROBE'
+            \\./sh -c 'PATH=/probe; /usr/bin/printenv PATH'
+            \\PROBE=before ./sh -c 'PROBE=one; PROBE=two; printenv PROBE'
+            ,
+            .stdout = "after\n/probe\ntwo\n",
+        },
+        .{
+            // Reduced from Git 2.39.5's check-chainlint Make recipe.
+            .name = "brace groups accept a final unseparated compound command",
+            .script =
+            \\{ for value in x; do printf '%s\n' "$value"; done }
+            \\{ if true; then printf 'if\n'; fi }
+            \\{ (printf 'subshell\n') }
+            \\{ f() { printf 'function\n'; } }
+            \\f
+            ,
+            .stdout = "x\nif\nsubshell\nfunction\n",
+        },
+        .{
             // Debian Policy 10.4 requires local in /bin/sh; this is a
             // deliberate compatibility requirement beyond POSIX Issue 8.
             .name = "Debian maintainer scripts can localize assigned variables",

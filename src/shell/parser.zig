@@ -576,7 +576,9 @@ const Parser = struct {
             try self.expect(.right_paren);
         } else if (self.eat(.left_brace) != null) {
             const list = try self.parseList(.right_brace);
-            if (list.entries.len == 0 or list.entries[list.entries.len - 1].terminator == null) {
+            if (list.entries.len == 0 or (list.entries[list.entries.len - 1].terminator == null and
+                !andOrEndsWithUnredirectedCompoundCommand(list.entries[list.entries.len - 1].and_or)))
+            {
                 return error.UnexpectedToken;
             }
             body = .{ .brace_group = list };
@@ -2171,6 +2173,17 @@ fn isNameContinue(byte: u8) bool {
     };
 }
 
+fn andOrEndsWithUnredirectedCompoundCommand(and_or: ast.AndOr) bool {
+    std.debug.assert(and_or.pipelines.len != 0);
+    const pipeline = and_or.pipelines[and_or.pipelines.len - 1].pipeline;
+    std.debug.assert(pipeline.stages.len != 0);
+    return switch (pipeline.stages[pipeline.stages.len - 1]) {
+        .simple => false,
+        .compound => |compound| compound.redirections.len == 0,
+        .function_definition => |definition| definition.redirections.len == 0,
+    };
+}
+
 test "parser builds simple colon command" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -2492,6 +2505,41 @@ test "parsers reject adjacent commands without a list separator" {
 
     var incremental: Incremental = .init(allocator, src, tokens, shell_state);
     try std.testing.expectError(error.UnexpectedToken, incremental.next());
+}
+
+test "brace groups accept unseparated compound command closers" {
+    const cases = [_][]const u8{
+        "{ for value in x; do printf '%s\\n' \"$value\"; done }",
+        "{ if true; then :; fi }",
+        "{ while false; do :; done }",
+        "{ case x in x) :;; esac }",
+        "{ (:) }",
+    };
+
+    for (cases) |text| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const src: source_mod.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = text };
+        const tokens = try lexer.lex(allocator, src);
+        _ = try parse(allocator, src, tokens);
+    }
+}
+
+test "brace groups still require a separator after simple and redirected compound commands" {
+    const cases = [_][]const u8{
+        "{ echo x }",
+        "{ if true; then :; fi >/dev/null }",
+    };
+
+    for (cases) |text| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const src: source_mod.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = text };
+        const tokens = try lexer.lex(allocator, src);
+        try std.testing.expectError(error.UnexpectedToken, parse(allocator, src, tokens));
+    }
 }
 
 test "incremental parser consumes here-document bodies within command boundaries" {
