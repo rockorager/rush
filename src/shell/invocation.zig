@@ -4,6 +4,7 @@
 
 const std = @import("std");
 
+const builtin = @import("builtin.zig");
 const state = @import("state.zig");
 
 pub const ParseError = error{
@@ -24,9 +25,10 @@ pub const Interactive = struct {
     mode: state.Mode = .bash,
     options: state.Options = .{},
     arg_zero: []const u8,
+    positionals: []const []const u8 = &.{},
     login: bool = false,
-    /// True only when -i was given explicitly. Without it, a shell whose
-    /// standard input is not a terminal must run non-interactively.
+    /// True only when -i was given explicitly. Otherwise both standard input
+    /// and standard error must be terminals to run interactively.
     forced_interactive: bool = false,
 };
 
@@ -48,10 +50,14 @@ pub const ScriptFile = struct {
 pub fn parse(args: []const []const u8) ParseError!Invocation {
     std.debug.assert(args.len != 0);
 
-    var mode: state.Mode = .bash;
+    const base = std.fs.path.basename(args[0]);
+    const name = if (base.len > 0 and base[0] == '-') base[1..] else base;
+    var mode: state.Mode = if (std.mem.eql(u8, name, "sh")) .posix else .bash;
     var options: state.Options = .{};
     var login = isLoginArgZero(args[0]);
     var forced_interactive = false;
+    var command_string = false;
+    var standard_input = false;
     var index: usize = 1;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
@@ -65,64 +71,68 @@ pub fn parse(args: []const []const u8) ParseError!Invocation {
             mode = .posix;
             continue;
         }
-        if (std.mem.eql(u8, arg, "--")) {
-            if (index + 1 >= args.len) return error.MissingCommandString;
-            options.mode = mode;
-            return .{ .script_file = .{
-                .mode = mode,
-                .options = options,
-                .path = args[index + 1],
-                .positionals = args[index + 2 ..],
-            } };
+        if (std.mem.eql(u8, arg, "--") or std.mem.eql(u8, arg, "-")) {
+            index += 1;
+            break;
         }
-        if (arg.len > 1 and arg[0] == '-') {
-            var command_string = false;
+        if (arg.len > 1 and (arg[0] == '-' or arg[0] == '+')) {
+            const enabled = arg[0] == '-';
             for (arg[1..]) |option| switch (option) {
-                'c' => command_string = true,
+                'c' => {
+                    if (!enabled) return error.UnsupportedOption;
+                    command_string = true;
+                },
+                's' => {
+                    if (!enabled) return error.UnsupportedOption;
+                    standard_input = true;
+                },
                 'i' => {
+                    if (!enabled) return error.UnsupportedOption;
                     options.interactive = true;
                     options.history = true;
                     forced_interactive = true;
                 },
-                'l' => login = true,
-                'u' => options.nounset = true,
-                'x' => options.xtrace = true,
-                else => return error.UnsupportedOption,
+                'l' => login = enabled,
+                'o' => {
+                    index += 1;
+                    if (index >= args.len) return error.UnsupportedOption;
+                    if (!builtin.setNamedOption(&options, args[index], enabled)) return error.UnsupportedOption;
+                },
+                else => if (!builtin.setShortOption(&options, option, enabled)) return error.UnsupportedOption,
             };
-            if (command_string) {
-                if (index + 1 >= args.len) return error.MissingCommandString;
-                const script = args[index + 1];
-                const operands = args[index + 2 ..];
-                const arg_zero = if (operands.len == 0) args[0] else operands[0];
-                const positionals = if (operands.len <= 1) &.{} else operands[1..];
-                options.mode = mode;
-                return .{ .command_string = .{
-                    .mode = mode,
-                    .options = options,
-                    .script = script,
-                    .arg_zero = arg_zero,
-                    .positionals = positionals,
-                } };
-            }
             continue;
         }
-        if (arg.len != 0 and arg[0] == '-') return error.UnsupportedOption;
-        options.mode = mode;
+        break;
+    }
+
+    options.mode = mode;
+    if (command_string) {
+        if (index >= args.len) return error.MissingCommandString;
+        const operands = args[index + 1 ..];
+        return .{ .command_string = .{
+            .mode = mode,
+            .options = options,
+            .script = args[index],
+            .arg_zero = if (operands.len == 0) args[0] else operands[0],
+            .positionals = if (operands.len <= 1) &.{} else operands[1..],
+        } };
+    }
+    if (!standard_input and index < args.len) {
         return .{ .script_file = .{
             .mode = mode,
             .options = options,
-            .path = arg,
+            .path = args[index],
             .positionals = args[index + 1 ..],
         } };
     }
 
-    options.mode = mode;
     options.interactive = true;
     options.history = true;
     return .{ .interactive = .{
         .mode = mode,
         .options = options,
         .arg_zero = args[0],
+        .positionals = args[index..],
         .login = login,
         .forced_interactive = forced_interactive,
     } };
@@ -311,5 +321,61 @@ test "invocation parses version" {
     switch (try parse(&args)) {
         .version => {},
         else => return error.TestExpectedEqual,
+    }
+}
+
+test "invocation name sh selects POSIX mode for every input form" {
+    for ([_][]const u8{ "sh", "/bin/sh", "-sh", "/bin/-sh" }) |name| {
+        const stdin_invocation = (try parse(&.{name})).interactive;
+        try std.testing.expectEqual(state.Mode.posix, stdin_invocation.options.mode);
+        try std.testing.expectEqualStrings(name, stdin_invocation.arg_zero);
+        const command = (try parse(&.{ name, "-c", ":" })).command_string;
+        try std.testing.expectEqual(state.Mode.posix, command.options.mode);
+        const script = (try parse(&.{ name, "script" })).script_file;
+        try std.testing.expectEqual(state.Mode.posix, script.options.mode);
+    }
+    try std.testing.expectEqual(state.Mode.bash, (try parse(&.{"rush"})).interactive.options.mode);
+}
+
+test "invocation shares set flags and accepts options after c" {
+    const command = (try parse(&.{ "sh", "-c", "-abCefhmnuvx", "+abCfhmuvx", ":" })).command_string;
+    try std.testing.expect(command.options.errexit);
+    try std.testing.expect(command.options.noexec);
+    try std.testing.expect(!command.options.allexport);
+    try std.testing.expect(!command.options.notify);
+    try std.testing.expect(!command.options.noclobber);
+    try std.testing.expect(!command.options.noglob);
+    try std.testing.expect(!command.options.hashall);
+    try std.testing.expect(!command.options.monitor);
+    try std.testing.expect(!command.options.nounset);
+    try std.testing.expect(!command.options.verbose);
+    try std.testing.expect(!command.options.xtrace);
+}
+
+test "invocation shares named options and editing exclusions" {
+    const command = (try parse(&.{ "sh", "-eo", "pipefail", "+o", "errexit", "-o", "vi", "-c", ":" }))
+        .command_string;
+    try std.testing.expect(command.options.pipefail);
+    try std.testing.expect(!command.options.errexit);
+    try std.testing.expect(command.options.vi);
+    try std.testing.expect(!command.options.emacs);
+    try std.testing.expectError(error.UnsupportedOption, parse(&.{ "sh", "-o" }));
+    try std.testing.expectError(error.UnsupportedOption, parse(&.{ "sh", "-o", "unknown" }));
+    try std.testing.expectError(error.UnsupportedOption, parse(&.{ "sh", "-z" }));
+    try std.testing.expectError(error.MissingCommandString, parse(&.{ "sh", "-ec" }));
+}
+
+test "invocation stdin operands and option terminators preserve arguments" {
+    const input = (try parse(&.{ "sh", "-s", "--", "-first", "second" })).interactive;
+    try std.testing.expectEqualStrings("sh", input.arg_zero);
+    try std.testing.expectEqualSlices([]const u8, &.{ "-first", "second" }, input.positionals);
+    for ([_][]const u8{ "-", "--" }) |terminator| {
+        try std.testing.expectEqual(@as(usize, 0), (try parse(&.{ "sh", terminator })).interactive.positionals.len);
+        const file = (try parse(&.{ "sh", terminator, "-file", "arg" })).script_file;
+        try std.testing.expectEqualStrings("-file", file.path);
+        const command = (try parse(&.{ "sh", "-c", terminator, "-text", "name", "arg" })).command_string;
+        try std.testing.expectEqualStrings("-text", command.script);
+        try std.testing.expectEqualStrings("name", command.arg_zero);
+        try std.testing.expectEqualSlices([]const u8, &.{"arg"}, command.positionals);
     }
 }

@@ -1,0 +1,176 @@
+.{
+    .name = "Shell Option Execution Semantics",
+    .mode = .posix,
+    .cases = .{
+        .{
+            .name = "sh symlink selects POSIX command substitution errexit semantics",
+            .script =
+            \\ln -s "$(command -v "$0")" sh
+            \\./sh -ec 'value=$(false; printf unexpected); printf unexpected'
+            \\printf 'status:%s\n' "$?"
+            ,
+            .stdout = "status:1\n",
+        },
+        .{
+            .name = "sh symlink checks script syntax without filesystem effects",
+            .script =
+            \\ln -s "$(command -v "$0")" sh
+            \\printf '%s\n' 'printf unexpected >marker' 'value=$(touch substitution)' >script
+            \\./sh -n script
+            \\printf 'status:%s\n' "$?"
+            \\test ! -e marker && test ! -e substitution && printf 'no-effects\n'
+            ,
+            .stdout = "status:0\nno-effects\n",
+        },
+        .{
+            .name = "invocation errexit stops on first failed command",
+            .shell_args = .{"-e"},
+            .script = "false; printf unexpected",
+            .status = 1,
+        },
+        .{
+            .name = "invocation plus flags disable earlier options",
+            .shell_args = .{ "-eu", "+e", "+o", "nounset" },
+            .script = "false; printf '<%s>\\n' \"$unset\"",
+            .stdout = "<>\n",
+        },
+        .{
+            .name = "invocation named pipefail controls pipeline status",
+            .shell_args = .{ "-o", "pipefail" },
+            .script = "false | true",
+            .status = 1,
+        },
+        .{
+            .name = "invocation stdin mode supplies positional parameters",
+            .shell_args = .{ "-s", "--", "first", "two words" },
+            .script = "",
+            .stdin = "printf '%s:%s:%s\\n' \"$#\" \"$1\" \"$2\"\n",
+            .stdout = "2:first:two words\n",
+        },
+        .{
+            .name = "invocation stdin mode retains shared input for read",
+            .shell_args = .{"-s"},
+            .script = "",
+            .stdin = "read value\npayload\nprintf '<%s>\\n' \"$value\"\n",
+            .stdout = "<payload>\n",
+        },
+        .{
+            .name = "noexec from stdin does not execute commands",
+            .shell_args = .{"-ns"},
+            .script = "",
+            .stdin = "printf unexpected\nexit 7\n",
+        },
+        .{
+            .name = "set noexec prevents later commands from disabling it",
+            .script = "set -n\nset +n\nprintf unexpected\n",
+        },
+        .{
+            .name = "set noexec unwinds same-line and nested control flow",
+            .script = "for item in one two; do set -n && printf unexpected; done; printf unexpected\n",
+        },
+        .{
+            .name = "set noexec continues checking syntax after unwinding a function",
+            .script = "f() { set -n; printf unexpected; }; f\n)\n",
+            .stderr_match = .nonempty,
+            .status = 2,
+        },
+        .{
+            .name = "noexec parses commands without executing effects",
+            .shell_args = .{"-n"},
+            .script =
+            \\printf command
+            \\printf substitution >"$(printf path)"
+            \\trap 'printf trap' EXIT
+            ,
+            .stdout = "",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "noexec still diagnoses syntax errors",
+            .shell_args = .{"-n"},
+            .script =
+            \\printf before
+            \\)
+            ,
+            .stdout = "",
+            .stderr_match = .nonempty,
+            .status = 2,
+        },
+        .{
+            .name = "verbose writes raw input including comments and here-documents",
+            .shell_args = .{"-v"},
+            .script =
+            \\# retained comment
+            \\cat <<'EOF'
+            \\$raw
+            \\EOF
+            \\
+            ,
+            .stdout =
+            \\$raw
+            \\
+            ,
+            .stderr =
+            \\# retained comment
+            \\cat <<'EOF'
+            \\$raw
+            \\EOF
+            \\
+            ,
+            .status = 0,
+        },
+        .{
+            .name = "verbose follows set transitions between input lines",
+            .script =
+            \\set -v
+            \\printf 'one\n'
+            \\set +v
+            \\printf 'two\n'
+            ,
+            .stdout =
+            \\one
+            \\two
+            \\
+            ,
+            .stderr =
+            \\printf 'one\n'
+            \\set +v
+            \\
+            ,
+            .status = 0,
+        },
+        .{
+            .name = "verbose changes do not split an already read physical line",
+            .shell_args = .{"-v"},
+            .script = "set +v; : still-read\n: silent\nset -v; : also-silent\n: visible\n",
+            .stderr = "set +v; : still-read\n: visible\n",
+        },
+        .{
+            .name = "verbose preserves original alias input without echoing retries",
+            .script = "alias start='if true; then'\nset -v\nstart\n  : body\nfi\n",
+            .stderr = "start\n  : body\nfi\n",
+        },
+        .{
+            .name = "verbose stdin includes comments and unexpanded input",
+            .shell_args = .{"-vs"},
+            .script = "",
+            .stdin = "# comment\n\nvalue=expanded\nprintf '%s\\n' \"$value\"\n",
+            .stdout = "expanded\n",
+            .stderr = "# comment\n\nvalue=expanded\nprintf '%s\\n' \"$value\"\n",
+        },
+        .{
+            .name = "verbose writes input that fails to parse",
+            .shell_args = .{"-v"},
+            .script =
+            \\printf before
+            \\)
+            ,
+            .stdout =
+            \\before
+            ,
+            .stderr_match = .nonempty,
+            .status = 2,
+        },
+    },
+}

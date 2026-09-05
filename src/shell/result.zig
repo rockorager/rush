@@ -4,6 +4,9 @@ pub const ExitStatus = u8;
 
 pub const ControlFlow = union(enum) {
     normal,
+    /// Unwind the current command after enabling noexec; the source reader
+    /// must continue parsing subsequent input without evaluating it.
+    noexec,
     exit: ExitStatus,
     return_: ExitStatus,
     break_: usize,

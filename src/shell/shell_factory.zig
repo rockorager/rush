@@ -211,6 +211,7 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
             var boundaries_failed = false;
 
             var start: usize = 0;
+            var verbose_offset: usize = 0;
             var last: result.EvalResult = .{};
             while (start < src.text.len) {
                 var end: usize = undefined;
@@ -218,10 +219,14 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
                 if (boundaries_failed) {
                     end = src.text.len;
                 } else if (incremental.next()) |maybe_program| {
-                    const program = maybe_program orelse break;
+                    const program = maybe_program orelse {
+                        try self.writeVerboseInput(src.text, &verbose_offset, src.text.len);
+                        break;
+                    };
                     direct_program = program;
                     end = incremental.nextOffset();
                 } else |err| {
+                    try self.writeVerboseInput(src.text, &verbose_offset, src.text.len);
                     // Unexpanded text may only parse after alias expansion
                     // (an alias value can open a construct); retry the rest
                     // of the input through the alias-aware path.
@@ -233,12 +238,23 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
                     end = src.text.len;
                 }
 
-                const evaluated = if (direct_program != null and !self.aliasesMayRewrite())
-                    try self.evalParsedProgram(src.kind, direct_program.?)
-                else
-                    try self.evalAliasAwareCommand(src, &incremental, &boundaries_failed, start, &end);
+                const evaluated = if (direct_program != null and !self.aliasesMayRewrite()) evaluated: {
+                    try self.writeVerboseInput(src.text, &verbose_offset, end);
+                    break :evaluated try self.evalParsedProgram(src.kind, direct_program.?);
+                } else try self.evalAliasAwareCommand(
+                    src,
+                    &incremental,
+                    &boundaries_failed,
+                    start,
+                    &end,
+                    &verbose_offset,
+                );
 
                 last = evaluated;
+                if (last.flow == .noexec) {
+                    std.debug.assert(self.state.options.noexec and !self.state.options.interactive);
+                    last.flow = .normal;
+                }
                 if (last.flow != .normal) {
                     if ((self.state.options.interactive or
                         (self.state.options.mode == .bash and !self.state.options.errexit)) and
@@ -264,11 +280,13 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
             boundaries_failed: *bool,
             start: usize,
             end: *usize,
+            verbose_offset: *usize,
         ) !result.EvalResult {
             while (true) {
                 const require_complete = end.* < src.text.len;
                 var failure: ?parser.Failure = null;
                 const chunk = src.text[start..end.*];
+                try self.writeVerboseInput(src.text, verbose_offset, end.*);
                 return self.evalSourceChunk(src, chunk, require_complete, &failure) catch |err| switch (err) {
                     error.ExpectedCommand,
                     error.ExpectedRedirectionTarget,
@@ -313,6 +331,25 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
             return self.evalParsedProgram(src.kind, program);
         }
 
+        /// Writes original input to standard error under the verbose option.
+        /// The option is sampled at the start of each physical line because
+        /// the shell reads a whole line before executing commands from it.
+        fn writeVerboseInput(
+            self: *Self,
+            text: []const u8,
+            offset: *usize,
+            end: usize,
+        ) !void {
+            std.debug.assert(offset.* <= text.len and end <= text.len);
+            if (offset.* >= end) return;
+            var read_end = end;
+            if (text[end - 1] != '\n') {
+                read_end = if (std.mem.findScalarPos(u8, text, end, '\n')) |newline| newline + 1 else text.len;
+            }
+            if (self.state.options.verbose) try self.host.writeAll(.stderr, text[offset.*..read_end]);
+            offset.* = read_end;
+        }
+
         /// Advances Bash's command number only after an interactive command
         /// has parsed successfully and immediately before it begins executing.
         fn evalParsedProgram(
@@ -321,6 +358,7 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
             program: ast.Program,
         ) !result.EvalResult {
             if (source_kind == .interactive) self.state.prompt_command_number +|= 1;
+            if (!self.state.options.interactive and self.state.options.noexec) return .{};
             return eval.evalProgram(Host, self, program);
         }
 

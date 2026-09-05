@@ -5,26 +5,27 @@ rush \- POSIX-facing shell with modern interactive features
 .B rush
 .RB [ -l " | " --login ]
 .RB [ --posix ]
-.RB [ -i ]
-.RB [ -u ]
-.RB [ -x ]
+.RI [ options ]
 .PP
 .B rush
 .RB [ --posix ]
-.RB [ -i ]
-.RB [ -u ]
-.RB [ -x ]
+.RI [ options ]
 .BI -c " script"
 .RI [ name
 .RI [ args ...]]
 .PP
 .B rush
 .RB [ --posix ]
-.RB [ -i ]
-.RB [ -u ]
-.RB [ -x ]
+.RI [ options ]
 .RB [ -- ]
 .I script-file
+.RI [ args ...]
+.PP
+.B rush
+.RB [ --posix ]
+.RI [ options ]
+.B -s
+.RB [ -- ]
 .RI [ args ...]
 .PP
 .B rush --help
@@ -39,7 +40,7 @@ completion, and asynchronous prompts.
 .PP
 With no script operand,
 .B rush
-starts an interactive shell when standard input is a terminal.  Otherwise it
+starts an interactive shell when standard input and standard error are terminals.  Otherwise it
 reads commands from standard input.  The
 .B -i
 option forces interactive operation when standard input is not a terminal.
@@ -54,8 +55,7 @@ is present, it becomes
 .BR $0 ;
 remaining operands become positional parameters.  Without
 .IR name ,
-.B rush
-is used as
+the invocation name is used as
 .BR $0 .
 .PP
 When a script file is supplied, its path becomes
@@ -76,9 +76,36 @@ also selects login-shell behavior.
 .B --posix
 Select POSIX mode.  Rush targets POSIX.1-2024 (Issue 8) in this mode and
 diagnoses unsupported compatibility syntax more strictly.
+Invoking Rush with the basename
+.B sh
+or login name
+.B -sh
+also selects this mode.  Rush does not install or replace
+.IR /bin/sh .
 .TP
 .B -i
 Force interactive operation.
+.TP
+.B -abCefhmnuvx
+Enable the corresponding
+.B set
+options: allexport, notify, noclobber, errexit, noglob, hashall, monitor,
+noexec, nounset, verbose, and xtrace.  A leading plus sign disables options.
+Short options may be combined.
+.TP
+.BI -o " name"
+Enable a named
+.B set
+option.  Use
+.BI +o " name"
+to disable it.
+.TP
+.B -n
+Parse commands without executing them.  Syntax errors still produce diagnostics
+and a nonzero status.  Interactive shells ignore this option.
+.TP
+.B -v
+Write shell input to standard error as it is read.
 .TP
 .B -u
 Treat expansion of an unset parameter as an error.
@@ -91,9 +118,14 @@ Read commands from
 .I script
 instead of a file or standard input.
 .TP
-.B --
+.B -s
+Read commands from standard input, using remaining operands as positional
+parameters and preserving the invocation name as
+.BR $0 .
+.TP
+.BR -- " or " -
 End option processing.  This is required when a script file name begins with
-a hyphen.
+a hyphen or plus sign.  With no script operand, read standard input.
 .SH INTERACTIVE FEATURES
 Interactive Rush provides Emacs and vi editing modes, persistent searchable
 history, context-aware autosuggestions, JSON completion manifests, dynamic

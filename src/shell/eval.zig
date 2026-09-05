@@ -278,6 +278,9 @@ fn evalAndOr(shell: anytype, and_or: ast.AndOr) EvalError!result.EvalResult {
         shell.state.last_status = last.status;
         if (ignore_errexit) shell.state.errexit_ignore_depth -= 1;
         if (last.flow != .normal) return last;
+        if (shell.state.options.noexec and !shell.state.options.interactive) {
+            return .{ .status = last.status, .flow = .noexec };
+        }
     }
     return last;
 }

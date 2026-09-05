@@ -1661,27 +1661,16 @@ fn evalSet(shell: anytype, args: []const []const u8) !result.EvalResult {
         if (std.mem.eql(u8, arg[1..], "o")) {
             index += 1;
             if (index >= args.len) return listSetOptions(shell, enabled);
-            if (!setNamedOption(shell, args[index], enabled)) return setUsageError(shell);
+            if (!setNamedOption(&shell.state.options, args[index], enabled)) return setUsageError(shell);
             continue;
         }
         for (arg[1..]) |option| switch (option) {
-            'a' => shell.state.options.allexport = enabled,
-            'b' => shell.state.options.notify = enabled,
-            'C' => shell.state.options.noclobber = enabled,
-            'e' => shell.state.options.errexit = enabled,
-            'f' => shell.state.options.noglob = enabled,
-            'h' => shell.state.options.hashall = enabled,
-            'm' => shell.state.options.monitor = enabled,
-            'n' => shell.state.options.noexec = enabled,
             'o' => {
                 index += 1;
                 if (index >= args.len) return listSetOptions(shell, enabled);
-                if (!setNamedOption(shell, args[index], enabled)) return setUsageError(shell);
+                if (!setNamedOption(&shell.state.options, args[index], enabled)) return setUsageError(shell);
             },
-            'u' => shell.state.options.nounset = enabled,
-            'v' => shell.state.options.verbose = enabled,
-            'x' => shell.state.options.xtrace = enabled,
-            else => return setUsageError(shell),
+            else => if (!setShortOption(&shell.state.options, option, enabled)) return setUsageError(shell),
         };
     }
     return .{};
@@ -1832,35 +1821,56 @@ fn listSetOptions(shell: anytype, table: bool) !result.EvalResult {
     return .{};
 }
 
-fn setNamedOption(shell: anytype, name: []const u8, enabled: bool) bool {
+/// Applies a shared invocation/set option; returns false for an unknown letter.
+pub fn setShortOption(options: *state_mod.Options, option: u8, enabled: bool) bool {
+    switch (option) {
+        'a' => options.allexport = enabled,
+        'b' => options.notify = enabled,
+        'C' => options.noclobber = enabled,
+        'e' => options.errexit = enabled,
+        'f' => options.noglob = enabled,
+        'h' => options.hashall = enabled,
+        'm' => options.monitor = enabled,
+        'n' => options.noexec = enabled,
+        'u' => options.nounset = enabled,
+        'v' => options.verbose = enabled,
+        'x' => options.xtrace = enabled,
+        else => return false,
+    }
+    return true;
+}
+
+/// Applies a shared invocation/set option, including editing-mode exclusions.
+/// Returns false for an unknown name without changing the options.
+pub fn setNamedOption(options: *state_mod.Options, name: []const u8, enabled: bool) bool {
     const option = set_option_names.get(name) orelse return false;
     switch (option) {
-        .allexport => shell.state.options.allexport = enabled,
+        .allexport => options.allexport = enabled,
         .emacs => {
             // Emacs-style editing is Rush's default interactive mode. Enabling
             // it clears vi; disabling it only clears the explicit option bit
             // and does not enable vi.
-            shell.state.options.emacs = enabled;
-            if (enabled) shell.state.options.vi = false;
+            options.emacs = enabled;
+            if (enabled) options.vi = false;
         },
-        .errexit => shell.state.options.errexit = enabled,
-        .hashall => shell.state.options.hashall = enabled,
-        .history => shell.state.options.history = enabled,
-        .monitor => shell.state.options.monitor = enabled,
-        .noclobber => shell.state.options.noclobber = enabled,
-        .noexec => shell.state.options.noexec = enabled,
-        .noglob => shell.state.options.noglob = enabled,
-        .notify => shell.state.options.notify = enabled,
-        .nounset => shell.state.options.nounset = enabled,
-        .pipefail => shell.state.options.pipefail = enabled,
+        .errexit => options.errexit = enabled,
+        .hashall => options.hashall = enabled,
+        .history => options.history = enabled,
+        .monitor => options.monitor = enabled,
+        .noclobber => options.noclobber = enabled,
+        .noexec => options.noexec = enabled,
+        .noglob => options.noglob = enabled,
+        .notify => options.notify = enabled,
+        .nounset => options.nounset = enabled,
+        .pipefail => options.pipefail = enabled,
         .vi => {
             // POSIX vi editing mode. Enabling it turns off emacs; disabling it
             // restores Rush's default emacs-style editing option.
-            shell.state.options.vi = enabled;
-            shell.state.options.emacs = !enabled;
+            options.vi = enabled;
+            options.emacs = !enabled;
         },
-        .verbose => shell.state.options.verbose = enabled,
-        .xtrace => shell.state.options.xtrace = enabled,
+        .verbose => options.verbose = enabled,
+        .xtrace => options.xtrace = enabled,
     }
     return true;
 }

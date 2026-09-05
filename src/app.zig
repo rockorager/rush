@@ -13,11 +13,13 @@ const shell = @import("shell.zig");
 const RushShell = shell.ShellWithBuiltins(host.RealHost, extensions.rush.registry);
 
 const usage =
-    \\usage: rush [-l | --login] [--posix] [-i] [-u] [-x]
-    \\       rush [--posix] [-i] [-u] [-x] -c SCRIPT [NAME [ARGS...]]
-    \\       rush [--posix] [-i] [-u] [-x] [--] SCRIPT [ARGS...]
+    \\usage: rush [--posix] [-l | --login] [OPTIONS] [--] [SCRIPT [ARGS...]]
+    \\       rush [--posix] [OPTIONS] -c SCRIPT [NAME [ARGS...]]
+    \\       rush [--posix] [OPTIONS] -s [--] [ARGS...]
     \\       rush --help
     \\       rush --version
+    \\Options: -i, -/+abCefhmnuvx, -o NAME, +o NAME
+    \\Invoking as sh selects POSIX mode.
     \\
 ;
 
@@ -59,7 +61,7 @@ pub fn run(
             return interactive.run(root_allocator, real_host, threaded_io.io(), init.environ.block.view().slice, .{
                 .state_options = interactive_invocation.options,
                 .arg_zero = interactive_invocation.arg_zero,
-                .positionals = &.{},
+                .positionals = interactive_invocation.positionals,
                 .login = interactive_invocation.login,
                 .forced_interactive = interactive_invocation.forced_interactive,
             });

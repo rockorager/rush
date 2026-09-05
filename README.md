@@ -107,15 +107,22 @@ zig build run -- -c 'echo hello'
 Supported CLI forms:
 
 ```text
-rush [-l | --login] [--posix] [-i] [-u] [-x]
-rush [--posix] [-i] [-u] [-x] -c SCRIPT [NAME [ARGS...]]
-rush [--posix] [-i] [-u] [-x] [--] SCRIPT_FILE [ARGS...]
+rush [--posix] [-l | --login] [OPTIONS] [--] [SCRIPT_FILE [ARGS...]]
+rush [--posix] [OPTIONS] -c SCRIPT [NAME [ARGS...]]
+rush [--posix] [OPTIONS] -s [--] [ARGS...]
 rush --help
 rush --version
 ```
 
-`--posix` selects strict POSIX mode. Default Rush starts from the same POSIX
-core and enables selected compatibility and interactive features.
+Options include `-i`, the `set` flags `-abCefhmnuvx` (or `+` to disable),
+and `-o NAME` / `+o NAME`. For example, `rush -ec 'command'` enables errexit,
+`rush -n script.sh` checks syntax without executing commands, and
+`rush -s -- arg1 arg2` reads commands from stdin with positional parameters.
+
+`--posix` selects strict POSIX mode. Invoking Rush with the basename `sh`
+(including a `sh` symlink or login name `-sh`) also selects POSIX mode.
+Default Rush starts from the same POSIX core and enables selected compatibility
+and interactive features. This does not install or replace `/bin/sh`.
 
 ## Test and validation
 

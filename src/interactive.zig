@@ -39,9 +39,9 @@ pub fn run(
 ) !u8 {
     var host_probe = real_host;
     const stdin_terminal = host_probe.isTerminalFd(.stdin);
-    // POSIX: without -i, a shell whose standard input is not a terminal is
-    // not interactive; it reads commands from standard input like a script.
-    const interactive = options.forced_interactive or stdin_terminal;
+    // Without -i, POSIX requires both standard input and standard error to
+    // be terminals before treating standard-input commands as interactive.
+    const interactive = options.forced_interactive or (stdin_terminal and host_probe.isTerminalFd(.stderr));
     var state_options = options.state_options;
     state_options.interactive = interactive;
     if (interactive) state_options.history = true;
