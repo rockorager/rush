@@ -230,11 +230,8 @@ pub fn scanCommandSubstitution(text: []const u8, open_index: usize, end: usize) 
             continue;
         }
         switch (text[index]) {
-            '\'', '"' => |quote| {
-                index += 1;
-                while (index < end and text[index] != quote) index += 1;
-                if (index >= end) return error.UnclosedQuote;
-            },
+            '\'' => index = try scanSingleQuoteEnd(text, index + 1, end),
+            '"' => index = try scanDoubleQuoteEnd(text, index + 1, end),
             '\\' => if (index + 1 < end) {
                 index += 1;
             },
@@ -284,10 +281,10 @@ fn scanCaseCommandText(text: []const u8, start: usize, end: usize) ScanError!usi
             continue;
         }
         if (text[index] == '\'' or text[index] == '"') {
-            const quote = text[index];
-            index += 1;
-            while (index < end and text[index] != quote) index += 1;
-            if (index >= end) return error.UnclosedQuote;
+            index = if (text[index] == '\'')
+                try scanSingleQuoteEnd(text, index + 1, end)
+            else
+                try scanDoubleQuoteEnd(text, index + 1, end);
             index += 1;
             continue;
         }
@@ -349,6 +346,24 @@ test "balanced scanners handle case text and top-level delimiters" {
     try std.testing.expectEqual(@as(?usize, 13), topLevelParameterColon("$(printf ':'):$x"));
     try std.testing.expectEqual(@as(?usize, 5), topLevelParameterSlash("(a/b)/c/d", 0));
     try std.testing.expectEqual(@as(?usize, 8), topLevelArithmeticSemicolon("f('a;b'); x", 0));
+}
+
+test "command substitution quotes preserve escapes and nested substitutions" {
+    const commands = [_][]const u8{
+        \\$(printf '%s' "\"x\"")tail
+        ,
+        \\$(case x in x) printf '%s' "\"x\"";; esac)tail
+        ,
+        \\$(printf '%s' "$(printf '%s' ")")")tail
+        ,
+        \\$(case x in x) printf '%s' "$(printf '%s' "esac)")";; esac)tail
+        ,
+        \\$(printf '%s' '\')tail
+        ,
+    };
+    for (commands) |command| {
+        try std.testing.expectEqual(command.len - "tail".len - 1, try scanCommandSubstitution(command, 1, command.len));
+    }
 }
 
 test "balanced scanners retain incomplete construct errors" {

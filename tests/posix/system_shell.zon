@@ -31,6 +31,15 @@
             .stdout = "<xy>\n",
         },
         .{
+            // Reduced from gzip 1.12's zgrep --label argument quoting.
+            .name = "gzip zgrep preserves escaped double quotes inside command substitution",
+            .script =
+            \\value=$(printf '%s\n' "\"x\"")
+            \\printf '<%s>\n' "$value"
+            ,
+            .stdout = "<\"x\">\n",
+        },
+        .{
             // Reduced from Automake's mdate-sh, used by gzip's doc build.
             .name = "Automake backquote eval preserves an escaped variable reference",
             .script =

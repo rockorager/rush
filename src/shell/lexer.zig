@@ -5,6 +5,7 @@
 
 const std = @import("std");
 
+const parse_scan = @import("parse_scan.zig");
 const source_mod = @import("source.zig");
 const state_mod = @import("state.zig");
 const token = @import("token.zig");
@@ -1003,39 +1004,7 @@ const Lexer = struct {
     }
 
     fn scanCommandSubstitutionText(text: []const u8, open_index: usize) ?usize {
-        std.debug.assert(text[open_index] == '(');
-        var depth: usize = 1;
-        var quote: ?u8 = null;
-        var index = open_index + 1;
-        while (index < text.len and depth != 0) {
-            const byte = text[index];
-            if (quote) |delimiter| {
-                if (byte == delimiter) quote = null;
-                index += 1;
-                continue;
-            }
-            if (byte == '\\') {
-                index += if (index + 1 < text.len) 2 else 1;
-                continue;
-            }
-            if (byte == '\'' or byte == '"') {
-                quote = byte;
-                index += 1;
-                continue;
-            }
-            if (byte == '$' and index + 1 < text.len and text[index + 1] == '(') {
-                depth += 1;
-                index += 2;
-                continue;
-            }
-            if (byte == '(') depth += 1;
-            if (byte == ')') {
-                depth -= 1;
-                if (depth == 0) return index;
-            }
-            index += 1;
-        }
-        return null;
+        return parse_scan.scanCommandSubstitution(text, open_index, text.len) catch null;
     }
 
     fn doubleQuoteEscapes(byte: u8) bool {
@@ -1122,24 +1091,12 @@ const Lexer = struct {
 
     fn skipCommandSubstitution(self: *Lexer) std.mem.Allocator.Error!void {
         var depth: usize = 1;
-        var quote: ?u8 = null;
-        var quote_start: usize = 0;
         while (!self.atEnd() and depth != 0) {
             if (self.startsReservedWord("case")) {
                 try self.skipCaseCommandText();
                 continue;
             }
             const byte = self.peek();
-            if (quote) |delimiter| {
-                if (byte == delimiter) {
-                    quote = null;
-                    self.advanceOne();
-                    try self.emitTrivia(.quote, quote_start, self.position.byte_offset);
-                    continue;
-                }
-                self.advanceOne();
-                continue;
-            }
             if (byte == '#' and self.commentStartsAtCurrentOffset()) {
                 try self.skipComment();
                 continue;
@@ -1150,9 +1107,7 @@ const Lexer = struct {
                 continue;
             }
             if (byte == '\'' or byte == '"') {
-                quote = byte;
-                quote_start = self.position.byte_offset;
-                self.advanceOne();
+                try self.skipQuotedText();
                 continue;
             }
             if (byte == '$' and self.peekNextIs('(')) {
@@ -1165,7 +1120,33 @@ const Lexer = struct {
             if (byte == ')') depth -= 1;
             self.advanceOne();
         }
-        if (quote != null) try self.emitTrivia(.pending_quote, quote_start, self.position.byte_offset);
+    }
+
+    fn skipQuotedText(self: *Lexer) std.mem.Allocator.Error!void {
+        const quote = self.peek();
+        std.debug.assert(quote == '\'' or quote == '"');
+        const start = self.position.byte_offset;
+        self.advanceOne();
+        if (quote == '"') {
+            const end = parse_scan.scanDoubleQuoteEnd(
+                self.source.text,
+                self.position.byte_offset,
+                self.source.text.len,
+            ) catch {
+                self.advanceBytes(self.source.text.len - self.position.byte_offset);
+                try self.emitTrivia(.pending_quote, start, self.position.byte_offset);
+                return;
+            };
+            self.advanceBytes(end - self.position.byte_offset);
+        } else {
+            while (!self.atEnd() and self.peek() != quote) self.advanceOne();
+        }
+        if (!self.atEnd()) {
+            self.advanceOne();
+            try self.emitTrivia(.quote, start, self.position.byte_offset);
+        } else {
+            try self.emitTrivia(.pending_quote, start, self.position.byte_offset);
+        }
     }
 
     fn commentStartsAtCurrentOffset(self: Lexer) bool {
@@ -1196,16 +1177,7 @@ const Lexer = struct {
                 continue;
             }
             if (byte == '\'' or byte == '"') {
-                const quote = byte;
-                const quote_start = self.position.byte_offset;
-                self.advanceOne();
-                while (!self.atEnd() and self.peek() != quote) self.advanceOne();
-                if (!self.atEnd()) {
-                    self.advanceOne();
-                    try self.emitTrivia(.quote, quote_start, self.position.byte_offset);
-                } else {
-                    try self.emitTrivia(.pending_quote, quote_start, self.position.byte_offset);
-                }
+                try self.skipQuotedText();
                 continue;
             }
             if (byte == '$' and self.peekNextIs('(')) {
