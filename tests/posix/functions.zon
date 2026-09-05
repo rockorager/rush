@@ -572,6 +572,61 @@
             .status = 0,
         },
         .{
+            .name = "function argument snapshots survive source variable mutation",
+            .script =
+            \\value=before other=original
+            \\f() { value=after; unset other; printf '<%s>\n' "$@"; }
+            \\f $value "$value" $other "$other" "" '*'
+            \\printf 'after:%s:%s\n' "$value" "${other-unset}"
+            ,
+            .stdout =
+            \\<before>
+            \\<before>
+            \\<original>
+            \\<original>
+            \\<>
+            \\<*>
+            \\after:after:unset
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "nested positional frames restore arguments after set shift and return",
+            .script =
+            \\set -- discard root1 root2
+            \\shift
+            \\inner() { printf 'inner:%s:%s\n' "$#" "$1"; set -- changed; shift; return 3; }
+            \\outer() {
+            \\    shift
+            \\    inner "$@"
+            \\    printf 'outer:%s:%s:%s\n' "$?" "$#" "$1"
+            \\    set -- replacement
+            \\    inner "$@"
+            \\    printf 'replaced:%s:%s\n' "$#" "$1"
+            \\    return 7
+            \\}
+            \\outer skip "$@"
+            \\printf 'root:%s:%s:%s:%s\n' "$?" "$#" "$1" "$2"
+            \\empty() { printf 'empty:%s\n' "$#"; set -- hidden; }
+            \\empty
+            \\printf 'root:%s:%s:%s\n' "$#" "$1" "$2"
+            ,
+            .stdout =
+            \\inner:2:root1
+            \\outer:3:2:root1
+            \\inner:1:replacement
+            \\replaced:1:replacement
+            \\root:7:2:root1:root2
+            \\empty:0
+            \\root:2:root1:root2
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "function redefinition replaces the previous body",
             .script =
             \\foo() { printf 'old\n'; }

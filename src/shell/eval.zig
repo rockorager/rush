@@ -14,6 +14,7 @@ const pattern_mod = @import("pattern.zig");
 const parser = @import("parser.zig");
 const prompt_mod = @import("prompt.zig");
 const result = @import("result.zig");
+const shell_factory = @import("shell_factory.zig");
 const source_mod = @import("source.zig");
 const state_mod = @import("state.zig");
 const token_mod = @import("token.zig");
@@ -4570,27 +4571,29 @@ fn evalFunction(
     const saved = try saveAssignmentVariables(shell, assignments);
     defer restoreVariables(shell, saved);
 
-    const saved_positionals = try savePositionals(shell);
-    defer freeSavedPositionals(shell, saved_positionals);
-    var restored_positionals = false;
-    errdefer if (!restored_positionals) restorePositionals(shell, saved_positionals) catch {};
+    // Expanded arguments can borrow mutable variables or the caller's positionals.
+    // Snapshot them before assignments or the body can replace their source storage.
+    // The enclosing simple-command scratch scope outlives this entire invocation.
+    const allocator = shell.scratchAllocator();
+    const positionals = try allocator.alloc([]const u8, args.len);
+    for (args, 0..) |arg, index| positionals[index] = try allocator.dupe(u8, arg);
 
     try applyExportedAssignments(shell, assignments);
     try pushFunctionLocalFrame(shell, assignments);
     var local_frame_popped = false;
     // ziglint-ignore: Z026 best-effort restore; the enclosing error already aborts the function call
     defer if (!local_frame_popped) shell.state.popLocalFrame() catch {};
-    try shell.state.setPositionals(args);
-    const saved_loop_depth = shell.state.loop_depth;
-    shell.state.loop_depth = 0;
-    errdefer shell.state.loop_depth = saved_loop_depth;
-    const evaluated = try evalCommand(shell, .{ .compound = .{
-        .body = function.definition.body,
-        .redirections = function.definition.redirections,
-    } });
-    shell.state.loop_depth = saved_loop_depth;
-    try restorePositionals(shell, saved_positionals);
-    restored_positionals = true;
+    const evaluated = blk: {
+        var positional_frame = shell.state.pushPositionalFrame(positionals);
+        defer shell.state.popPositionalFrame(&positional_frame);
+        const saved_loop_depth = shell.state.loop_depth;
+        shell.state.loop_depth = 0;
+        defer shell.state.loop_depth = saved_loop_depth;
+        break :blk try evalCommand(shell, .{ .compound = .{
+            .body = function.definition.body,
+            .redirections = function.definition.redirections,
+        } });
+    };
     local_frame_popped = true;
     try shell.state.popLocalFrame();
     if (evaluated.flow == .return_) return .{ .status = evaluated.status };
@@ -4599,6 +4602,43 @@ fn evalFunction(
         return .{ .status = evaluated.status };
     }
     return evaluated;
+}
+
+test "function allocation failures preserve caller positional ownership and unwind frames" {
+    const Shell = shell_factory.Shell(host_mod.RealHost);
+    var failure_offset: usize = 0;
+    while (true) : (failure_offset += 1) {
+        var allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+        var shell = Shell.init(allocator.allocator(), .{}, .{});
+        defer shell.deinit();
+        _ = try shell.evalSource(.{
+            .id = 1,
+            .kind = .command_string,
+            .name = "test",
+            .text = "g() { shift; : \"$1\"; }; f() { set -- changed arguments; g \"$@\"; }",
+        });
+        const large_arg = "x" ** 8192;
+        try shell.state.setPositionals(&.{ large_arg, "caller-second" });
+        const caller = shell.state.positionals;
+        shell.state.loop_depth = 3;
+        const scratch = try shell.beginScratchScope();
+        defer scratch.end();
+        allocator.fail_index = allocator.alloc_index + failure_offset;
+
+        if (evalFunction(&shell, shell.state.getFunction("f").?, &.{}, caller)) |evaluated| {
+            try std.testing.expectEqual(@as(result.ExitStatus, 0), evaluated.status);
+        } else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+        }
+        try std.testing.expectEqual(caller.ptr, shell.state.positionals.ptr);
+        try std.testing.expectEqual(caller.ptr, shell.state.owned_positionals.ptr);
+        try std.testing.expectEqualStrings(large_arg, shell.state.positionals[0]);
+        try std.testing.expectEqualStrings("caller-second", shell.state.positionals[1]);
+        try std.testing.expectEqual(@as(usize, 0), shell.state.function_call_stack.items.len);
+        try std.testing.expectEqual(@as(usize, 0), shell.state.local_frames.items.len);
+        try std.testing.expectEqual(@as(usize, 3), shell.state.loop_depth);
+        if (!allocator.has_induced_failure) break;
+    }
 }
 
 fn pushFunctionLocalFrame(shell: anytype, assignments: []const ast.Assignment) !void {

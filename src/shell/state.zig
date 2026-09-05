@@ -1003,6 +1003,35 @@ pub const State = struct {
         _ = self.function_call_stack.pop();
     }
 
+    pub const PositionalFrame = struct {
+        positionals: []const []const u8,
+        owned_positionals: []const []const u8,
+    };
+
+    /// Suspends the current positional view and ownership without allocating.
+    /// The new arguments are borrowed and must remain valid until the frame is popped.
+    /// Frames must be popped exactly once, in reverse push order.
+    pub fn pushPositionalFrame(self: *State, positionals: []const []const u8) PositionalFrame {
+        const frame: PositionalFrame = .{
+            .positionals = self.positionals,
+            .owned_positionals = self.owned_positionals,
+        };
+        self.positionals = positionals;
+        self.owned_positionals = &.{};
+        return frame;
+    }
+
+    /// Frees any replacement arguments owned by the callee and restores the caller
+    /// without allocating. Consumes the innermost positional frame.
+    pub fn popPositionalFrame(self: *State, frame: *PositionalFrame) void {
+        std.debug.assert(self.owned_positionals.len == 0 or
+            self.owned_positionals.ptr != frame.owned_positionals.ptr);
+        self.freeOwnedPositionals();
+        self.positionals = frame.positionals;
+        self.owned_positionals = frame.owned_positionals;
+        frame.* = undefined;
+    }
+
     pub fn setPositionals(self: *State, positionals: []const []const u8) !void {
         const owned = try self.allocator.alloc([]const u8, positionals.len);
         errdefer self.allocator.free(owned);
@@ -1501,4 +1530,33 @@ test "State reuses pipeline status storage and preserves it on allocation failur
     allocator.fail_index = std.math.maxInt(usize);
     try shell_state.setLastPipelineStatuses(&.{6});
     try std.testing.expectEqualSlices(result.ExitStatus, &.{6}, shell_state.last_pipeline_statuses);
+}
+
+test "positional frames preserve borrowed and owned views without allocating on restore" {
+    var allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var shell_state = State.init(allocator.allocator(), .{});
+    defer shell_state.deinit();
+
+    const borrowed: []const []const u8 = &.{ "cli-first", "cli-second" };
+    shell_state.positionals = borrowed;
+    var outer = shell_state.pushPositionalFrame(&.{"function"});
+    try shell_state.setPositionals(&.{ "discard", "keep" });
+    const owned = shell_state.owned_positionals;
+    shell_state.positionals = owned[1..];
+
+    var inner = shell_state.pushPositionalFrame(&.{"nested"});
+    try shell_state.setPositionals(&.{ "replacement", "arguments" });
+    allocator.fail_index = allocator.alloc_index;
+    try std.testing.expectError(error.OutOfMemory, shell_state.setPositionals(&.{"failed"}));
+    shell_state.popPositionalFrame(&inner);
+    try std.testing.expectEqual(owned.ptr, shell_state.owned_positionals.ptr);
+    try std.testing.expectEqual(owned[1..].ptr, shell_state.positionals.ptr);
+    try std.testing.expectEqualStrings("keep", shell_state.positionals[0]);
+
+    var empty = shell_state.pushPositionalFrame(&.{});
+    try std.testing.expectEqual(@as(usize, 0), shell_state.positionals.len);
+    shell_state.popPositionalFrame(&empty);
+    shell_state.popPositionalFrame(&outer);
+    try std.testing.expectEqual(borrowed.ptr, shell_state.positionals.ptr);
+    try std.testing.expectEqual(@as(usize, 0), shell_state.owned_positionals.len);
 }
