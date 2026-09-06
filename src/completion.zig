@@ -123,6 +123,7 @@ fn analyzeLine(allocator: std.mem.Allocator, source: []const u8, raw_cursor: usi
     defer arena.deinit();
     const src: shell.source.Source = .{ .id = 0, .kind = .interactive, .name = "completion", .text = source };
     const tokens = try shell.lexer.lex(arena.allocator(), src);
+    defer tokens.deinit(arena.allocator());
 
     var words: std.ArrayList(Word) = .empty;
     errdefer words.deinit(allocator);
@@ -131,7 +132,8 @@ fn analyzeLine(allocator: std.mem.Allocator, source: []const u8, raw_cursor: usi
     var current_word_index: ?usize = null;
     var current_word_class: ?shell.token.CommandPositionTracker.Class = null;
     var command_word_index: ?usize = null;
-    for (tokens) |tok| {
+    for (0..tokens.items.len) |token_index| {
+        const tok = tokens.get(token_index);
         if (tok.kind == .eof) break;
         if (tok.span.start >= cursor) break;
         const class = tracker.classify(tok);

@@ -12,23 +12,24 @@ const token = @import("token.zig");
 
 pub const LexError = error{};
 
-/// Returns allocator-backed token storage. `src.text` must remain valid while
-/// the tokens are used; use an arena when normalized token text also needs to
-/// be reclaimed with the token stream.
-pub fn lex(allocator: std.mem.Allocator, src: source_mod.Source) std.mem.Allocator.Error![]const token.Token {
+/// Returns allocator-backed token storage and metadata. `src.text` and
+/// normalized token text must remain valid while the stream and AST are used;
+/// call `deinit` to release only the stream's storage and metadata.
+/// Use an arena when normalized text also needs to be reclaimed together.
+pub fn lex(allocator: std.mem.Allocator, src: source_mod.Source) std.mem.Allocator.Error!token.Stream {
     return lexWithTokenAllocator(allocator, allocator, src);
 }
 
-/// Allocates the returned token slice with `token_allocator`, independently of
-/// normalized text allocated with `allocator`. Free the slice with
-/// `token_allocator`; source and normalized text must outlive all token use.
+/// Allocates the returned token storage and metadata with `token_allocator`,
+/// independently of normalized text allocated with `allocator`. Deinitialize
+/// the stream with `token_allocator`; source and normalized text remain borrowed.
 /// A reclaiming token allocator avoids retaining old growable-array buffers
 /// when text storage uses an arena.
 pub fn lexWithTokenAllocator(
     allocator: std.mem.Allocator,
     token_allocator: std.mem.Allocator,
     src: source_mod.Source,
-) std.mem.Allocator.Error![]const token.Token {
+) std.mem.Allocator.Error!token.Stream {
     src.validate();
     var lexer: Lexer = .{
         .allocator = allocator,
@@ -68,7 +69,7 @@ pub fn lexWithTrivia(
     allocator: std.mem.Allocator,
     src: source_mod.Source,
     trivia: *std.ArrayList(Trivia),
-) std.mem.Allocator.Error![]const token.Token {
+) std.mem.Allocator.Error!token.Stream {
     src.validate();
     var lexer: Lexer = .{
         .allocator = allocator,
@@ -85,7 +86,7 @@ pub fn lexWithTrivia(
 /// must remain alive together.
 pub const AliasLexResult = struct {
     source: source_mod.Source,
-    tokens: []const token.Token,
+    tokens: token.Stream,
 };
 
 /// Context supplied by evaluator-owned parsing paths that require a narrow
@@ -118,7 +119,7 @@ pub fn lexWithAliases(
     allocator: std.mem.Allocator,
     src: source_mod.Source,
     shell_state: state_mod.State,
-) std.mem.Allocator.Error![]const token.Token {
+) std.mem.Allocator.Error!token.Stream {
     return (try lexWithAliasesSource(allocator, src, shell_state)).tokens;
 }
 
@@ -167,7 +168,7 @@ pub fn lexWithAliasesSourceOptions(
 fn aliasExpandedSource(
     allocator: std.mem.Allocator,
     src: source_mod.Source,
-    tokens: []const token.Token,
+    tokens: token.Stream,
     shell_state: state_mod.State,
     active_alias_spans: []const ActiveAliasSpan,
     options: AliasOptions,
@@ -184,7 +185,8 @@ fn aliasExpandedSource(
     var command_position = true;
     var skip_redirection_target = false;
 
-    for (tokens, 0..) |tok, index| {
+    for (0..tokens.items.len) |index| {
+        const tok = tokens.get(index);
         if (tok.kind == .eof) break;
         try appendAliasSourceSlice(
             allocator,
@@ -388,15 +390,15 @@ fn aliasIsActive(
 }
 
 fn isAutoloadFunctionDefinitionName(
-    tokens: []const token.Token,
+    tokens: token.Stream,
     index: usize,
     autoload_function_name: ?[]const u8,
 ) bool {
     const name = autoload_function_name orelse return false;
-    return std.mem.eql(u8, tokens[index].text, name) and
-        index + 2 < tokens.len and
-        tokens[index + 1].kind == .left_paren and
-        tokens[index + 2].kind == .right_paren;
+    return std.mem.eql(u8, tokens.get(index).text, name) and
+        index + 2 < tokens.items.len and
+        tokens.items[index + 1].kind == .left_paren and
+        tokens.items[index + 2].kind == .right_paren;
 }
 
 pub fn aliasesEnabled(shell_state: state_mod.State) bool {
@@ -499,13 +501,13 @@ const Lexer = struct {
         quoted: bool,
     };
 
-    fn lex(self: *Lexer) std.mem.Allocator.Error![]const token.Token {
-        var tokens: std.ArrayList(token.Token) = .empty;
+    fn lex(self: *Lexer) std.mem.Allocator.Error!token.Stream {
+        var tokens: token.Stream.Builder = .{ .src = self.source };
         errdefer tokens.deinit(self.token_allocator);
         defer self.pending_here_docs.deinit(self.allocator);
 
         while (!self.atEnd()) {
-            const count_before = tokens.items.len;
+            const count_before = tokens.items.items.len;
             try self.lexOne(&tokens);
             try self.trackHereDocs(&tokens, count_before);
         }
@@ -517,10 +519,10 @@ const Lexer = struct {
             .kind = .eof,
             .span = source_mod.Span.init(self.position, self.position.byte_offset),
         });
-        return tokens.toOwnedSlice(self.token_allocator);
+        return tokens.toOwnedStream(self.token_allocator);
     }
 
-    fn lexOne(self: *Lexer, tokens: *std.ArrayList(token.Token)) std.mem.Allocator.Error!void {
+    fn lexOne(self: *Lexer, tokens: *token.Stream.Builder) std.mem.Allocator.Error!void {
         switch (self.peek()) {
             ' ', '\t', '\r' => self.advanceOne(),
             '\n' => try self.appendSingle(tokens, .newline),
@@ -559,16 +561,16 @@ const Lexer = struct {
     /// byte is ever tokenized as command text (or alias-substituted).
     fn trackHereDocs(
         self: *Lexer,
-        tokens: *std.ArrayList(token.Token),
+        tokens: *token.Stream.Builder,
         first_new: usize,
     ) std.mem.Allocator.Error!void {
         var index = first_new;
-        while (index < tokens.items.len) : (index += 1) {
-            const tok = tokens.items[index];
+        while (index < tokens.items.items.len) : (index += 1) {
+            const tok = tokens.items.items[index];
             if (self.here_doc_delimiter_expected) |strip_tabs| {
                 self.here_doc_delimiter_expected = null;
                 if (tok.kind == .word) {
-                    const raw = self.source.text[tok.span.start..tok.span.end];
+                    const raw = self.source.text[tok.start..tok.end];
                     const delimiter = try hereDocDelimiter(self.allocator, raw);
                     try self.pending_here_docs.append(self.allocator, .{
                         .delimiter = delimiter.text,
@@ -588,7 +590,7 @@ const Lexer = struct {
         }
     }
 
-    fn lexHereDocBodies(self: *Lexer, tokens: *std.ArrayList(token.Token)) std.mem.Allocator.Error!void {
+    fn lexHereDocBodies(self: *Lexer, tokens: *token.Stream.Builder) std.mem.Allocator.Error!void {
         for (self.pending_here_docs.items) |pending| {
             try self.lexHereDocBody(tokens, pending);
         }
@@ -597,7 +599,7 @@ const Lexer = struct {
 
     fn lexHereDocBody(
         self: *Lexer,
-        tokens: *std.ArrayList(token.Token),
+        tokens: *token.Stream.Builder,
         pending: PendingHereDoc,
     ) std.mem.Allocator.Error!void {
         const text = self.source.text;
@@ -670,7 +672,7 @@ const Lexer = struct {
         self.position.advance(self.source.text[self.position.byte_offset .. self.position.byte_offset + 1]);
     }
 
-    fn appendSingle(self: *Lexer, tokens: *std.ArrayList(token.Token), kind: token.Kind) !void {
+    fn appendSingle(self: *Lexer, tokens: *token.Stream.Builder, kind: token.Kind) !void {
         const start = self.position;
         self.advanceOne();
         const tok: token.Token = .{ .kind = kind, .span = source_mod.Span.init(start, self.position.byte_offset) };
@@ -678,7 +680,7 @@ const Lexer = struct {
         try tokens.append(self.token_allocator, tok);
     }
 
-    fn appendSemicolon(self: *Lexer, tokens: *std.ArrayList(token.Token)) !void {
+    fn appendSemicolon(self: *Lexer, tokens: *token.Stream.Builder) !void {
         const start = self.position;
         self.advanceOne();
         const kind: token.Kind = if (!self.atEnd()) switch (self.peek()) {
@@ -701,7 +703,7 @@ const Lexer = struct {
         try tokens.append(self.token_allocator, tok);
     }
 
-    fn appendAmpersand(self: *Lexer, tokens: *std.ArrayList(token.Token)) !void {
+    fn appendAmpersand(self: *Lexer, tokens: *token.Stream.Builder) !void {
         const start = self.position;
         self.advanceOne();
         const kind: token.Kind = if (!self.atEnd()) switch (self.peek()) {
@@ -724,7 +726,7 @@ const Lexer = struct {
         try tokens.append(self.token_allocator, tok);
     }
 
-    fn appendPipe(self: *Lexer, tokens: *std.ArrayList(token.Token)) !void {
+    fn appendPipe(self: *Lexer, tokens: *token.Stream.Builder) !void {
         const start = self.position;
         self.advanceOne();
         const kind: token.Kind = if (!self.atEnd()) switch (self.peek()) {
@@ -743,7 +745,7 @@ const Lexer = struct {
         try tokens.append(self.token_allocator, tok);
     }
 
-    fn appendRedirectionOperator(self: *Lexer, tokens: *std.ArrayList(token.Token)) !void {
+    fn appendRedirectionOperator(self: *Lexer, tokens: *token.Stream.Builder) !void {
         const start = self.position;
         const first = self.peek();
         self.advanceOne();
@@ -793,7 +795,7 @@ const Lexer = struct {
         try tokens.append(self.token_allocator, tok);
     }
 
-    fn appendIoNumber(self: *Lexer, tokens: *std.ArrayList(token.Token)) !void {
+    fn appendIoNumber(self: *Lexer, tokens: *token.Stream.Builder) !void {
         const start = self.position;
         const start_offset = self.position.byte_offset;
         while (!self.atEnd() and isDigit(self.peek())) self.advanceOne();
@@ -838,7 +840,7 @@ const Lexer = struct {
         self.advanceOne();
     }
 
-    fn appendWord(self: *Lexer, tokens: *std.ArrayList(token.Token)) !void {
+    fn appendWord(self: *Lexer, tokens: *token.Stream.Builder) !void {
         const start = self.position;
         const start_offset = self.position.byte_offset;
         var quoted = false;
@@ -1409,10 +1411,10 @@ test "token storage can be freed independently of normalized word and here-docum
     };
     const normalized, const body = text: {
         const tokens = try lexWithTokenAllocator(arena.allocator(), std.testing.allocator, src);
-        defer std.testing.allocator.free(tokens);
-        try std.testing.expectEqual(@as(usize, 9), tokens.len);
-        try std.testing.expectEqual(token.Kind.here_doc_body, tokens[7].kind);
-        break :text .{ tokens[1].text, tokens[7].text };
+        defer tokens.deinit(std.testing.allocator);
+        try std.testing.expectEqual(@as(usize, 9), tokens.items.len);
+        try std.testing.expectEqual(token.Kind.here_doc_body, tokens.get(7).kind);
+        break :text .{ tokens.get(1).text, tokens.get(7).text };
     };
     try std.testing.expectEqualStrings("foobar", normalized);
     try std.testing.expectEqualStrings("body\n", body);
@@ -1424,7 +1426,7 @@ test "lexWithTrivia reports comments quotes and pending quotes" {
     var trivia: std.ArrayList(Trivia) = .empty;
     defer trivia.deinit(std.testing.allocator);
     const tokens = try lexWithTrivia(std.testing.allocator, src, &trivia);
-    defer std.testing.allocator.free(tokens);
+    defer tokens.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 4), trivia.items.len);
     try std.testing.expectEqual(Trivia.Kind.quote, trivia.items[0].kind);
@@ -1443,7 +1445,7 @@ test "lexWithTrivia spans dollar single quotes" {
     var trivia: std.ArrayList(Trivia) = .empty;
     defer trivia.deinit(std.testing.allocator);
     const tokens = try lexWithTrivia(std.testing.allocator, src, &trivia);
-    defer std.testing.allocator.free(tokens);
+    defer tokens.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 2), trivia.items.len);
     try std.testing.expectEqual(Trivia.Kind.quote, trivia.items[0].kind);
@@ -1458,7 +1460,7 @@ test "lexWithTrivia ignores quotes inside here-document bodies" {
     var trivia: std.ArrayList(Trivia) = .empty;
     defer trivia.deinit(std.testing.allocator);
     const tokens = try lexWithTrivia(std.testing.allocator, src, &trivia);
-    defer std.testing.allocator.free(tokens);
+    defer tokens.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 0), trivia.items.len);
 }
@@ -1469,7 +1471,7 @@ test "lexWithTrivia reports quotes and comments inside command substitution" {
     var trivia: std.ArrayList(Trivia) = .empty;
     defer trivia.deinit(std.testing.allocator);
     const tokens = try lexWithTrivia(std.testing.allocator, src, &trivia);
-    defer std.testing.allocator.free(tokens);
+    defer tokens.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 3), trivia.items.len);
     try std.testing.expectEqual(Trivia.Kind.quote, trivia.items[0].kind);
@@ -1487,7 +1489,7 @@ test "lexWithTrivia reports quotes inside backquote substitutions" {
     var trivia: std.ArrayList(Trivia) = .empty;
     defer trivia.deinit(std.testing.allocator);
     const tokens = try lexWithTrivia(std.testing.allocator, src, &trivia);
-    defer std.testing.allocator.free(tokens);
+    defer tokens.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 4), trivia.items.len);
     try std.testing.expectEqual(Trivia.Kind.quote, trivia.items[0].kind);
@@ -1506,7 +1508,7 @@ test "lexWithTrivia reports expansions inside and outside double quotes" {
     var trivia: std.ArrayList(Trivia) = .empty;
     defer trivia.deinit(std.testing.allocator);
     const tokens = try lexWithTrivia(std.testing.allocator, src, &trivia);
-    defer std.testing.allocator.free(tokens);
+    defer tokens.deinit(std.testing.allocator);
 
     var expansions: std.ArrayList([]const u8) = .empty;
     defer expansions.deinit(std.testing.allocator);
@@ -1528,7 +1530,7 @@ test "lexWithTrivia reports double dollar as one expansion" {
     var trivia: std.ArrayList(Trivia) = .empty;
     defer trivia.deinit(std.testing.allocator);
     const tokens = try lexWithTrivia(std.testing.allocator, src, &trivia);
-    defer std.testing.allocator.free(tokens);
+    defer tokens.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 1), trivia.items.len);
     try std.testing.expectEqual(Trivia.Kind.expansion, trivia.items[0].kind);
@@ -1541,7 +1543,7 @@ test "lexWithTrivia does not report literal dollars as expansions" {
     var trivia: std.ArrayList(Trivia) = .empty;
     defer trivia.deinit(std.testing.allocator);
     const tokens = try lexWithTrivia(std.testing.allocator, src, &trivia);
-    defer std.testing.allocator.free(tokens);
+    defer tokens.deinit(std.testing.allocator);
 
     for (trivia.items) |item| {
         try std.testing.expect(item.kind != .expansion);
@@ -1554,12 +1556,14 @@ test "lexWithTrivia produces identical tokens to lex" {
     var trivia: std.ArrayList(Trivia) = .empty;
     defer trivia.deinit(std.testing.allocator);
     const with_trivia = try lexWithTrivia(std.testing.allocator, src, &trivia);
-    defer std.testing.allocator.free(with_trivia);
+    defer with_trivia.deinit(std.testing.allocator);
     const plain = try lex(std.testing.allocator, src);
-    defer std.testing.allocator.free(plain);
+    defer plain.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(plain.len, with_trivia.len);
-    for (plain, with_trivia) |expected, actual| {
+    try std.testing.expectEqual(plain.items.len, with_trivia.items.len);
+    for (0..plain.items.len) |index| {
+        const expected = plain.get(index);
+        const actual = with_trivia.get(index);
         try std.testing.expectEqual(expected.kind, actual.kind);
         try std.testing.expectEqual(expected.span.start, actual.span.start);
         try std.testing.expectEqual(expected.span.end, actual.span.end);
@@ -1570,101 +1574,101 @@ test "lexWithTrivia produces identical tokens to lex" {
 test "lexer tokenizes colon command" {
     const src: source_mod.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = ":" };
     const tokens = try lex(std.testing.allocator, src);
-    defer std.testing.allocator.free(tokens);
+    defer tokens.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(token.Kind.word, tokens[0].kind);
-    try std.testing.expectEqualStrings(":", tokens[0].text);
-    try std.testing.expectEqual(token.Kind.eof, tokens[1].kind);
+    try std.testing.expectEqual(token.Kind.word, tokens.get(0).kind);
+    try std.testing.expectEqualStrings(":", tokens.get(0).text);
+    try std.testing.expectEqual(token.Kind.eof, tokens.get(1).kind);
 }
 
 test "lexer tokenizes AND-OR operators" {
     const src: source_mod.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = "true&&false||! true" };
     const tokens = try lex(std.testing.allocator, src);
-    defer std.testing.allocator.free(tokens);
+    defer tokens.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(token.Kind.word, tokens[0].kind);
-    try std.testing.expectEqualStrings("true", tokens[0].text);
-    try std.testing.expectEqual(token.Kind.ampersand_ampersand, tokens[1].kind);
-    try std.testing.expectEqual(token.Kind.word, tokens[2].kind);
-    try std.testing.expectEqualStrings("false", tokens[2].text);
-    try std.testing.expectEqual(token.Kind.pipe_pipe, tokens[3].kind);
-    try std.testing.expectEqual(token.Kind.bang, tokens[4].kind);
-    try std.testing.expectEqual(token.Kind.word, tokens[5].kind);
-    try std.testing.expectEqualStrings("true", tokens[5].text);
-    try std.testing.expectEqual(token.Kind.eof, tokens[6].kind);
+    try std.testing.expectEqual(token.Kind.word, tokens.get(0).kind);
+    try std.testing.expectEqualStrings("true", tokens.get(0).text);
+    try std.testing.expectEqual(token.Kind.ampersand_ampersand, tokens.get(1).kind);
+    try std.testing.expectEqual(token.Kind.word, tokens.get(2).kind);
+    try std.testing.expectEqualStrings("false", tokens.get(2).text);
+    try std.testing.expectEqual(token.Kind.pipe_pipe, tokens.get(3).kind);
+    try std.testing.expectEqual(token.Kind.bang, tokens.get(4).kind);
+    try std.testing.expectEqual(token.Kind.word, tokens.get(5).kind);
+    try std.testing.expectEqualStrings("true", tokens.get(5).text);
+    try std.testing.expectEqual(token.Kind.eof, tokens.get(6).kind);
 }
 
 test "lexer tokenizes bash redirection shorthand operators" {
     const src: source_mod.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = ": &>out &>>log |& cat" };
     const tokens = try lex(std.testing.allocator, src);
-    defer std.testing.allocator.free(tokens);
+    defer tokens.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(token.Kind.ampersand_greater, tokens[1].kind);
-    try std.testing.expectEqualStrings("out", tokens[2].text);
-    try std.testing.expectEqual(token.Kind.ampersand_greater_greater, tokens[3].kind);
-    try std.testing.expectEqualStrings("log", tokens[4].text);
-    try std.testing.expectEqual(token.Kind.pipe_ampersand, tokens[5].kind);
+    try std.testing.expectEqual(token.Kind.ampersand_greater, tokens.get(1).kind);
+    try std.testing.expectEqualStrings("out", tokens.get(2).text);
+    try std.testing.expectEqual(token.Kind.ampersand_greater_greater, tokens.get(3).kind);
+    try std.testing.expectEqualStrings("log", tokens.get(4).text);
+    try std.testing.expectEqual(token.Kind.pipe_ampersand, tokens.get(5).kind);
 }
 
 test "lexer keeps exclamation mark words together" {
     const src: source_mod.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = "test x != y; ! false" };
     const tokens = try lex(std.testing.allocator, src);
-    defer std.testing.allocator.free(tokens);
+    defer tokens.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(token.Kind.word, tokens[0].kind);
-    try std.testing.expectEqualStrings("test", tokens[0].text);
-    try std.testing.expectEqual(token.Kind.word, tokens[1].kind);
-    try std.testing.expectEqualStrings("x", tokens[1].text);
-    try std.testing.expectEqual(token.Kind.word, tokens[2].kind);
-    try std.testing.expectEqualStrings("!=", tokens[2].text);
-    try std.testing.expectEqual(token.Kind.word, tokens[3].kind);
-    try std.testing.expectEqualStrings("y", tokens[3].text);
-    try std.testing.expectEqual(token.Kind.semicolon, tokens[4].kind);
-    try std.testing.expectEqual(token.Kind.bang, tokens[5].kind);
+    try std.testing.expectEqual(token.Kind.word, tokens.get(0).kind);
+    try std.testing.expectEqualStrings("test", tokens.get(0).text);
+    try std.testing.expectEqual(token.Kind.word, tokens.get(1).kind);
+    try std.testing.expectEqualStrings("x", tokens.get(1).text);
+    try std.testing.expectEqual(token.Kind.word, tokens.get(2).kind);
+    try std.testing.expectEqualStrings("!=", tokens.get(2).text);
+    try std.testing.expectEqual(token.Kind.word, tokens.get(3).kind);
+    try std.testing.expectEqualStrings("y", tokens.get(3).text);
+    try std.testing.expectEqual(token.Kind.semicolon, tokens.get(4).kind);
+    try std.testing.expectEqual(token.Kind.bang, tokens.get(5).kind);
 }
 
 test "lexer marks reserved words" {
     const src: source_mod.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = "if true; then :; fi" };
     const tokens = try lex(std.testing.allocator, src);
-    defer std.testing.allocator.free(tokens);
+    defer tokens.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(token.ReservedWord.if_kw, tokens[0].reserved.?);
-    try std.testing.expectEqual(@as(?token.ReservedWord, null), tokens[1].reserved);
-    try std.testing.expectEqual(token.ReservedWord.then_kw, tokens[3].reserved.?);
-    try std.testing.expectEqual(token.ReservedWord.fi_kw, tokens[6].reserved.?);
+    try std.testing.expectEqual(token.ReservedWord.if_kw, tokens.get(0).reserved.?);
+    try std.testing.expectEqual(@as(?token.ReservedWord, null), tokens.get(1).reserved);
+    try std.testing.expectEqual(token.ReservedWord.then_kw, tokens.get(3).reserved.?);
+    try std.testing.expectEqual(token.ReservedWord.fi_kw, tokens.get(6).reserved.?);
 }
 
 test "lexer marks quoted words as non-reserved" {
     const src: source_mod.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = "'if'" };
     const tokens = try lex(std.testing.allocator, src);
-    defer std.testing.allocator.free(tokens);
+    defer tokens.deinit(std.testing.allocator);
 
-    try std.testing.expect(tokens[0].quoted);
-    try std.testing.expectEqual(@as(?token.ReservedWord, null), tokens[0].reserved);
+    try std.testing.expect(tokens.get(0).quoted);
+    try std.testing.expectEqual(@as(?token.ReservedWord, null), tokens.get(0).reserved);
 }
 
 test "lexer keeps quoted spaces inside words" {
     // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     const src: source_mod.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = "printf \"hello world\"" };
     const tokens = try lex(std.testing.allocator, src);
-    defer std.testing.allocator.free(tokens);
+    defer tokens.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(token.Kind.word, tokens[0].kind);
-    try std.testing.expectEqualStrings("printf", tokens[0].text);
-    try std.testing.expectEqual(token.Kind.word, tokens[1].kind);
-    try std.testing.expect(tokens[1].quoted);
-    try std.testing.expectEqualStrings("\"hello world\"", tokens[1].text);
+    try std.testing.expectEqual(token.Kind.word, tokens.get(0).kind);
+    try std.testing.expectEqualStrings("printf", tokens.get(0).text);
+    try std.testing.expectEqual(token.Kind.word, tokens.get(1).kind);
+    try std.testing.expect(tokens.get(1).quoted);
+    try std.testing.expectEqualStrings("\"hello world\"", tokens.get(1).text);
 }
 
 test "lexer treats backslash escaped quote as word text" {
     const src: source_mod.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = "printf \\'3" };
     const tokens = try lex(std.testing.allocator, src);
-    defer std.testing.allocator.free(tokens);
+    defer tokens.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(@as(usize, 3), tokens.len);
-    try std.testing.expectEqual(token.Kind.word, tokens[1].kind);
-    try std.testing.expectEqualStrings("\\'3", tokens[1].text);
-    try std.testing.expect(tokens[1].quoted);
+    try std.testing.expectEqual(@as(usize, 3), tokens.items.len);
+    try std.testing.expectEqual(token.Kind.word, tokens.get(1).kind);
+    try std.testing.expectEqualStrings("\\'3", tokens.get(1).text);
+    try std.testing.expect(tokens.get(1).quoted);
 }
 
 test "lexer removes top-level line continuations before comments" {
@@ -1679,13 +1683,13 @@ test "lexer removes top-level line continuations before comments" {
         ,
     };
     const tokens = try lex(std.testing.allocator, src);
-    defer std.testing.allocator.free(tokens);
+    defer tokens.deinit(std.testing.allocator);
 
-    try std.testing.expectEqualStrings("printf", tokens[0].text);
-    try std.testing.expectEqualStrings("foo", tokens[1].text);
-    try std.testing.expectEqual(token.Kind.newline, tokens[2].kind);
-    try std.testing.expectEqualStrings("printf", tokens[3].text);
-    try std.testing.expectEqualStrings("bar", tokens[4].text);
+    try std.testing.expectEqualStrings("printf", tokens.get(0).text);
+    try std.testing.expectEqualStrings("foo", tokens.get(1).text);
+    try std.testing.expectEqual(token.Kind.newline, tokens.get(2).kind);
+    try std.testing.expectEqualStrings("printf", tokens.get(3).text);
+    try std.testing.expectEqualStrings("bar", tokens.get(4).text);
 }
 
 test "lexer removes line continuations inside word tokens" {
@@ -1703,10 +1707,10 @@ test "lexer removes line continuations inside word tokens" {
     };
     const tokens = try lex(arena.allocator(), src);
 
-    try std.testing.expectEqual(token.Kind.word, tokens[0].kind);
-    try std.testing.expectEqualStrings("f", tokens[0].text);
-    try std.testing.expect(!tokens[0].quoted);
-    try std.testing.expectEqual(token.Kind.left_paren, tokens[1].kind);
+    try std.testing.expectEqual(token.Kind.word, tokens.get(0).kind);
+    try std.testing.expectEqualStrings("f", tokens.get(0).text);
+    try std.testing.expect(!tokens.get(0).quoted);
+    try std.testing.expectEqual(token.Kind.left_paren, tokens.get(1).kind);
 }
 
 test "lexer preserves escaped backslash before double quoted newline" {
@@ -1721,9 +1725,9 @@ test "lexer preserves escaped backslash before double quoted newline" {
     };
     const tokens = try lex(arena.allocator(), src);
 
-    try std.testing.expectEqual(token.Kind.word, tokens[1].kind);
-    try std.testing.expectEqualStrings("\"\\\\\n\"", tokens[1].text);
-    try std.testing.expect(tokens[1].quoted);
+    try std.testing.expectEqual(token.Kind.word, tokens.get(1).kind);
+    try std.testing.expectEqualStrings("\"\\\\\n\"", tokens.get(1).text);
+    try std.testing.expect(tokens.get(1).quoted);
 }
 
 test "lexer preserves single quoted newline after escaped single quote" {
@@ -1738,43 +1742,43 @@ test "lexer preserves single quoted newline after escaped single quote" {
     };
     const tokens = try lex(arena.allocator(), src);
 
-    try std.testing.expectEqual(token.Kind.word, tokens[0].kind);
-    try std.testing.expectEqualStrings("v='a'\\''\\\\\\\nZ'", tokens[0].text);
-    try std.testing.expect(tokens[0].quoted);
+    try std.testing.expectEqual(token.Kind.word, tokens.get(0).kind);
+    try std.testing.expectEqualStrings("v='a'\\''\\\\\\\nZ'", tokens.get(0).text);
+    try std.testing.expect(tokens.get(0).quoted);
 }
 
 test "lexer keeps dollar single quoted words separate" {
     const src: source_mod.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = "printf $'\\'' $'\\\\'" };
     const tokens = try lex(std.testing.allocator, src);
-    defer std.testing.allocator.free(tokens);
+    defer tokens.deinit(std.testing.allocator);
 
-    try std.testing.expectEqualStrings("$'\\''", tokens[1].text);
-    try std.testing.expect(tokens[1].quoted);
-    try std.testing.expectEqualStrings("$'\\\\'", tokens[2].text);
-    try std.testing.expect(tokens[2].quoted);
+    try std.testing.expectEqualStrings("$'\\''", tokens.get(1).text);
+    try std.testing.expect(tokens.get(1).quoted);
+    try std.testing.expectEqualStrings("$'\\\\'", tokens.get(2).text);
+    try std.testing.expect(tokens.get(2).quoted);
 }
 
 test "lexer keeps command substitutions inside words" {
     // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     const src: source_mod.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = "x=$(printf a; printf b)" };
     const tokens = try lex(std.testing.allocator, src);
-    defer std.testing.allocator.free(tokens);
+    defer tokens.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(token.Kind.word, tokens[0].kind);
-    try std.testing.expectEqualStrings("x=$(printf a; printf b)", tokens[0].text);
-    try std.testing.expectEqual(token.Kind.eof, tokens[1].kind);
+    try std.testing.expectEqual(token.Kind.word, tokens.get(0).kind);
+    try std.testing.expectEqualStrings("x=$(printf a; printf b)", tokens.get(0).text);
+    try std.testing.expectEqual(token.Kind.eof, tokens.get(1).kind);
 }
 
 test "lexer keeps brace characters inside word tokens" {
     // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     const src: source_mod.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = "printf {} x{} {}x a{b}" };
     const tokens = try lex(std.testing.allocator, src);
-    defer std.testing.allocator.free(tokens);
+    defer tokens.deinit(std.testing.allocator);
 
-    try std.testing.expectEqualStrings("{}", tokens[1].text);
-    try std.testing.expectEqualStrings("x{}", tokens[2].text);
-    try std.testing.expectEqualStrings("{}x", tokens[3].text);
-    try std.testing.expectEqualStrings("a{b}", tokens[4].text);
+    try std.testing.expectEqualStrings("{}", tokens.get(1).text);
+    try std.testing.expectEqualStrings("x{}", tokens.get(2).text);
+    try std.testing.expectEqualStrings("{}x", tokens.get(3).text);
+    try std.testing.expectEqualStrings("a{b}", tokens.get(4).text);
 }
 
 test "lexer emits here-document bodies as dedicated tokens" {
@@ -1791,7 +1795,8 @@ test "lexer emits here-document bodies as dedicated tokens" {
     const tokens = try lex(allocator, src);
 
     var body: ?token.Token = null;
-    for (tokens) |tok| {
+    for (0..tokens.items.len) |index| {
+        const tok = tokens.get(index);
         if (tok.kind == .here_doc_body) body = tok;
         // No body byte may leak into ordinary word tokens.
         if (tok.kind == .word) try std.testing.expect(!std.mem.eql(u8, tok.text, "body"));

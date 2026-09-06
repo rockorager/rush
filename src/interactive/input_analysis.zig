@@ -23,6 +23,7 @@ pub fn analyze(
     const src: shell.source.Source = .{ .id = 0, .kind = .interactive, .name = "interactive", .text = text };
     var trivia: std.ArrayList(shell.lexer.Trivia) = .empty;
     const tokens = try shell.lexer.lexWithTrivia(arena.allocator(), src, &trivia);
+    defer tokens.deinit(arena.allocator());
 
     var spans: std.ArrayList(editor.render.DiagnosticSpan) = .empty;
     errdefer spans.deinit(allocator);
@@ -53,10 +54,11 @@ fn appendTokenSpans(
     spans: *std.ArrayList(editor.render.DiagnosticSpan),
     sh: *RushShell,
     command_cache: *PathCommandCache,
-    tokens: []const shell.Token,
+    tokens: shell.token.Stream,
 ) !void {
     var tracker: shell.token.CommandPositionTracker = .{};
-    for (tokens) |tok| {
+    for (0..tokens.items.len) |index| {
+        const tok = tokens.get(index);
         if (tok.kind == .eof) break;
         const severity: editor.render.DiagnosticSeverity = switch (tracker.classify(tok)) {
             .command => if (try commandResolves(allocator, sh, command_cache, tok.text))

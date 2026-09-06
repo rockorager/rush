@@ -1,14 +1,20 @@
 //! Small AST close to the shell grammar.
+//! Validation asserts programmer invariants in safety-enabled builds; it does
+//! not perform input validation. Disable entire walks when assertions are off,
+//! since removing assertions alone can leave recursive traversal in the binary.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 const source = @import("source.zig");
+const validation_enabled = builtin.mode == .Debug or builtin.mode == .ReleaseSafe;
 
 pub const Program = struct {
     source_id: source.SourceId,
     body: List,
 
     pub fn validate(self: Program) void {
+        if (!validation_enabled) return;
         self.body.validate();
     }
 };
@@ -17,6 +23,7 @@ pub const List = struct {
     entries: []const ListEntry = &.{},
 
     pub fn validate(self: List) void {
+        if (!validation_enabled) return;
         for (self.entries) |entry| entry.validate();
     }
 };
@@ -31,6 +38,7 @@ pub const ListEntry = struct {
     terminator: ?ListTerminator = null,
 
     pub fn validate(self: ListEntry) void {
+        if (!validation_enabled) return;
         self.and_or.validate();
     }
 };
@@ -44,6 +52,7 @@ pub const AndOr = struct {
     pipelines: []const AndOrPipeline,
 
     pub fn validate(self: AndOr) void {
+        if (!validation_enabled) return;
         std.debug.assert(self.pipelines.len != 0);
         for (self.pipelines, 0..) |pipeline, index| pipeline.validate(index);
     }
@@ -54,6 +63,7 @@ pub const AndOrPipeline = struct {
     pipeline: Pipeline,
 
     pub fn validate(self: AndOrPipeline, index: usize) void {
+        if (!validation_enabled) return;
         if (index == 0) {
             std.debug.assert(self.operator == null);
         } else {
@@ -68,6 +78,7 @@ pub const Pipeline = struct {
     negated: bool = false,
 
     pub fn validate(self: Pipeline) void {
+        if (!validation_enabled) return;
         std.debug.assert(self.stages.len != 0);
         for (self.stages) |stage| stage.validate();
     }
@@ -79,6 +90,7 @@ pub const Command = union(enum) {
     function_definition: FunctionDefinition,
 
     pub fn validate(self: Command) void {
+        if (!validation_enabled) return;
         switch (self) {
             .simple => |command| command.validate(),
             .compound => |command| command.validate(),
@@ -94,6 +106,7 @@ pub const SimpleCommand = struct {
     span: source.Span = .{},
 
     pub fn validate(self: SimpleCommand) void {
+        if (!validation_enabled) return;
         std.debug.assert(self.assignments.len != 0 or self.words.len != 0 or self.redirections.len != 0);
         self.span.validate();
         for (self.assignments) |assignment| assignment.validate();
@@ -111,6 +124,7 @@ pub const Assignment = struct {
     span: source.Span = .{},
 
     pub fn validate(self: Assignment) void {
+        if (!validation_enabled) return;
         std.debug.assert(self.name.len != 0);
         self.value.validate();
         if (self.index) |index| index.validate();
@@ -125,6 +139,7 @@ pub const ArrayAssignmentElement = struct {
     span: source.Span = .{},
 
     pub fn validate(self: ArrayAssignmentElement) void {
+        if (!validation_enabled) return;
         if (self.index) |index| index.validate();
         self.value.validate();
         self.span.validate();
@@ -137,6 +152,7 @@ pub const Word = struct {
     quoted: bool = false,
 
     pub fn validate(self: Word) void {
+        if (!validation_enabled) return;
         self.span.validate();
         self.data.validate();
     }
@@ -148,6 +164,7 @@ pub const WordData = union(enum) {
     declaration_array_assignment: *const DeclarationArrayAssignment,
 
     pub fn validate(self: WordData) void {
+        if (!validation_enabled) return;
         switch (self) {
             .literal => {},
             .parts => |parts| for (parts) |part| part.validate(),
@@ -163,6 +180,7 @@ pub const DeclarationArrayAssignment = struct {
     span: source.Span = .{},
 
     pub fn validate(self: DeclarationArrayAssignment) void {
+        if (!validation_enabled) return;
         std.debug.assert(self.name.len != 0);
         for (self.values) |value| value.validate();
         self.span.validate();
@@ -182,6 +200,7 @@ pub const WordPart = union(enum) {
     arithmetic: []const u8,
 
     pub fn validate(self: WordPart) void {
+        if (!validation_enabled) return;
         switch (self) {
             .literal, .escaped, .single_quoted, .arithmetic => {},
             .double_quoted => |parts| for (parts) |part| part.validate(),
@@ -198,6 +217,7 @@ pub const CommandSubstitution = struct {
     line_offset: usize = 0,
 
     pub fn validate(self: CommandSubstitution) void {
+        if (!validation_enabled) return;
         if (self.parsed) |program| program.validate();
     }
 };
@@ -214,6 +234,7 @@ pub const ProcessSubstitution = struct {
     line_offset: usize = 0,
 
     pub fn validate(self: ProcessSubstitution) void {
+        if (!validation_enabled) return;
         if (self.parsed) |program| program.validate();
     }
 };
@@ -225,6 +246,7 @@ pub const Parameter = union(enum) {
     special: SpecialParameter,
 
     pub fn validate(self: Parameter) void {
+        if (!validation_enabled) return;
         switch (self) {
             .variable => |name| std.debug.assert(name.len != 0),
             .array => |array| array.validate(),
@@ -238,6 +260,7 @@ pub const ArraySubscript = union(enum) {
     all: SpecialParameter,
 
     pub fn validate(self: ArraySubscript) void {
+        if (!validation_enabled) return;
         switch (self) {
             .index => |index| index.validate(),
             .all => |special| std.debug.assert(special == .at or special == .star),
@@ -250,6 +273,7 @@ pub const ArrayParameter = struct {
     subscript: ArraySubscript,
 
     pub fn validate(self: ArrayParameter) void {
+        if (!validation_enabled) return;
         std.debug.assert(self.name.len != 0);
         self.subscript.validate();
     }
@@ -276,6 +300,7 @@ pub const ParameterExpansion = struct {
     span: source.Span = .{},
 
     pub fn validate(self: ParameterExpansion) void {
+        if (!validation_enabled) return;
         self.parameter.validate();
         self.span.validate();
         if (self.op == null) {
@@ -324,6 +349,7 @@ pub const Redirection = struct {
     span: source.Span = .{},
 
     pub fn validate(self: Redirection) void {
+        if (!validation_enabled) return;
         self.target.validate();
         self.span.validate();
         switch (self.op) {
@@ -357,6 +383,7 @@ pub const HereDoc = struct {
     parts: []const WordPart = &.{},
 
     pub fn validate(self: HereDoc, op: RedirectionOperator) void {
+        if (!validation_enabled) return;
         std.debug.assert(op == .here_doc or op == .here_doc_strip_tabs);
         if (self.delimiter_quoted) std.debug.assert(self.parts.len == 0);
     }
@@ -370,6 +397,7 @@ pub const CompoundInvocation = struct {
     source_text: []const u8 = "compound command",
 
     pub fn validate(self: CompoundInvocation) void {
+        if (!validation_enabled) return;
         self.body.validate();
         for (self.redirections) |redirection| redirection.validate();
     }
@@ -387,6 +415,7 @@ pub const CompoundCommand = union(enum) {
     case_command: CaseCommand,
 
     pub fn validate(self: CompoundCommand) void {
+        if (!validation_enabled) return;
         switch (self) {
             .brace_group, .subshell => |list| list.validate(),
             .if_command => |command| command.validate(),
@@ -405,6 +434,7 @@ pub const IfBranch = struct {
     body: List,
 
     pub fn validate(self: IfBranch) void {
+        if (!validation_enabled) return;
         self.condition.validate();
         self.body.validate();
     }
@@ -415,6 +445,7 @@ pub const IfCommand = struct {
     else_body: ?List = null,
 
     pub fn validate(self: IfCommand) void {
+        if (!validation_enabled) return;
         std.debug.assert(self.branches.len != 0);
         for (self.branches) |branch| branch.validate();
         if (self.else_body) |body| body.validate();
@@ -432,6 +463,7 @@ pub const LoopCommand = struct {
     body: List,
 
     pub fn validate(self: LoopCommand) void {
+        if (!validation_enabled) return;
         self.condition.validate();
         self.body.validate();
     }
@@ -442,6 +474,7 @@ pub const ForWords = union(enum) {
     words: []const Word,
 
     pub fn validate(self: ForWords) void {
+        if (!validation_enabled) return;
         switch (self) {
             .positional_parameters => {},
             .words => |words| for (words) |word| word.validate(),
@@ -455,6 +488,7 @@ pub const ForCommand = struct {
     body: List,
 
     pub fn validate(self: ForCommand) void {
+        if (!validation_enabled) return;
         std.debug.assert(self.name.len != 0);
         self.words.validate();
         self.body.validate();
@@ -468,6 +502,7 @@ pub const CForCommand = struct {
     body: List,
 
     pub fn validate(self: CForCommand) void {
+        if (!validation_enabled) return;
         self.body.validate();
     }
 };
@@ -484,6 +519,7 @@ pub const ConditionalCommand = struct {
     expression: ConditionalExpression,
 
     pub fn validate(self: ConditionalCommand) void {
+        if (!validation_enabled) return;
         self.expression.validate();
     }
 };
@@ -496,6 +532,7 @@ pub const ConditionalExpression = union(enum) {
     comparison: ConditionalComparison,
 
     pub fn validate(self: ConditionalExpression) void {
+        if (!validation_enabled) return;
         switch (self) {
             .word => |word| word.validate(),
             .unary_not => |expr| expr.validate(),
@@ -533,6 +570,7 @@ pub const ConditionalUnaryTest = struct {
     operand: Word,
 
     pub fn validate(self: ConditionalUnaryTest) void {
+        if (!validation_enabled) return;
         self.operand.validate();
     }
 };
@@ -548,6 +586,7 @@ pub const ConditionalBinary = struct {
     right: *const ConditionalExpression,
 
     pub fn validate(self: ConditionalBinary) void {
+        if (!validation_enabled) return;
         self.left.validate();
         self.right.validate();
     }
@@ -572,6 +611,7 @@ pub const ConditionalComparison = struct {
     right: Word,
 
     pub fn validate(self: ConditionalComparison) void {
+        if (!validation_enabled) return;
         self.left.validate();
         self.right.validate();
     }
@@ -583,6 +623,7 @@ pub const CaseArm = struct {
     fallthrough: Fallthrough = .none,
 
     pub fn validate(self: CaseArm) void {
+        if (!validation_enabled) return;
         std.debug.assert(self.patterns.len != 0);
         for (self.patterns) |pattern| pattern.validate();
         self.body.validate();
@@ -600,6 +641,7 @@ pub const CaseCommand = struct {
     arms: []const CaseArm,
 
     pub fn validate(self: CaseCommand) void {
+        if (!validation_enabled) return;
         self.word.validate();
         for (self.arms) |arm| arm.validate();
     }
@@ -611,6 +653,7 @@ pub const FunctionDefinition = struct {
     redirections: []const Redirection = &.{},
 
     pub fn validate(self: FunctionDefinition) void {
+        if (!validation_enabled) return;
         std.debug.assert(self.name.len != 0);
         self.body.validate();
         for (self.redirections) |redirection| redirection.validate();

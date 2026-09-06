@@ -1889,10 +1889,12 @@ fn historyCommandKey(allocator: std.mem.Allocator, command: []const u8) ![]const
 
     const src: shell_source.Source = .{ .id = 0, .kind = .interactive, .name = "history", .text = command };
     const tokens = try shell_lexer.lex(arena.allocator(), src);
+    defer tokens.deinit(arena.allocator());
 
     var key: std.ArrayList(u8) = .empty;
     errdefer key.deinit(allocator);
-    for (tokens) |tok| {
+    for (0..tokens.items.len) |index| {
+        const tok = tokens.get(index);
         if (tok.kind == .eof) break;
         if (key.items.len != 0) try key.append(allocator, ' ');
         try key.appendSlice(allocator, command[tok.span.start..tok.span.end]);

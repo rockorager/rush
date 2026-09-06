@@ -2811,8 +2811,10 @@ fn previousShellArgumentStart(allocator: std.mem.Allocator, text: []const u8, cu
 
     const src: shell_source.Source = .{ .id = 0, .kind = .interactive, .name = "editor", .text = text };
     const tokens = try shell_lexer.lex(arena.allocator(), src);
+    defer tokens.deinit(arena.allocator());
     var start: ?usize = null;
-    for (tokens) |tok| {
+    for (0..tokens.items.len) |index| {
+        const tok = tokens.get(index);
         if (tok.kind == .eof) break;
         if (!isShellArgumentToken(tok.kind)) continue;
         if (tok.span.start < cursor_byte) start = tok.span.start;
@@ -2827,7 +2829,9 @@ fn nextShellArgumentEnd(allocator: std.mem.Allocator, text: []const u8, cursor_b
 
     const src: shell_source.Source = .{ .id = 0, .kind = .interactive, .name = "editor", .text = text };
     const tokens = try shell_lexer.lex(arena.allocator(), src);
-    for (tokens) |tok| {
+    defer tokens.deinit(arena.allocator());
+    for (0..tokens.items.len) |index| {
+        const tok = tokens.get(index);
         if (tok.kind == .eof) break;
         if (!isShellArgumentToken(tok.kind)) continue;
         if (tok.span.end > cursor_byte) return tok.span.end;

@@ -31,7 +31,7 @@ const ParserError = std.mem.Allocator.Error || ParseError;
 pub fn parse(
     allocator: std.mem.Allocator,
     src: source_mod.Source,
-    tokens: []const token.Token,
+    tokens: token.Stream,
 ) ParserError!ast.Program {
     return parseWithAliasState(allocator, src, tokens, null);
 }
@@ -42,7 +42,7 @@ pub fn parse(
 pub fn parseWithAliases(
     allocator: std.mem.Allocator,
     src: source_mod.Source,
-    tokens: []const token.Token,
+    tokens: token.Stream,
     shell_state: state_mod.State,
 ) ParserError!ast.Program {
     return parseWithAliasState(allocator, src, tokens, shell_state);
@@ -53,7 +53,7 @@ pub fn parseWithAliases(
 pub fn parseWithAliasesRequiringCompleteHereDocs(
     allocator: std.mem.Allocator,
     src: source_mod.Source,
-    tokens: []const token.Token,
+    tokens: token.Stream,
     shell_state: state_mod.State,
 ) ParserError!ast.Program {
     return parseWithAliasStateOptions(allocator, src, tokens, shell_state, .{ .require_complete_here_docs = true });
@@ -68,7 +68,7 @@ pub fn parseBracedParameterExpansion(
     span: source_mod.Span,
 ) ParserError!?ast.ParameterExpansion {
     const src: source_mod.Source = .{ .id = 0, .kind = .command_string, .name = "${}", .text = raw_content };
-    var parser_state: Parser = .{ .allocator = allocator, .source = src, .tokens = &.{}, .alias_state = null };
+    var parser_state: Parser = .{ .allocator = allocator, .source = src, .tokens = .{}, .alias_state = null };
     return parser_state.parseBracedParameter(raw_content, span, .plain);
 }
 
@@ -80,7 +80,7 @@ pub fn parseWordExpansionText(
     span: source_mod.Span,
 ) ParserError!ast.Word {
     const src: source_mod.Source = .{ .id = span.source_id, .kind = .command_string, .name = "word", .text = text };
-    var parser_state: Parser = .{ .allocator = allocator, .source = src, .tokens = &.{}, .alias_state = null };
+    var parser_state: Parser = .{ .allocator = allocator, .source = src, .tokens = .{}, .alias_state = null };
     return parser_state.parseWordText(text, span);
 }
 
@@ -100,7 +100,7 @@ pub fn parseDoubleQuotedExpansionText(
         .name = "double-quoted expansion",
         .text = text,
     };
-    var parser_state: Parser = .{ .allocator = allocator, .source = src, .tokens = &.{}, .alias_state = null };
+    var parser_state: Parser = .{ .allocator = allocator, .source = src, .tokens = .{}, .alias_state = null };
     if (std.mem.indexOfAny(u8, text, "$\\`") == null) {
         const word: ast.Word = .{ .data = .{ .literal = text }, .span = span, .quoted = true };
         word.validate();
@@ -129,7 +129,7 @@ pub fn parseParameterExpansionText(
     text: []const u8,
 ) ParserError![]const ast.ParameterExpansion {
     const src: source_mod.Source = .{ .id = 0, .kind = .command_string, .name = "parameter expansion", .text = text };
-    var parser_state: Parser = .{ .allocator = allocator, .source = src, .tokens = &.{}, .alias_state = null };
+    var parser_state: Parser = .{ .allocator = allocator, .source = src, .tokens = .{}, .alias_state = null };
     var expansions: std.ArrayList(ast.ParameterExpansion) = .empty;
     errdefer expansions.deinit(allocator);
 
@@ -199,7 +199,7 @@ pub fn parseParameterExpansionText(
 fn parseWithAliasState(
     allocator: std.mem.Allocator,
     src: source_mod.Source,
-    tokens: []const token.Token,
+    tokens: token.Stream,
     alias_state: ?state_mod.State,
 ) ParserError!ast.Program {
     return parseWithAliasStateOptions(allocator, src, tokens, alias_state, .{});
@@ -222,6 +222,12 @@ pub const Failure = struct {
     near: ?[]const u8,
 };
 
+fn assertStreamSource(src: source_mod.Source, tokens: token.Stream) void {
+    std.debug.assert(tokens.source_id == src.id);
+    std.debug.assert(tokens.source_text.ptr == src.text.ptr);
+    std.debug.assert(tokens.source_text.len == src.text.len);
+}
+
 pub fn isParseError(err: anyerror) bool {
     return switch (err) {
         error.ExpectedCommand,
@@ -242,7 +248,7 @@ pub fn isParseError(err: anyerror) bool {
 pub fn parseWithAliasesAndOptions(
     allocator: std.mem.Allocator,
     src: source_mod.Source,
-    tokens: []const token.Token,
+    tokens: token.Stream,
     shell_state: state_mod.State,
     options: ParseOptions,
 ) ParserError!ast.Program {
@@ -252,12 +258,13 @@ pub fn parseWithAliasesAndOptions(
 fn parseWithAliasStateOptions(
     allocator: std.mem.Allocator,
     src: source_mod.Source,
-    tokens: []const token.Token,
+    tokens: token.Stream,
     alias_state: ?state_mod.State,
     options: ParseOptions,
 ) ParserError!ast.Program {
     src.validate();
-    std.debug.assert(tokens.len != 0);
+    assertStreamSource(src, tokens);
+    std.debug.assert(tokens.items.len != 0);
     var parser: Parser = .{
         .allocator = allocator,
         .source = src,
@@ -283,7 +290,7 @@ pub const Incremental = struct {
     pub fn init(
         allocator: std.mem.Allocator,
         src: source_mod.Source,
-        tokens: []const token.Token,
+        tokens: token.Stream,
         shell_state: state_mod.State,
     ) Incremental {
         return initWithOptions(allocator, src, tokens, shell_state, .{});
@@ -292,12 +299,13 @@ pub const Incremental = struct {
     pub fn initWithOptions(
         allocator: std.mem.Allocator,
         src: source_mod.Source,
-        tokens: []const token.Token,
+        tokens: token.Stream,
         shell_state: state_mod.State,
         options: ParseOptions,
     ) Incremental {
         src.validate();
-        std.debug.assert(tokens.len != 0);
+        assertStreamSource(src, tokens);
+        std.debug.assert(tokens.items.len != 0);
         return .{ .parser = .{
             .allocator = allocator,
             .source = src,
@@ -379,16 +387,16 @@ pub const Incremental = struct {
     /// Source text offset where the next unparsed command starts.
     pub fn nextOffset(self: *const Incremental) usize {
         const p = &self.parser;
-        std.debug.assert(p.index < p.tokens.len);
-        if (p.tokens[p.index].kind == .eof) return p.source.text.len;
-        return p.tokens[p.index].span.start;
+        std.debug.assert(p.index < p.tokens.items.len);
+        if (p.tokens.items[p.index].kind == .eof) return p.source.text.len;
+        return p.tokens.items[p.index].start;
     }
 };
 
 const Parser = struct {
     allocator: std.mem.Allocator,
     source: source_mod.Source,
-    tokens: []const token.Token,
+    tokens: token.Stream,
     alias_state: ?state_mod.State,
     require_complete_here_docs: bool = false,
     index: usize = 0,
@@ -517,11 +525,12 @@ const Parser = struct {
         if (self.atReserved(.function_kw)) return self.parseBashFunctionDefinition();
 
         if (!self.at(.word)) return null;
-        const name_token = self.tokens[self.index];
+        const name_token = self.tokens.get(self.index);
         if (name_token.quoted or !isFunctionName(name_token.text, self.mode())) return null;
-        if (self.index + 2 >= self.tokens.len) return null;
+        if (self.index + 2 >= self.tokens.items.len) return null;
         // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
-        if (self.tokens[self.index + 1].kind != .left_paren or self.tokens[self.index + 2].kind != .right_paren) return null;
+        if (self.tokens.items[self.index + 1].kind != .left_paren or
+            self.tokens.items[self.index + 2].kind != .right_paren) return null;
         if (name_token.reserved != null) return error.UnexpectedToken;
         if (builtin.lookup(name_token.text)) |definition| {
             if (definition.kind == .special) return error.UnexpectedToken;
@@ -564,7 +573,7 @@ const Parser = struct {
     }
 
     fn parseCompoundCommand(self: *Parser) ParserError!?ast.CompoundInvocation {
-        const start = self.tokens[self.index].span.start;
+        const start = self.tokens.items[self.index].start;
         var body: ast.CompoundCommand = undefined;
         if (try self.parseIfCommand()) |if_command| {
             body = .{ .if_command = if_command };
@@ -600,7 +609,7 @@ const Parser = struct {
         const invocation: ast.CompoundInvocation = .{
             .body = body,
             .redirections = redirections,
-            .source_text = self.source.text[start..self.tokens[self.index - 1].span.end],
+            .source_text = self.source.text[start..self.tokens.items[self.index - 1].end],
         };
         if (self.canValidateHereDocs()) invocation.validate();
         return invocation;
@@ -799,13 +808,13 @@ const Parser = struct {
 
     fn atConditionalStart(self: Parser) bool {
         if (!self.at(.word)) return false;
-        const tok = self.tokens[self.index];
+        const tok = self.tokens.get(self.index);
         return !tok.quoted and std.mem.eql(u8, tok.text, "[[");
     }
 
     fn atConditionalEnd(self: Parser) bool {
         if (!self.at(.word)) return false;
-        const tok = self.tokens[self.index];
+        const tok = self.tokens.get(self.index);
         return !tok.quoted and std.mem.eql(u8, tok.text, "]]");
     }
 
@@ -818,7 +827,7 @@ const Parser = struct {
         if (self.eat(.less) != null) return .less;
         if (self.eat(.greater) != null) return .greater;
         if (!self.at(.word)) return null;
-        const tok = self.tokens[self.index];
+        const tok = self.tokens.get(self.index);
         if (tok.quoted) return null;
         const operator: ast.ConditionalComparisonOperator = if (std.mem.eql(u8, tok.text, "==") or
             std.mem.eql(u8, tok.text, "="))
@@ -1020,8 +1029,8 @@ const Parser = struct {
 
     fn parseRedirection(self: *Parser) !?ast.Redirection {
         if (self.mode() == .posix and !self.split_ampersand_redirection and
-            (self.tokens[self.index].kind == .ampersand_greater or
-                self.tokens[self.index].kind == .ampersand_greater_greater))
+            (self.tokens.items[self.index].kind == .ampersand_greater or
+                self.tokens.items[self.index].kind == .ampersand_greater_greater))
         {
             return null;
         }
@@ -1771,21 +1780,21 @@ const Parser = struct {
     }
 
     fn atArithmeticDelimiterStart(self: Parser) bool {
-        if (!self.at(.left_paren) or self.index + 1 >= self.tokens.len) return false;
-        const first = self.tokens[self.index];
-        const second = self.tokens[self.index + 1];
-        return second.kind == .left_paren and first.span.end == second.span.start;
+        if (!self.at(.left_paren) or self.index + 1 >= self.tokens.items.len) return false;
+        const first = self.tokens.items[self.index];
+        const second = self.tokens.items[self.index + 1];
+        return second.kind == .left_paren and first.end == second.start;
     }
 
     fn parseArithmeticDelimitedText(self: *Parser) ParserError![]const u8 {
         std.debug.assert(self.atArithmeticDelimiterStart());
-        const open = self.tokens[self.index + 1];
-        const content_start = open.span.end;
+        const open = self.tokens.items[self.index + 1];
+        const content_start = open.end;
         self.index += 2;
 
         var depth: usize = 0;
-        while (self.index + 1 < self.tokens.len) : (self.index += 1) {
-            const tok = self.tokens[self.index];
+        while (self.index + 1 < self.tokens.items.len) : (self.index += 1) {
+            const tok = self.tokens.items[self.index];
             if (tok.kind == .left_paren) {
                 depth += 1;
                 continue;
@@ -1796,9 +1805,9 @@ const Parser = struct {
                 continue;
             }
 
-            const next = self.tokens[self.index + 1];
-            if (next.kind == .right_paren and tok.span.end == next.span.start) {
-                const content = self.source.text[content_start..tok.span.start];
+            const next = self.tokens.items[self.index + 1];
+            if (next.kind == .right_paren and tok.end == next.start) {
+                const content = self.source.text[content_start..tok.start];
                 self.index += 2;
                 return content;
             }
@@ -1810,7 +1819,7 @@ const Parser = struct {
     /// token at the current index is the best approximation of the error
     /// position without threading spans through every error return.
     fn currentFailure(self: *const Parser) Failure {
-        const tok = self.tokens[@min(self.index, self.tokens.len - 1)];
+        const tok = self.tokens.get(@min(self.index, self.tokens.items.len - 1));
         return .{
             .line = tok.span.start_line,
             .near = if (tok.kind == .eof) null else self.source.text[tok.span.start..tok.span.end],
@@ -1823,15 +1832,15 @@ const Parser = struct {
 
     fn eat(self: *Parser, kind: token.Kind) ?token.Token {
         if (self.mode() == .posix and !self.split_ampersand_redirection and kind == .ampersand and
-            (self.tokens[self.index].kind == .ampersand_greater or
-                self.tokens[self.index].kind == .ampersand_greater_greater))
+            (self.tokens.items[self.index].kind == .ampersand_greater or
+                self.tokens.items[self.index].kind == .ampersand_greater_greater))
         {
             self.split_ampersand_redirection = true;
-            const tok = self.tokens[self.index];
+            const tok = self.tokens.get(self.index);
             return .{ .kind = .ampersand, .span = spanTo(tok.span, tok.span.start + 1) };
         }
         if (!self.at(kind)) return null;
-        const tok = self.tokens[self.index];
+        const tok = self.tokens.get(self.index);
         if (self.split_ampersand_redirection) {
             self.split_ampersand_redirection = false;
             self.index += 1;
@@ -1853,7 +1862,7 @@ const Parser = struct {
     fn eatSimpleCommandWord(self: *Parser, after_command_name: bool) ?token.Token {
         if (self.eat(.word)) |word| return word;
         if (!after_command_name) return null;
-        return switch (self.tokens[self.index].kind) {
+        return switch (self.tokens.items[self.index].kind) {
             .bang, .left_brace, .right_brace => token_word: {
                 break :token_word self.eatOperatorAsWord();
             },
@@ -1863,14 +1872,14 @@ const Parser = struct {
 
     fn eatNonReservedWord(self: *Parser) ?token.Token {
         if (self.eat(.word)) |word| return word;
-        return switch (self.tokens[self.index].kind) {
+        return switch (self.tokens.items[self.index].kind) {
             .bang, .left_brace, .right_brace => self.eatOperatorAsWord(),
             else => null,
         };
     }
 
     fn eatOperatorAsWord(self: *Parser) token.Token {
-        const tok = self.tokens[self.index];
+        const tok = self.tokens.get(self.index);
         self.index += 1;
         return .{
             .kind = .word,
@@ -1882,7 +1891,7 @@ const Parser = struct {
     fn eatReserved(self: *Parser, reserved: token.ReservedWord) ?token.Token {
         if (!self.atReserved(reserved)) return null;
         defer self.index += 1;
-        return self.tokens[self.index];
+        return self.tokens.get(self.index);
     }
 
     fn eatAndOrOperator(self: *Parser) ?ast.AndOrOperator {
@@ -1893,13 +1902,13 @@ const Parser = struct {
 
     fn eatRedirectionOperator(self: *Parser) ?token.Token {
         if (self.split_ampersand_redirection) {
-            const kind: token.Kind = if (self.tokens[self.index].kind == .ampersand_greater_greater)
+            const kind: token.Kind = if (self.tokens.items[self.index].kind == .ampersand_greater_greater)
                 .greater_greater
             else
                 .greater;
             return self.eat(kind);
         }
-        return switch (self.tokens[self.index].kind) {
+        return switch (self.tokens.items[self.index].kind) {
             .less,
             .less_less,
             .less_less_dash,
@@ -1912,7 +1921,7 @@ const Parser = struct {
             .ampersand_greater,
             .ampersand_greater_greater,
             .clobber,
-            => self.eat(self.tokens[self.index].kind).?,
+            => self.eat(self.tokens.items[self.index].kind).?,
             else => null,
         };
     }
@@ -1965,19 +1974,19 @@ const Parser = struct {
     }
 
     fn at(self: Parser, kind: token.Kind) bool {
-        std.debug.assert(self.index < self.tokens.len);
+        std.debug.assert(self.index < self.tokens.items.len);
         if (self.split_ampersand_redirection) {
-            const split_kind: token.Kind = if (self.tokens[self.index].kind == .ampersand_greater_greater)
+            const split_kind: token.Kind = if (self.tokens.items[self.index].kind == .ampersand_greater_greater)
                 .greater_greater
             else
                 .greater;
             return kind == split_kind;
         }
-        return self.tokens[self.index].kind == kind;
+        return self.tokens.items[self.index].kind == kind;
     }
 
     fn atReserved(self: Parser, reserved: token.ReservedWord) bool {
-        return self.tokens[self.index].reserved == reserved;
+        return self.tokens.items[self.index].reserved == reserved;
     }
 
     fn atListEnd(self: Parser, end_kind: ListEnd) bool {

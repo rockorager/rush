@@ -239,18 +239,168 @@ pub const Token = struct {
     }
 };
 
+/// Retained lexer output. Source identity and line starts are shared, and only
+/// text that differs from its raw source range needs a separate slice. Offsets
+/// and indices remain native-sized. `get` materializes a full token by value;
+/// lookahead can inspect `items` without reconstructing diagnostic locations.
+/// Source and normalized text are borrowed and must outlive the stream and AST.
+pub const Stream = struct {
+    source_id: source.SourceId = 0,
+    source_text: []const u8 = "",
+    items: []const StoredToken = &.{},
+    lines: []const Line = &.{},
+    text_overrides: []const []const u8 = &.{},
+
+    const no_text_override = std.math.maxInt(usize);
+
+    // Only lines on which tokens start need entries. Multiline words and
+    // here-documents must not allocate metadata for every embedded newline.
+    const Line = struct {
+        start: usize,
+        number: usize,
+    };
+
+    const StoredToken = struct {
+        start: usize,
+        end: usize,
+        text_index: usize = no_text_override,
+        kind: Kind,
+        reserved: ?ReservedWord,
+        quoted: bool,
+    };
+
+    /// Releases storage and metadata, not borrowed source or normalized text.
+    /// All copies of this stream become invalid; previously decoded text stays valid.
+    pub fn deinit(self: Stream, allocator: std.mem.Allocator) void {
+        allocator.free(self.items);
+        allocator.free(self.lines);
+        allocator.free(self.text_overrides);
+    }
+
+    pub fn get(self: Stream, index: usize) Token {
+        const stored = self.items[index];
+        const line_index = std.sort.upperBound(Line, self.lines, stored.start, compareOffset);
+        std.debug.assert(line_index != 0);
+        const line = self.lines[line_index - 1];
+        return .{
+            .kind = stored.kind,
+            .span = .{
+                .source_id = self.source_id,
+                .start = stored.start,
+                .end = stored.end,
+                .start_line = line.number,
+                .start_column = stored.start - line.start + 1,
+            },
+            .text = if (stored.text_index != no_text_override)
+                self.text_overrides[stored.text_index]
+            else switch (stored.kind) {
+                .word,
+                .io_number,
+                .here_doc_body,
+                .here_doc_body_unterminated,
+                => self.source_text[stored.start..stored.end],
+                else => "",
+            },
+            .reserved = stored.reserved,
+            .quoted = stored.quoted,
+        };
+    }
+
+    fn compareOffset(offset: usize, line: Line) std.math.Order {
+        return std.math.order(offset, line.start);
+    }
+
+    /// Builds compact storage directly, without first retaining full tokens.
+    pub const Builder = struct {
+        src: source.Source,
+        items: std.ArrayList(StoredToken) = .empty,
+        lines: std.ArrayList(Line) = .empty,
+        text_overrides: std.ArrayList([]const u8) = .empty,
+
+        // ziglint-ignore: Z023 nested builder method receiver precedes allocator
+        pub fn deinit(self: *Builder, allocator: std.mem.Allocator) void {
+            self.items.deinit(allocator);
+            self.lines.deinit(allocator);
+            self.text_overrides.deinit(allocator);
+            self.* = undefined;
+        }
+
+        /// Appends tokens in source order and borrows their text. Appending may
+        /// invalidate slices; after allocation failure, discard the builder.
+        // ziglint-ignore: Z023 nested builder method receiver precedes allocator
+        pub fn append(self: *Builder, allocator: std.mem.Allocator, tok: Token) !void {
+            tok.validate();
+            std.debug.assert(tok.span.source_id == self.src.id);
+            std.debug.assert(tok.span.end <= self.src.text.len);
+            std.debug.assert(tok.span.start_column - 1 <= tok.span.start);
+            const line: Line = .{
+                .start = tok.span.start - (tok.span.start_column - 1),
+                .number = tok.span.start_line,
+            };
+            if (self.lines.getLastOrNull()) |previous| {
+                std.debug.assert(line.number >= previous.number);
+                if (line.number == previous.number) {
+                    std.debug.assert(line.start == previous.start);
+                } else {
+                    std.debug.assert(line.start > previous.start);
+                    try self.lines.append(allocator, line);
+                }
+            } else {
+                try self.lines.append(allocator, line);
+            }
+            var stored: StoredToken = .{
+                .start = tok.span.start,
+                .end = tok.span.end,
+                .kind = tok.kind,
+                .reserved = tok.reserved,
+                .quoted = tok.quoted,
+            };
+            switch (tok.kind) {
+                .word, .io_number, .here_doc_body, .here_doc_body_unterminated => {
+                    const raw = self.src.text[stored.start..stored.end];
+                    if (tok.text.ptr != raw.ptr or tok.text.len != raw.len) {
+                        stored.text_index = self.text_overrides.items.len;
+                        try self.text_overrides.append(allocator, tok.text);
+                    }
+                },
+                else => std.debug.assert(tok.text.len == 0),
+            }
+            try self.items.append(allocator, stored);
+        }
+
+        /// Transfers storage to the caller, leaving the builder empty. Line
+        /// locations come from the lexer's raw spans, never normalized text.
+        // ziglint-ignore: Z023 nested builder method receiver precedes allocator
+        pub fn toOwnedStream(self: *Builder, allocator: std.mem.Allocator) !Stream {
+            std.debug.assert(self.lines.items.len <= self.items.items.len);
+            const lines = try self.lines.toOwnedSlice(allocator);
+            errdefer allocator.free(lines);
+            const items = try self.items.toOwnedSlice(allocator);
+            errdefer allocator.free(items);
+            return .{
+                .source_id = self.src.id,
+                .source_text = self.src.text,
+                .items = items,
+                .lines = lines,
+                .text_overrides = try self.text_overrides.toOwnedSlice(allocator),
+            };
+        }
+    };
+};
+
 const test_lexer = @import("lexer.zig");
 
 test "command position tracker classifies assignments redirections and segments" {
     const src = "FOO=bar cached < nope; if tr";
     const source_file: source.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = src };
     const tokens = try test_lexer.lex(std.testing.allocator, source_file);
-    defer std.testing.allocator.free(tokens);
+    defer tokens.deinit(std.testing.allocator);
 
     var tracker: CommandPositionTracker = .{};
     var classes: std.ArrayList(CommandPositionTracker.Class) = .empty;
     defer classes.deinit(std.testing.allocator);
-    for (tokens) |tok| {
+    for (0..tokens.items.len) |index| {
+        const tok = tokens.get(index);
         if (tok.kind == .eof) break;
         try classes.append(std.testing.allocator, tracker.classify(tok));
     }
@@ -271,12 +421,12 @@ test "command position tracker treats reserved words as arguments outside comman
     const src = "echo if foo";
     const source_file: source.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = src };
     const tokens = try test_lexer.lex(std.testing.allocator, source_file);
-    defer std.testing.allocator.free(tokens);
+    defer tokens.deinit(std.testing.allocator);
 
     var tracker: CommandPositionTracker = .{};
-    try std.testing.expectEqual(CommandPositionTracker.Class.command, tracker.classify(tokens[0]));
-    try std.testing.expectEqual(CommandPositionTracker.Class.argument, tracker.classify(tokens[1]));
-    try std.testing.expectEqual(CommandPositionTracker.Class.argument, tracker.classify(tokens[2]));
+    try std.testing.expectEqual(CommandPositionTracker.Class.command, tracker.classify(tokens.get(0)));
+    try std.testing.expectEqual(CommandPositionTracker.Class.argument, tracker.classify(tokens.get(1)));
+    try std.testing.expectEqual(CommandPositionTracker.Class.argument, tracker.classify(tokens.get(2)));
 }
 
 test "reserved word lookup uses static map" {
@@ -284,4 +434,92 @@ test "reserved word lookup uses static map" {
     try std.testing.expectEqual(ReservedWord.then_kw, lookupReservedWord("then").?);
     try std.testing.expectEqual(ReservedWord.done_kw, lookupReservedWord("done").?);
     try std.testing.expectEqual(@as(?ReservedWord, null), lookupReservedWord("printf"));
+}
+
+test "compact stream reconstructs raw locations including normalized tokens and EOF" {
+    const inputs = [_][]const u8{
+        "",
+        "\n",
+        "# comment\n\n",
+        "\té\r\nif true; then :; fi",
+        "echo foo\\\nbar\ncat <<-E\n\tbody\n\tE\necho next\n",
+        "cat <<'E'\nE\ncat <<E\nunterminated",
+        "echo 'multiple\nlines' $(printf x\n) 2>out &>>log",
+    };
+    for (inputs) |text| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const src: source.Source = .{ .id = 37, .kind = .script_file, .name = "test", .text = text };
+        const stream = try test_lexer.lexWithTokenAllocator(arena.allocator(), std.testing.allocator, src);
+        defer stream.deinit(std.testing.allocator);
+        var position: source.Position = .{ .source_id = src.id };
+        for (0..stream.items.len) |index| {
+            const tok = stream.get(index);
+            position.advance(text[position.byte_offset..tok.span.start]);
+            try std.testing.expectEqualDeep(source.Span.init(position, tok.span.end), tok.span);
+            tok.validate();
+        }
+        const eof = stream.get(stream.items.len - 1);
+        try std.testing.expectEqual(Kind.eof, eof.kind);
+        try std.testing.expectEqual(text.len, eof.span.end);
+    }
+}
+
+test "compact stream preserves full token values and sparse text overrides" {
+    const text = "if foo\\\nbar\n";
+    const src: source.Source = .{ .id = 4, .kind = .script_file, .name = "test", .text = text };
+    const expected = [_]Token{
+        .{ .kind = .word, .span = .{ .source_id = 4, .end = 2 }, .text = text[0..2], .reserved = .if_kw },
+        .{
+            .kind = .word,
+            .span = .{ .source_id = 4, .start = 3, .end = 11, .start_column = 4 },
+            .text = "foobar",
+        },
+        .{
+            .kind = .newline,
+            .span = .{ .source_id = 4, .start = 11, .end = 12, .start_line = 2, .start_column = 4 },
+        },
+        .{ .kind = .eof, .span = .{ .source_id = 4, .start = 12, .end = 12, .start_line = 3 } },
+    };
+    var builder: Stream.Builder = .{ .src = src };
+    defer builder.deinit(std.testing.allocator);
+    for (expected) |tok| try builder.append(std.testing.allocator, tok);
+    const stream = try builder.toOwnedStream(std.testing.allocator);
+    defer stream.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), stream.text_overrides.len);
+    for (expected, 0..) |tok, index| try std.testing.expectEqualDeep(tok, stream.get(index));
+    try std.testing.expect(@sizeOf(Stream.StoredToken) * 2 <= @sizeOf(Token));
+}
+
+test "compact stream bounds line metadata for large here-documents" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src: source.Source = .{
+        .id = 1,
+        .kind = .script_file,
+        .name = "test",
+        .text = "cat <<E\n" ++ ("\n" ** 4096) ++ "E\n",
+    };
+    const stream = try test_lexer.lex(arena.allocator(), src);
+    try std.testing.expectEqual(@as(usize, 6), stream.items.len);
+    try std.testing.expectEqual(@as(usize, 3), stream.lines.len);
+    try std.testing.expectEqual(@as(usize, 4096), stream.get(4).text.len);
+    try std.testing.expectEqual(@as(usize, 4099), stream.get(5).span.start_line);
+}
+
+test "compact stream reclaims storage on allocation failures" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var text_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer text_arena.deinit();
+            const src: source.Source = .{
+                .id = 8,
+                .kind = .script_file,
+                .name = "test",
+                .text = "echo foo\\\nbar\ncat <<-E\n\tbody\n\tE\n" ** 32,
+            };
+            const stream = try test_lexer.lexWithTokenAllocator(text_arena.allocator(), allocator, src);
+            defer stream.deinit(allocator);
+        }
+    }.run, .{});
 }
