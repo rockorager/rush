@@ -3,6 +3,22 @@
     .mode = .posix,
     .cases = .{
         .{
+            .name = "case retains status when fallthrough reaches the end",
+            .script =
+            \\case a in a) (exit 42);& esac
+            \\printf '%s\n' "$?"
+            \\case a in a) :;& b) (exit 17);& esac
+            \\printf '%s\n' "$?"
+            \\case a in a) false;& b) ;; esac
+            \\printf '%s\n' "$?"
+            \\case a in b) false;& esac
+            \\printf '%s\n' "$?"
+            ,
+            .stdout = "42\n17\n0\n0\n",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "subshell exit status is compound-list status and assignments do not persist",
             .script =
             \\x=outer

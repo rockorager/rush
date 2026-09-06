@@ -231,48 +231,69 @@ const InteractiveSession = struct {
 
     fn runPromptedStdin(self: *InteractiveSession) !u8 {
         defer self.clearBashPromptCache();
+        var pending: std.ArrayList(u8) = .empty;
+        defer pending.deinit(self.allocator);
 
         while (true) {
-            self.clearBashPromptCache();
-            if (try self.runBashPromptCommand()) |status| return self.exit(status);
+            if (pending.items.len == 0) {
+                self.clearBashPromptCache();
+                if (try self.runBashPromptCommand()) |status| return self.exit(status);
+            }
 
-            const prompt_text = self.renderPrompt() catch try promptedStdinPrompt(self.allocator, self.sh);
+            const prompt_text = if (pending.items.len == 0)
+                self.renderPrompt() catch try promptedStdinPrompt(self.allocator, self.sh)
+            else
+                try promptedStdinContinuationPrompt(self.allocator, self.sh);
             defer self.allocator.free(prompt_text);
             try self.sh.host.writeAll(.stderr, prompt_text);
 
-            const line = try readInteractiveStdinLine(self.allocator, self.sh) orelse return self.exitWithLastStatus();
+            const line = try readStdinLineWithNewline(self.allocator, self.sh) orelse {
+                if (pending.items.len != 0) {
+                    if (try self.evaluatePromptedStdinCommand(&pending)) |status| return status;
+                }
+                return self.exitWithLastStatus();
+            };
             defer self.allocator.free(line);
+            try pending.appendSlice(self.allocator, line);
+            if (endsWithLineContinuation(pending.items) or !stdinCommandsComplete(self.sh, pending.items)) continue;
 
-            const src: shell.source.Source = .{
-                .id = self.source_id.*,
-                .kind = .interactive,
-                .name = "interactive",
-                .text = line,
-            };
-            self.source_id.* +%= 1;
-
-            const started_at = unixTimestamp(self.io);
-            const history_handle = self.startHistoryCommand(line, started_at) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                else => null,
-            };
-            const evaluated = self.sh.evalSource(src) catch |err| {
-                self.last_command_status = 2;
-                self.sh.state.last_status = 2;
-                // ziglint-ignore: Z026 history updates remain best effort when evaluation fails
-                self.history_service.completeCommand(history_handle, 2, 0) catch {};
-                if (!shell.parser.isParseError(err)) try self.sh.host.writeAll(.stderr, "rush: shell error\n");
-                continue;
-            };
-            const duration_ms = @max(unixTimestamp(self.io) - started_at, 0) * 1000;
-            // ziglint-ignore: Z026 history updates remain best effort after command completion
-            self.history_service.completeCommand(history_handle, evaluated.status, duration_ms) catch {};
-            self.last_command_status = evaluated.status;
-            switch (evaluated.flow) {
-                .exit => |status| return self.exit(status),
-                else => {},
-            }
+            if (try self.evaluatePromptedStdinCommand(&pending)) |status| return status;
         }
+    }
+
+    fn evaluatePromptedStdinCommand(self: *InteractiveSession, pending: *std.ArrayList(u8)) !?u8 {
+        const src: shell.source.Source = .{
+            .id = self.source_id.*,
+            .kind = .interactive,
+            .name = "interactive",
+            .text = pending.items,
+        };
+        self.source_id.* +%= 1;
+
+        const started_at = unixTimestamp(self.io);
+        const history_handle = self.startHistoryCommand(pending.items, started_at) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => null,
+        };
+        const evaluated = self.sh.evalSource(src) catch |err| {
+            self.last_command_status = 2;
+            self.sh.state.last_status = 2;
+            // ziglint-ignore: Z026 history updates remain best effort when evaluation fails
+            self.history_service.completeCommand(history_handle, 2, 0) catch {};
+            if (!shell.parser.isParseError(err)) try self.sh.host.writeAll(.stderr, "rush: shell error\n");
+            pending.clearRetainingCapacity();
+            return null;
+        };
+        pending.clearRetainingCapacity();
+        const duration_ms = @max(unixTimestamp(self.io) - started_at, 0) * 1000;
+        // ziglint-ignore: Z026 history updates remain best effort after command completion
+        self.history_service.completeCommand(history_handle, evaluated.status, duration_ms) catch {};
+        self.last_command_status = evaluated.status;
+        switch (evaluated.flow) {
+            .exit => |status| return self.exit(status),
+            else => {},
+        }
+        return null;
     }
 
     const ReadLineError = error{EditorFailure} || error{OutOfMemory};
@@ -1089,22 +1110,6 @@ fn readStdinLineWithNewline(allocator: std.mem.Allocator, sh: *RushShell) !?[]co
     }
 }
 
-fn readInteractiveStdinLine(allocator: std.mem.Allocator, sh: *RushShell) !?[]const u8 {
-    var line: std.ArrayList(u8) = .empty;
-    defer line.deinit(allocator);
-
-    while (true) {
-        var byte: [1]u8 = undefined;
-        const read_len = try sh.host.read(.stdin, &byte);
-        if (read_len == 0) {
-            if (line.items.len == 0) return null;
-            return try line.toOwnedSlice(allocator);
-        }
-        if (byte[0] == '\n') return try line.toOwnedSlice(allocator);
-        try line.append(allocator, byte[0]);
-    }
-}
-
 fn prompt(allocator: std.mem.Allocator, sh: *RushShell) ![]const u8 {
     if (sh.state.getVariable("PS1")) |variable| return allocator.dupe(u8, variable.value);
     if (startup.envValue(sh.env, "PS1")) |value| return allocator.dupe(u8, value);
@@ -1115,6 +1120,27 @@ fn promptedStdinPrompt(allocator: std.mem.Allocator, sh: *RushShell) ![]const u8
     if (sh.state.getVariable("PS1")) |variable| return allocator.dupe(u8, variable.value);
     if (startup.envValue(sh.env, "PS1")) |value| return allocator.dupe(u8, value);
     return allocator.dupe(u8, "$ ");
+}
+
+fn promptedStdinContinuationPrompt(allocator: std.mem.Allocator, sh: *RushShell) ![]const u8 {
+    const value = if (sh.state.getVariable("PS2")) |variable|
+        variable.value
+    else
+        startup.envValue(sh.env, "PS2") orelse "> ";
+    const scratch = try sh.beginScratchScope();
+    defer scratch.end();
+    return allocator.dupe(u8, try shell.eval.expandParametersScalar(sh, value));
+}
+
+test "stdin continuation prompt expands parameters without losing status" {
+    var sh = RushShell.init(std.testing.allocator, .{}, .{});
+    defer sh.deinit();
+    try sh.state.putVariable(.{ .name = "PS2", .value = "${label:-more}:$?> " });
+    sh.state.last_status = 42;
+    const rendered = try promptedStdinContinuationPrompt(std.testing.allocator, &sh);
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expectEqualStrings("more:42> ", rendered);
+    try std.testing.expectEqual(@as(shell.result.ExitStatus, 42), sh.state.last_status);
 }
 
 fn expandRushAbbreviation(

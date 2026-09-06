@@ -846,6 +846,55 @@
             .status = 0,
         },
         .{
+            // Issue 8 requires OPTARG to be unset if no option was found;
+            // dash retains a stale value at end of options.
+            .name = "getopts end paths set question mark and unset OPTARG",
+            .script =
+            \\printf '<initial:%s>\n' "${OPTIND-unset}"
+            \\check_end() {
+            \\    OPTARG=stale opt=old
+            \\    getopts a opt "$@"
+            \\    printf '<%s:%s:%s:%s>\n' "$?" "$opt" "${OPTARG-unset}" "$OPTIND"
+            \\}
+            \\OPTIND=1; check_end
+            \\OPTIND=1; check_end -- tail
+            \\OPTIND=1; check_end operand
+            \\OPTIND=1; getopts a opt -a
+            \\OPTARG=stale; getopts a opt -a
+            \\printf '<%s:%s:%s:%s>\n' "$?" "$opt" "${OPTARG-unset}" "$OPTIND"
+            ,
+            .stdout =
+            \\<initial:1>
+            \\<1:?:unset:1>
+            \\<1:?:unset:2>
+            \\<1:?:unset:1>
+            \\<1:?:unset:2>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "getopts error modes set OPTARG and diagnostics",
+            .script =
+            \\OPTIND=1; OPTARG=stale; getopts :a opt -x 2>silent.err
+            \\printf '<silent:%s:%s:%s>\n' "$opt" "$OPTARG" "$([ -s silent.err ] && echo yes || echo no)"
+            \\OPTIND=1; OPTARG=stale; getopts a opt -x 2>unknown.err
+            \\printf '<unknown:%s:%s:%s>\n' "$opt" "${OPTARG-unset}" "$([ -s unknown.err ] && echo yes || echo no)"
+            \\OPTIND=1; OPTARG=stale; getopts a: opt -a 2>missing.err
+            \\printf '<missing:%s:%s:%s>\n' "$opt" "${OPTARG-unset}" "$([ -s missing.err ] && echo yes || echo no)"
+            \\rm -f silent.err unknown.err missing.err
+            ,
+            .stdout =
+            \\<silent:?:x:no>
+            \\<unknown:?:unset:yes>
+            \\<missing:?:unset:yes>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "setting OPTIND to one restarts clustered option parsing",
             .script =
             \\getopts ab opt -ab

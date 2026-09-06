@@ -3,6 +3,46 @@
     .mode = .posix,
     .cases = .{
         .{
+            // Initial async stdin overrides an earlier exec redirection in the
+            // parent, not redirections inside the async list (Issue 8 2.9.3.1).
+            // Bash 5.3.15 retains that parent redirection; dash uses null stdin.
+            .name = "background commands start with null stdin without consuming parent input",
+            .script =
+            \\set +m
+            \\printf 'parent\n' >input
+            \\exec <input
+            \\cat & wait "$!"
+            \\{ cat; } & wait "$!"
+            \\(cat) & wait "$!"
+            \\true && cat & wait "$!"
+            \\cat | cat & wait "$!"
+            \\printf 'foreground:'
+            \\cat
+            \\cat <input & wait "$!"
+            \\cat <input | cat & wait "$!"
+            \\(cat) <input & wait "$!"
+            ,
+            .stdout = "foreground:parent\nparent\nparent\nparent\n",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            // Issue 8 2.9.3.1 requires initial null stdin even if inherited stdin
+            // was closed. Dash and Bash 5.3.15 mishandle the pipeline in this case.
+            .name = "background null stdin works when stdin was closed",
+            .script =
+            \\set +m
+            \\exec 0<&-
+            \\cat & wait "$!"
+            \\printf '%s\n' "$?"
+            \\cat | cat & wait "$!"
+            \\printf '%s\n' "$?"
+            ,
+            .stdout = "0\n0\n",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "system shell redirected asynchronous external keeps the job pid",
             .script =
             \\ln -s "$(command -v "$0")" sh

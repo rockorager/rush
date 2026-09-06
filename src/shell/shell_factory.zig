@@ -57,6 +57,7 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
             };
             shell.state.putVariable(.{ .name = "PS4", .value = "+ " }) catch unreachable;
             shell.state.putVariable(.{ .name = "IFS", .value = " \t\n" }) catch unreachable;
+            shell.state.putVariable(.{ .name = "OPTIND", .value = "1" }) catch unreachable;
             std.debug.assert(options.initial_pwd == null or !options.initial_pwd_unavailable);
             if (options.initial_pwd) |pwd| {
                 std.debug.assert(pwd.len != 0 and pwd[0] == '/');
@@ -479,6 +480,18 @@ test "Shell initializes IFS from the shell default instead of the environment" {
     defer shell.deinit();
 
     try std.testing.expectEqualStrings(" \t\n", shell.state.getVariable("IFS").?.value);
+}
+
+test "Shell initializes unexported OPTIND instead of preserving the environment value" {
+    const TestHost = struct {};
+    const env = [_][*:0]const u8{"OPTIND=7"};
+
+    var shell = Shell(TestHost).init(std.testing.allocator, .{}, .{ .env = &env });
+    defer shell.deinit();
+
+    const optind = shell.state.getVariable("OPTIND").?;
+    try std.testing.expectEqualStrings("1", optind.value);
+    try std.testing.expect(!optind.exported);
 }
 
 test "Shell initializes exported PWD instead of preserving a stale environment value" {

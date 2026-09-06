@@ -678,7 +678,7 @@ const Parser = struct {
             errdefer word_list.deinit(self.allocator);
             while (!self.at(.eof) and !self.at(.semicolon) and !self.at(.newline)) {
                 // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
-                try word_list.append(self.allocator, try self.parseWordToken(self.eatForWordListWord() orelse return error.UnexpectedToken));
+                try word_list.append(self.allocator, try self.parseWordToken(self.eatNonReservedWord() orelse return error.UnexpectedToken));
             }
             words = .{ .words = try word_list.toOwnedSlice(self.allocator) };
         }
@@ -859,7 +859,7 @@ const Parser = struct {
 
     fn parseCaseCommand(self: *Parser) ParserError!?ast.CaseCommand {
         if (self.eatReserved(.case_kw) == null) return null;
-        const word = try self.parseWordToken(self.eat(.word) orelse return error.UnexpectedToken);
+        const word = try self.parseWordToken(self.eatNonReservedWord() orelse return error.UnexpectedToken);
         try self.skipSeparators();
         _ = self.eatReserved(.in_kw) orelse return error.UnexpectedToken;
         try self.skipSeparators();
@@ -884,7 +884,7 @@ const Parser = struct {
         errdefer patterns.deinit(self.allocator);
         while (true) {
             // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
-            try patterns.append(self.allocator, try self.parseWordToken(self.eatCasePatternWord() orelse return error.UnexpectedToken));
+            try patterns.append(self.allocator, try self.parseWordToken(self.eatNonReservedWord() orelse return error.UnexpectedToken));
             if (self.eat(.pipe) == null) break;
         }
         try self.expect(.right_paren);
@@ -1842,13 +1842,7 @@ const Parser = struct {
         };
     }
 
-    fn eatCasePatternWord(self: *Parser) ?token.Token {
-        if (self.eat(.word)) |word| return word;
-        if (!self.at(.bang)) return null;
-        return self.eatOperatorAsWord();
-    }
-
-    fn eatForWordListWord(self: *Parser) ?token.Token {
+    fn eatNonReservedWord(self: *Parser) ?token.Token {
         if (self.eat(.word)) |word| return word;
         return switch (self.tokens[self.index].kind) {
             .bang, .left_brace, .right_brace => self.eatOperatorAsWord(),

@@ -1,0 +1,56 @@
+.{
+    .name = "Interactive POSIX multiline standard input",
+    .mode = .posix,
+    .cases = .{
+        .{
+            .name = "parenthesized command is accumulated",
+            .script = "",
+            .stdin = "value=outer\n(\nvalue=inner\necho subshell\n)\nprintf '%s:%s\\n' \"$?\" \"$value\"\nexit\n",
+            .stdout = "subshell\n0:outer\n",
+            .stderr_match = .any,
+        },
+        .{
+            .name = "multiline if command is accumulated",
+            .script = "",
+            .stdin = "if true\nthen\necho conditional\nfi\nprintf 'status:%s\\n' \"$?\"\nexit\n",
+            .stdout = "conditional\nstatus:0\n",
+            .stderr_match = .any,
+        },
+        .{
+            .name = "here-document body is accumulated",
+            .script = "",
+            .stdin = "cat <<EOF\nhere document\nEOF\nprintf 'status:%s\\n' \"$?\"\nexit\n",
+            .stdout = "here document\nstatus:0\n",
+            .stderr_match = .any,
+        },
+        .{
+            .name = "quoted string is accumulated",
+            .script = "",
+            .stdin = "printf '%s\\n' \"two\nlines\"\nexit\n",
+            .stdout = "two\nlines\n",
+            .stderr_match = .any,
+        },
+        .{
+            .name = "backslash newline continues an interactive command",
+            .script = "",
+            .stdin = "printf '%s\\n' ab\\\ncd\nexit\n",
+            .stdout = "abcd\n",
+            .stderr_match = .any,
+        },
+        .{
+            .name = "syntax error does not stop subsequent input",
+            .script = "",
+            .stdin = "echo before\n)\necho after\nexit\n",
+            .stdout = "before\nafter\n",
+            .stderr_match = .nonempty,
+        },
+        .{
+            .name = "incomplete command at EOF is diagnosed",
+            .script = "",
+            .stdin = "echo before\necho \"unterminated\n",
+            .stdout = "before\n",
+            .stderr_match = .nonempty,
+            .status = 2,
+        },
+    },
+}

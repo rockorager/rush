@@ -3,6 +3,31 @@
     .mode = .posix,
     .cases = .{
         .{
+            .name = "arithmetic equality binds less tightly than relational operators",
+            .script =
+            \\printf '%s\n' $((0!=2<=1)) $((0==0<0)) $((1!=0>=0)) $((0==0>1))
+            \\printf '%s\n' $((2 & 1 == 0)) $((0 == 0 == 1))
+            ,
+            .stdout = "0\n1\n0\n1\n0\n1\n",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "arithmetic expands trimming parameters and both command substitution forms",
+            .script =
+            \\a=+123
+            \\printf '%s\n' $((${a%3})) $((${a#+})) $((1+$(echo 10)+`echo 100`+1000))
+            \\unset x
+            \\printf '%s\n' $((${x:-$(echo 12)})) $((${x:-${a%3}}))
+            \\printf '%s\n' $((${x:-$( { printf 21; } )}))
+            \\x=7
+            \\printf '%s\n' $((${x:-${missing:?must not expand}}))
+            ,
+            .stdout = "12\n123\n1111\n12\n12\n21\n7\n",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "parameter expansion uses default value without assigning",
             .script =
             \\unset x

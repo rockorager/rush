@@ -126,7 +126,10 @@ fn evalBackgroundAndOr(shell: anytype, and_or: ast.AndOr) EvalError!result.EvalR
             if (shell.state.options.monitor) setChildProcessGroup(shell, 0) catch shell.host.exit(2);
             resetJobControlSignalsForChild(shell);
             resetCaughtSignalTrapsForAsyncChild(shell);
-            if (!shell.state.options.monitor) ignoreAsynchronousJobSignals(shell) catch shell.host.exit(2);
+            if (!shell.state.options.monitor) {
+                ignoreAsynchronousJobSignals(shell) catch shell.host.exit(2);
+                redirectStdinFromNull(shell) catch shell.host.exit(2);
+            }
             if (background_subshell) |subshell| {
                 // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                 const evaluated = evalSubshellInCurrentProcess(shell, subshell.body.subshell, subshell.redirections) catch shell.host.exit(2);
@@ -162,6 +165,16 @@ fn evalBackgroundAndOr(shell: anytype, and_or: ast.AndOr) EvalError!result.EvalR
 fn ignoreAsynchronousJobSignals(shell: anytype) !void {
     try shell.host.setSignalIgnored(2);
     try shell.host.setSignalIgnored(3);
+}
+
+fn redirectStdinFromNull(shell: anytype) !void {
+    const fd = try shell.host.openZ("/dev/null", .{ .access = .read_only });
+    if (fd == .stdin) {
+        try shell.host.setCloseOnExec(fd, false);
+    } else {
+        defer shell.host.close(fd) catch {};
+        try shell.host.duplicateTo(fd, .stdin);
+    }
 }
 
 fn resetCaughtSignalTrapsForAsyncChild(shell: anytype) void {
@@ -399,7 +412,7 @@ fn pipelineStatus(statuses: []const host_mod.WaitStatus, pipefail: bool) result.
 fn spawnPipelineStages(
     shell: anytype,
     stages: []const ast.Command,
-    direct_static_externals: bool,
+    asynchronous: bool,
     create_process_group: bool,
 ) EvalError![]const host_mod.Pid {
     std.debug.assert(stages.len > 1);
@@ -431,7 +444,7 @@ fn spawnPipelineStages(
             stage,
             pipes,
             index,
-            direct_static_externals,
+            asynchronous,
             process_group,
             suppress_child_xtrace,
         );
@@ -485,12 +498,15 @@ fn forkPipelineStage(
     command: ast.Command,
     pipes: []const host_mod.Pipe,
     stage_index: usize,
-    direct_static_external: bool,
+    asynchronous: bool,
     process_group: ?host_mod.Pid,
     suppress_child_xtrace: bool,
 ) !host_mod.Pid {
     const fd_actions = try pipelineFdActions(shell, pipes, stage_index);
-    if (direct_static_external) {
+    const null_stdin = asynchronous and !shell.state.options.monitor and stage_index == 0;
+    // Opening the initial stdin is a child effect not expressible by spawn's
+    // duplicate/close actions. Other static background stages can still spawn.
+    if (asynchronous and !null_stdin) {
         if (try staticExternalPipelineStageRequest(shell, command, fd_actions)) |request| {
             var grouped_request = request;
             grouped_request.process_group = process_group;
@@ -508,6 +524,7 @@ fn forkPipelineStage(
             if (process_group) |pgid| setChildProcessGroup(shell, pgid) catch shell.host.exit(2);
             resetJobControlSignalsForChild(shell);
             applyPipelineChildFdActions(shell, fd_actions) catch shell.host.exit(127);
+            if (null_stdin) redirectStdinFromNull(shell) catch shell.host.exit(127);
             if (!shell.state.options.xtrace) {
                 const request = dynamicExternalCommandRequest(shell, command, &.{}) catch shell.host.exit(2);
                 if (request) |spawn_request| shell.host.exec(spawn_request) catch shell.host.exit(127);
@@ -1085,7 +1102,7 @@ fn evalConditionalComparison(shell: anytype, comparison: ast.ConditionalComparis
         .equal, .not_equal => if (comparison.right.quoted)
             try expandWord(shell, comparison.right)
         else
-            try expandPatternWord(shell, comparison.right),
+            try expandPatternWord(shell, comparison.right, null),
         .less,
         .greater,
         .integer_equal,
@@ -1685,24 +1702,26 @@ fn evalCase(shell: anytype, command: ast.CaseCommand) EvalError!result.EvalResul
 
     const word = try expandWord(shell, command.word);
     var execute_next = false;
+    var last: result.EvalResult = .{};
     for (command.arms) |arm| {
         const matches = execute_next or try caseArmMatches(shell, arm, word);
         if (!matches) continue;
 
         const evaluated = try evalList(shell, arm.body);
         if (evaluated.flow != .normal) return evaluated;
+        last = evaluated;
         switch (arm.fallthrough) {
             .none => return evaluated,
             .execute_next => execute_next = true,
             .test_next => execute_next = false,
         }
     }
-    return .{ .status = 0 };
+    return last;
 }
 
 fn caseArmMatches(shell: anytype, arm: ast.CaseArm, word: []const u8) EvalError!bool {
     for (arm.patterns) |pattern_word| {
-        const pattern = try expandPatternWord(shell, pattern_word);
+        const pattern = try expandPatternWord(shell, pattern_word, null);
         if (pattern_mod.matchesText(pattern, word)) return true;
     }
     return false;
@@ -1767,7 +1786,7 @@ fn evalSimpleScoped(shell: anytype, command: ast.SimpleCommand, process: Command
         defer if (has_redirections) redirections.restore(shell) catch {};
 
         try traceSimpleCommand(shell, expanded_assignments, &.{});
-        const status = assignmentExpansionStatus(expanded_assignments);
+        const status = redirections.substitution_status orelse assignmentExpansionStatus(expanded_assignments) orelse 0;
         return .{ .status = status };
     }
 
@@ -1793,7 +1812,7 @@ fn evalSimpleScoped(shell: anytype, command: ast.SimpleCommand, process: Command
     defer if (restore_redirections and has_redirections) redirections.restore(shell) catch {};
 
     if (command.words.len == 0) {
-        return .{};
+        return .{ .status = redirections.substitution_status orelse 0 };
     }
 
     if (declaration_id) |id| {
@@ -1802,8 +1821,10 @@ fn evalSimpleScoped(shell: anytype, command: ast.SimpleCommand, process: Command
     }
 
     if (fields.len == 0) {
-        const status = try applyAssignmentsWithStatus(shell, command.assignments);
-        return .{ .status = expansion_status orelse status };
+        const assignments = try expandAndApplyAssignments(shell, command.assignments);
+        const status = assignmentExpansionStatus(assignments) orelse
+            redirections.substitution_status orelse expansion_status orelse 0;
+        return .{ .status = status };
     }
     try traceSimpleCommand(shell, &.{}, fields);
     const name = fields[0];
@@ -4682,6 +4703,7 @@ fn applyExportedAssignments(shell: anytype, assignments: []const ast.Assignment)
 const AppliedRedirections = struct {
     frames: []const RedirectionFrame,
     here_doc_writers: []const host_mod.Pid,
+    substitution_status: ?result.ExitStatus = null,
 
     fn commit(self: AppliedRedirections, shell: anytype) !void {
         for (self.frames) |frame| {
@@ -4719,15 +4741,17 @@ const RedirectionFrame = struct {
 fn applyRedirections(shell: anytype, redirections: []const ast.Redirection) !AppliedRedirections {
     var frames: std.ArrayList(RedirectionFrame) = .empty;
     var here_doc_writers: std.ArrayList(host_mod.Pid) = .empty;
+    var substitution_status: ?result.ExitStatus = null;
     errdefer restoreFrames(shell, frames.items) catch {};
 
     for (redirections) |redirection| {
-        try applyRedirection(shell, redirection, &frames, &here_doc_writers);
+        try applyRedirection(shell, redirection, &frames, &here_doc_writers, &substitution_status);
     }
 
     return .{
         .frames = try frames.toOwnedSlice(shell.scratchAllocator()),
         .here_doc_writers = try here_doc_writers.toOwnedSlice(shell.scratchAllocator()),
+        .substitution_status = substitution_status,
     };
 }
 
@@ -4736,15 +4760,16 @@ fn applyRedirection(
     redirection: ast.Redirection,
     frames: *std.ArrayList(RedirectionFrame),
     here_doc_writers: *std.ArrayList(host_mod.Pid),
+    substitution_status: *?result.ExitStatus,
 ) !void {
     validateAst(redirection);
     const target = redirectionFd(redirection);
     if (redirection.op == .duplicate_input or redirection.op == .duplicate_output) {
-        try applyDuplicateRedirection(shell, redirection, target, frames);
+        try applyDuplicateRedirection(shell, redirection, target, frames, substitution_status);
         return;
     }
     if (redirection.op == .output_and_error or redirection.op == .append_and_error) {
-        try applyOutputAndErrorRedirection(shell, redirection, frames);
+        try applyOutputAndErrorRedirection(shell, redirection, frames, substitution_status);
         return;
     }
 
@@ -4756,7 +4781,8 @@ fn applyRedirection(
 
     switch (redirection.op) {
         .input, .output, .append, .read_write, .clobber => {
-            const path = try shell.scratchAllocator().dupeZ(u8, try expandWord(shell, redirection.target));
+            const expanded = try expandWordTracking(shell, redirection.target, substitution_status);
+            const path = try shell.scratchAllocator().dupeZ(u8, expanded);
             const opened = try openRedirectionPath(shell, path, redirection.op);
             if (opened != target) {
                 defer shell.host.close(opened) catch {};
@@ -4768,11 +4794,11 @@ fn applyRedirection(
         .duplicate_input, .duplicate_output => unreachable,
         .output_and_error, .append_and_error => unreachable,
         .here_doc, .here_doc_strip_tabs => {
-            const pid = try applyHereDocRedirection(shell, target, redirection.here_doc.?);
+            const pid = try applyHereDocRedirection(shell, target, redirection.here_doc.?, substitution_status);
             try here_doc_writers.append(shell.scratchAllocator(), pid);
         },
         .here_string => {
-            const expanded = try expandWord(shell, redirection.target);
+            const expanded = try expandWordTracking(shell, redirection.target, substitution_status);
             const body = try std.fmt.allocPrint(shell.scratchAllocator(), "{s}\n", .{expanded});
             const pid = try applyPipeInputRedirection(shell, target, body);
             try here_doc_writers.append(shell.scratchAllocator(), pid);
@@ -4784,6 +4810,7 @@ fn applyOutputAndErrorRedirection(
     shell: anytype,
     redirection: ast.Redirection,
     frames: *std.ArrayList(RedirectionFrame),
+    substitution_status: *?result.ExitStatus,
 ) !void {
     const stdout_saved = saveFd(shell, .stdout) catch |err| switch (err) {
         error.BadFd => null,
@@ -4797,7 +4824,8 @@ fn applyOutputAndErrorRedirection(
     };
     try frames.append(shell.scratchAllocator(), .{ .target = .stderr, .saved = stderr_saved });
 
-    const path = try shell.scratchAllocator().dupeZ(u8, try expandWord(shell, redirection.target));
+    const expanded = try expandWordTracking(shell, redirection.target, substitution_status);
+    const path = try shell.scratchAllocator().dupeZ(u8, expanded);
     const file_op: ast.RedirectionOperator = switch (redirection.op) {
         .output_and_error => .output,
         .append_and_error => .append,
@@ -4818,8 +4846,9 @@ fn applyDuplicateRedirection(
     redirection: ast.Redirection,
     target: host_mod.Fd,
     frames: *std.ArrayList(RedirectionFrame),
+    substitution_status: *?result.ExitStatus,
 ) !void {
-    const source_text = try expandWord(shell, redirection.target);
+    const source_text = try expandWordTracking(shell, redirection.target, substitution_status);
     if (std.mem.eql(u8, source_text, "-")) {
         const saved = saveFd(shell, target) catch |err| switch (err) {
             error.BadFd => null,
@@ -4846,8 +4875,16 @@ fn applyDuplicateRedirection(
     try shell.host.duplicateTo(source, target);
 }
 
-fn applyHereDocRedirection(shell: anytype, target: host_mod.Fd, here_doc: ast.HereDoc) !host_mod.Pid {
-    const body = if (here_doc.delimiter_quoted) here_doc.body else try expandHereDocParts(shell, here_doc.parts);
+fn applyHereDocRedirection(
+    shell: anytype,
+    target: host_mod.Fd,
+    here_doc: ast.HereDoc,
+    substitution_status: *?result.ExitStatus,
+) !host_mod.Pid {
+    const body = if (here_doc.delimiter_quoted)
+        here_doc.body
+    else
+        try expandHereDocParts(shell, here_doc.parts, substitution_status);
     return applyPipeInputRedirection(shell, target, body);
 }
 
@@ -4855,14 +4892,18 @@ fn applyHereDocRedirection(shell: anytype, target: host_mod.Fd, here_doc: ast.He
 /// part rules except that a bare $@ joins the positional parameters with
 /// the first IFS character like $* does, matching dash; field splitting
 /// never applies inside a here-document.
-fn expandHereDocParts(shell: anytype, parts: []const ast.WordPart) EvalError![]const u8 {
+fn expandHereDocParts(
+    shell: anytype,
+    parts: []const ast.WordPart,
+    substitution_status: *?result.ExitStatus,
+) EvalError![]const u8 {
     const allocator = shell.scratchAllocator();
     var output: std.ArrayList(u8) = .empty;
     for (parts) |*part| {
         const bytes = if (hereDocAtParameter(part.*))
             try joinPositionals(shell, ifsFirstCharacter(shell))
         else
-            try expandWordPart(shell, part, null);
+            try expandWordPart(shell, part, substitution_status);
         try output.appendSlice(allocator, bytes);
     }
     return output.toOwnedSlice(allocator);
@@ -5221,19 +5262,19 @@ fn expandArrayIndex(shell: anytype, word: ast.Word) !usize {
 
 fn expandArrayIndexValue(shell: anytype, word: ast.Word) !i64 {
     const text = try expandWord(shell, word);
-    return parseArithmeticValue(shell, text);
+    return parseArithmeticValue(shell, text, null);
 }
 
 fn assignmentExported(shell: anytype, name: []const u8) bool {
     return shell.state.options.allexport or exportedFlag(shell, name);
 }
 
-fn assignmentExpansionStatus(assignments: []const ExpandedAssignment) result.ExitStatus {
+fn assignmentExpansionStatus(assignments: []const ExpandedAssignment) ?result.ExitStatus {
     var status: ?result.ExitStatus = null;
     for (assignments) |assignment| {
         if (assignment.status) |value| status = value;
     }
-    return status orelse 0;
+    return status;
 }
 
 fn expandWords(shell: anytype, words: []const ast.Word) ![]const []const u8 {
@@ -6459,7 +6500,7 @@ pub fn expandParametersScalar(shell: anytype, text: []const u8) ![]const u8 {
         std.debug.assert(expansion.span.start >= cursor);
         std.debug.assert(expansion.span.end <= text.len);
         try output.appendSlice(allocator, text[cursor..expansion.span.start]);
-        try output.appendSlice(allocator, try expandParameter(shell, expansion));
+        try output.appendSlice(allocator, try expandParameter(shell, expansion, null));
         cursor = expansion.span.end;
     }
     try output.appendSlice(allocator, text[cursor..]);
@@ -6611,27 +6652,27 @@ fn expandWordPart(
 ) EvalError![]const u8 {
     return switch (part.*) {
         .literal, .escaped, .single_quoted => |bytes| bytes,
-        .arithmetic => |text| expandArithmetic(shell, text),
+        .arithmetic => |text| expandArithmetic(shell, text, substitution_status),
         .double_quoted => |parts| expandWordParts(shell, parts, substitution_status),
-        .parameter => |*parameter| expandParameter(shell, parameter),
+        .parameter => |*parameter| expandParameter(shell, parameter, substitution_status),
         .command_substitution => |substitution| expandCommandSubstitution(shell, substitution, substitution_status),
         .process_substitution => |substitution| expandProcessSubstitution(shell, substitution),
     };
 }
 
-fn expandArithmetic(shell: anytype, text: []const u8) EvalError![]const u8 {
-    const value = try parseArithmeticValue(shell, text);
+fn expandArithmetic(shell: anytype, text: []const u8, status: ?*?result.ExitStatus) EvalError![]const u8 {
+    const value = try parseArithmeticValue(shell, text, status);
     return std.fmt.allocPrint(shell.scratchAllocator(), "{}", .{value});
 }
 
 fn evalArithmeticValue(shell: anytype, text: []const u8) !i64 {
     const scratch = try shell.beginScratchScope();
     defer scratch.end();
-    return parseArithmeticValue(shell, text);
+    return parseArithmeticValue(shell, text, null);
 }
 
-fn parseArithmeticValue(shell: anytype, text: []const u8) EvalError!i64 {
-    const expanded = try expandArithmeticText(shell, text);
+fn parseArithmeticValue(shell: anytype, text: []const u8, status: ?*?result.ExitStatus) EvalError!i64 {
+    const expanded = try expandArithmeticText(shell, text, status);
     var parser_state: ArithmeticParser(@TypeOf(shell)) = .{ .shell = shell, .text = expanded };
     return parser_state.parse();
 }
@@ -6704,10 +6745,9 @@ fn expandProcessSubstitution(shell: anytype, substitution: ast.ProcessSubstituti
     return std.fmt.allocPrint(shell.scratchAllocator(), "/dev/fd/{}", .{parent_fd.raw()});
 }
 
-fn expandArithmeticText(shell: anytype, text: []const u8) EvalError![]const u8 {
-    // Expansion only rewrites `$` forms and strips quotes; text without them
-    // expands to itself, so skip the byte-by-byte copy.
-    if (std.mem.indexOfAny(u8, text, "$'\"\\") == null) return text;
+fn expandArithmeticText(shell: anytype, text: []const u8, status: ?*?result.ExitStatus) EvalError![]const u8 {
+    // Text without expansion or quoting syntax needs no copy.
+    if (std.mem.indexOfAny(u8, text, "$'\"\\`") == null) return text;
 
     var output: std.ArrayList(u8) = .empty;
     const allocator = shell.scratchAllocator();
@@ -6740,7 +6780,8 @@ fn expandArithmeticText(shell: anytype, text: []const u8) EvalError![]const u8 {
                     const expansion_end = parse_scan.scanArithmeticExpansion(text, index, text.len) catch {
                         return error.InvalidArithmetic;
                     };
-                    try output.appendSlice(allocator, try expandArithmetic(shell, text[index + 3 .. expansion_end]));
+                    const value = try expandArithmetic(shell, text[index + 3 .. expansion_end], status);
+                    try output.appendSlice(allocator, value);
                     index = expansion_end + 2;
                     continue;
                 }
@@ -6748,12 +6789,20 @@ fn expandArithmeticText(shell: anytype, text: []const u8) EvalError![]const u8 {
                     const substitution_end = try scanArithmeticCommandSubstitution(text, index + 1);
                     // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                     const substitution: ast.CommandSubstitution = .{ .source_text = text[index + 2 .. substitution_end] };
-                    try output.appendSlice(allocator, try expandCommandSubstitution(shell, substitution, null));
+                    try output.appendSlice(allocator, try expandCommandSubstitution(shell, substitution, status));
                     index = substitution_end + 1;
                     continue;
                 }
-                const expanded = try expandArithmeticParameter(shell, text, &index);
+                const expanded = try expandArithmeticParameter(shell, text, &index, status);
                 try output.appendSlice(allocator, expanded);
+            },
+            '`' => {
+                const end = parse_scan.scanBackquoteSubstitution(text, index, text.len) catch
+                    return error.InvalidArithmetic;
+                const word = parser.parseWordExpansionText(allocator, text[index .. end + 1], .{}) catch |err|
+                    return if (err == error.OutOfMemory) err else error.InvalidArithmetic;
+                try output.appendSlice(allocator, try expandWordTracking(shell, word, status));
+                index = end + 1;
             },
             else => {
                 try output.append(allocator, text[index]);
@@ -6764,7 +6813,12 @@ fn expandArithmeticText(shell: anytype, text: []const u8) EvalError![]const u8 {
     return output.toOwnedSlice(allocator);
 }
 
-fn expandArithmeticParameter(shell: anytype, text: []const u8, index: *usize) ![]const u8 {
+fn expandArithmeticParameter(
+    shell: anytype,
+    text: []const u8,
+    index: *usize,
+    status: ?*?result.ExitStatus,
+) ![]const u8 {
     // ziglint-ignore: Z016 compound assert documents a single invariant; preserve readability
     std.debug.assert(index.* < text.len and text[index.*] == '$');
     const parameter_start = index.* + 1;
@@ -6778,9 +6832,9 @@ fn expandArithmeticParameter(shell: anytype, text: []const u8, index: *usize) ![
     }
     if (arithmeticSpecialParameter(text[parameter_start])) |special| {
         index.* = parameter_start + 1;
-        return expandParameter(shell, &.{ .parameter = .{ .special = special } });
+        return expandParameter(shell, &.{ .parameter = .{ .special = special } }, status);
     }
-    if (text[parameter_start] == '{') return expandArithmeticBracedParameter(shell, text, index);
+    if (text[parameter_start] == '{') return expandArithmeticBracedParameter(shell, text, index, status);
     if (!isArithmeticNameStart(text[parameter_start])) {
         index.* += 1;
         return "$";
@@ -6797,109 +6851,27 @@ fn expandArithmeticParameter(shell: anytype, text: []const u8, index: *usize) ![
     };
 }
 
-fn expandArithmeticBracedParameter(shell: anytype, text: []const u8, index: *usize) ![]const u8 {
+fn expandArithmeticBracedParameter(
+    shell: anytype,
+    text: []const u8,
+    index: *usize,
+    status: ?*?result.ExitStatus,
+) ![]const u8 {
     const content_start = index.* + 2;
-    const content_end = scanArithmeticBracedParameterEnd(text, content_start) orelse return error.InvalidArithmetic;
+    const content_end = parse_scan.scanBracedParameterEnd(text, index.* + 1, text.len) orelse
+        return error.InvalidArithmetic;
     const content = text[content_start..content_end];
-    const parameter = parseArithmeticBracedParameter(content) orelse parameter: {
-        if (shell.state.options.mode == .posix) return error.InvalidArithmetic;
-        // Bash permits its full parameter grammar here, including indexed
-        // array lengths such as `${#values[@]}`.
-        const parsed = parser.parseBracedParameterExpansion(
-            shell.scratchAllocator(),
-            content,
-            .{},
-        ) catch |err| switch (err) {
-            error.OutOfMemory => return err,
-            else => return error.InvalidArithmetic,
-        };
-        break :parameter parsed orelse return error.InvalidArithmetic;
-    };
+    const parameter = (parser.parseBracedParameterExpansion(
+        shell.scratchAllocator(),
+        content,
+        .{},
+    ) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return error.InvalidArithmetic,
+    }) orelse return error.InvalidArithmetic;
 
     index.* = content_end + 1;
-    return expandParameter(shell, &parameter);
-}
-
-fn scanArithmeticBracedParameterEnd(text: []const u8, start: usize) ?usize {
-    var depth: usize = 1;
-    var index = start;
-    while (index < text.len) : (index += 1) {
-        if (text[index] == '\'' or text[index] == '"') {
-            const quote = text[index];
-            index += 1;
-            while (index < text.len and text[index] != quote) : (index += 1) {}
-            if (index >= text.len) return null;
-            continue;
-        }
-        if (text[index] == '$' and index + 1 < text.len and text[index + 1] == '{') {
-            depth += 1;
-            index += 1;
-            continue;
-        }
-        if (text[index] == '}') {
-            depth -= 1;
-            if (depth == 0) return index;
-        }
-    }
-    return null;
-}
-
-const ArithmeticParameterPrefix = struct {
-    parameter: ast.Parameter,
-    end: usize,
-};
-
-fn parseArithmeticBracedParameter(content: []const u8) ?ast.ParameterExpansion {
-    if (content.len >= 2 and content[0] == '#') {
-        const length_prefix = parseArithmeticParameterPrefix(content[1..]) orelse return null;
-        if (length_prefix.end != content.len - 1) return null;
-        return .{
-            .parameter = length_prefix.parameter,
-            .length = true,
-        };
-    }
-
-    const prefix = parseArithmeticParameterPrefix(content) orelse return null;
-    const rest = content[prefix.end..];
-    if (rest.len == 0) return .{ .parameter = prefix.parameter };
-
-    const colon = rest.len >= 2 and rest[0] == ':' and arithmeticParameterOperator(rest[1]) != null;
-    const operator_byte = if (colon) rest[1] else rest[0];
-    const operator = arithmeticParameterOperator(operator_byte) orelse return null;
-    const word_text = if (colon) rest[2..] else rest[1..];
-    return .{
-        .parameter = prefix.parameter,
-        .colon = colon,
-        .op = operator,
-        .word = .{ .data = .{ .literal = word_text } },
-    };
-}
-
-fn parseArithmeticParameterPrefix(content: []const u8) ?ArithmeticParameterPrefix {
-    if (content.len == 0) return null;
-    if (arithmeticSpecialParameter(content[0])) |special| return .{ .parameter = .{ .special = special }, .end = 1 };
-    if (std.ascii.isDigit(content[0])) {
-        var end: usize = 1;
-        while (end < content.len and std.ascii.isDigit(content[end])) end += 1;
-        return .{
-            .parameter = .{ .positional = std.fmt.parseInt(u32, content[0..end], 10) catch return null },
-            .end = end,
-        };
-    }
-    if (!isArithmeticNameStart(content[0])) return null;
-    var end: usize = 1;
-    while (end < content.len and isArithmeticNameContinue(content[end])) end += 1;
-    return .{ .parameter = .{ .variable = content[0..end] }, .end = end };
-}
-
-fn arithmeticParameterOperator(byte: u8) ?ast.ParameterOperator {
-    return switch (byte) {
-        '-' => .default_value,
-        '=' => .assign_default,
-        '?' => .error_if_unset,
-        '+' => .alternate_value,
-        else => null,
-    };
+    return expandParameter(shell, &parameter, status);
 }
 
 fn arithmeticSpecialParameter(byte: u8) ?ast.SpecialParameter {
@@ -7104,11 +7076,25 @@ fn ArithmeticParser(comptime ShellType: type) type {
         }
 
         fn parseBitAnd(self: *Self) ArithmeticError!i64 {
-            var value = try self.parseRelational();
+            var value = try self.parseEquality();
             while (true) {
                 self.skipWhitespace();
                 if (self.eatSingle('&')) {
-                    value &= try self.parseRelational();
+                    value &= try self.parseEquality();
+                } else {
+                    return value;
+                }
+            }
+        }
+
+        fn parseEquality(self: *Self) ArithmeticError!i64 {
+            var value = try self.parseRelational();
+            while (true) {
+                self.skipWhitespace();
+                if (self.eatString("==")) {
+                    value = if (value == try self.parseRelational()) 1 else 0;
+                } else if (self.eatString("!=")) {
+                    value = if (value != try self.parseRelational()) 1 else 0;
                 } else {
                     return value;
                 }
@@ -7119,11 +7105,7 @@ fn ArithmeticParser(comptime ShellType: type) type {
             var value = try self.parseShift();
             while (true) {
                 self.skipWhitespace();
-                if (self.eatString("==")) {
-                    value = if (value == try self.parseShift()) 1 else 0;
-                } else if (self.eatString("!=")) {
-                    value = if (value != try self.parseShift()) 1 else 0;
-                } else if (self.eatString(">=")) {
+                if (self.eatString(">=")) {
                     value = if (value >= try self.parseShift()) 1 else 0;
                 } else if (self.eatString("<=")) {
                     value = if (value <= try self.parseShift()) 1 else 0;
@@ -7568,28 +7550,32 @@ test "command substitution capture filters nulls and trims newlines across reads
     }
 }
 
-fn expandParameter(shell: anytype, parameter: *const ast.ParameterExpansion) EvalError![]const u8 {
+fn expandParameter(
+    shell: anytype,
+    parameter: *const ast.ParameterExpansion,
+    status: ?*?result.ExitStatus,
+) EvalError![]const u8 {
     validateAst(parameter);
     if (parameter.length) return expandParameterLength(shell, parameter.*);
     if (parameter.array_indices) return (try arrayIndicesParameterValue(shell, parameter.parameter.array)) orelse "";
 
     if (parameter.op) |operator| {
         return switch (operator) {
-            .default_value => expandParameterDefault(shell, parameter.*),
-            .assign_default => expandParameterAssignDefault(shell, parameter.*),
-            .alternate_value => expandParameterAlternate(shell, parameter.*),
-            .error_if_unset => expandParameterErrorIfUnset(shell, parameter.*),
+            .default_value => expandParameterDefault(shell, parameter.*, status),
+            .assign_default => expandParameterAssignDefault(shell, parameter.*, status),
+            .alternate_value => expandParameterAlternate(shell, parameter.*, status),
+            .error_if_unset => expandParameterErrorIfUnset(shell, parameter.*, status),
             .remove_small_prefix,
             .remove_large_prefix,
             .remove_small_suffix,
             .remove_large_suffix,
-            => expandParameterPatternRemoval(shell, parameter.*, operator),
+            => expandParameterPatternRemoval(shell, parameter.*, operator, status),
             .substring => expandParameterSubstring(shell, parameter.*),
             .substitute_first,
             .substitute_all,
             .substitute_prefix,
             .substitute_suffix,
-            => expandParameterSubstitution(shell, parameter.*, operator),
+            => expandParameterSubstitution(shell, parameter.*, operator, status),
             .transform_prompt => expandParameterPrompt(shell, parameter.*),
         };
     }
@@ -7810,13 +7796,21 @@ fn parameterSubjectToNounset(parameter: ast.Parameter) bool {
     };
 }
 
-fn expandParameterDefault(shell: anytype, parameter: ast.ParameterExpansion) EvalError![]const u8 {
+fn expandParameterDefault(
+    shell: anytype,
+    parameter: ast.ParameterExpansion,
+    status: ?*?result.ExitStatus,
+) EvalError![]const u8 {
     const value = try parameterCurrentValue(shell, parameter.parameter);
     if (isParameterSet(parameter, value)) return value.?;
-    return expandWord(shell, parameter.word.?);
+    return expandWordTracking(shell, parameter.word.?, status);
 }
 
-fn expandParameterAssignDefault(shell: anytype, parameter: ast.ParameterExpansion) EvalError![]const u8 {
+fn expandParameterAssignDefault(
+    shell: anytype,
+    parameter: ast.ParameterExpansion,
+    status: ?*?result.ExitStatus,
+) EvalError![]const u8 {
     const name = switch (parameter.parameter) {
         .variable => |variable_name| variable_name,
         else => return "",
@@ -7824,7 +7818,7 @@ fn expandParameterAssignDefault(shell: anytype, parameter: ast.ParameterExpansio
     const value = parameterValue(shell, name);
     if (isParameterSet(parameter, value)) return value.?;
 
-    const default = try expandWord(shell, parameter.word.?);
+    const default = try expandWordTracking(shell, parameter.word.?, status);
     shell.state.putVariable(.{
         .name = name,
         .value = default,
@@ -7839,17 +7833,25 @@ fn expandParameterAssignDefault(shell: anytype, parameter: ast.ParameterExpansio
     return default;
 }
 
-fn expandParameterAlternate(shell: anytype, parameter: ast.ParameterExpansion) EvalError![]const u8 {
+fn expandParameterAlternate(
+    shell: anytype,
+    parameter: ast.ParameterExpansion,
+    status: ?*?result.ExitStatus,
+) EvalError![]const u8 {
     const value = try parameterCurrentValue(shell, parameter.parameter);
     if (!isParameterSet(parameter, value)) return "";
-    return expandWord(shell, parameter.word.?);
+    return expandWordTracking(shell, parameter.word.?, status);
 }
 
-fn expandParameterErrorIfUnset(shell: anytype, parameter: ast.ParameterExpansion) EvalError![]const u8 {
+fn expandParameterErrorIfUnset(
+    shell: anytype,
+    parameter: ast.ParameterExpansion,
+    status: ?*?result.ExitStatus,
+) EvalError![]const u8 {
     const value = try parameterCurrentValue(shell, parameter.parameter);
     if (isParameterSet(parameter, value)) return value.?;
 
-    const message = try expandWord(shell, parameter.word.?);
+    const message = try expandWordTracking(shell, parameter.word.?, status);
     try writeExpansionDiagnostic(shell, parameter, parameterDiagnosticName(parameter.parameter), message);
     return if (shell.state.options.mode == .bash) error.FatalExpansionError else error.ExpansionError;
 }
@@ -8061,9 +8063,10 @@ fn expandParameterPatternRemoval(
     shell: anytype,
     parameter: ast.ParameterExpansion,
     operator: ast.ParameterOperator,
+    status: ?*?result.ExitStatus,
 ) EvalError![]const u8 {
     const value = (try parameterCurrentValue(shell, parameter.parameter)) orelse "";
-    const pattern = try expandPatternWord(shell, parameter.word.?);
+    const pattern = try expandPatternWord(shell, parameter.word.?, status);
     return switch (operator) {
         .remove_small_prefix => pattern_mod.removePrefix(value, pattern, .small),
         .remove_large_prefix => pattern_mod.removePrefix(value, pattern, .large),
@@ -8138,11 +8141,12 @@ fn expandParameterSubstitution(
     shell: anytype,
     parameter: ast.ParameterExpansion,
     operator: ast.ParameterOperator,
+    status: ?*?result.ExitStatus,
 ) EvalError![]const u8 {
     const value = (try parameterCurrentValue(shell, parameter.parameter)) orelse "";
-    const pattern = try expandPatternWord(shell, parameter.word.?);
+    const pattern = try expandPatternWord(shell, parameter.word.?, status);
     if (pattern.len == 0) return value;
-    const replacement = try expandWord(shell, parameter.second_word.?);
+    const replacement = try expandWordTracking(shell, parameter.second_word.?, status);
     return switch (operator) {
         .substitute_first => substituteFirst(shell, value, pattern, replacement),
         .substitute_all => substituteAll(shell, value, pattern, replacement),
@@ -8152,16 +8156,16 @@ fn expandParameterSubstitution(
     };
 }
 
-fn expandPatternWord(shell: anytype, word: ast.Word) ![]const u8 {
+fn expandPatternWord(shell: anytype, word: ast.Word, status: ?*?result.ExitStatus) EvalError![]const u8 {
     const pattern = switch (word.data) {
         .literal => |literal| literal,
-        .parts => |parts| try expandPatternParts(shell, parts),
+        .parts => |parts| try expandPatternParts(shell, parts, status),
         .declaration_array_assignment => unreachable,
     };
     return expandLeadingTilde(shell, word, pattern);
 }
 
-fn expandPatternParts(shell: anytype, parts: []const ast.WordPart) ![]const u8 {
+fn expandPatternParts(shell: anytype, parts: []const ast.WordPart, status: ?*?result.ExitStatus) EvalError![]const u8 {
     var output: std.ArrayList(u8) = .empty;
     const allocator = shell.scratchAllocator();
     for (parts) |*part| switch (part.*) {
@@ -8169,9 +8173,9 @@ fn expandPatternParts(shell: anytype, parts: []const ast.WordPart) ![]const u8 {
         .escaped => |bytes| try appendPatternLiteral(allocator, &output, bytes),
         .single_quoted => |bytes| try appendPatternLiteral(allocator, &output, bytes),
         // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
-        .double_quoted => |nested| try appendPatternLiteral(allocator, &output, try expandWordParts(shell, nested, null)),
+        .double_quoted => |nested| try appendPatternLiteral(allocator, &output, try expandWordParts(shell, nested, status)),
         .parameter, .command_substitution, .process_substitution, .arithmetic => {
-            try output.appendSlice(allocator, try expandWordPart(shell, part, null));
+            try output.appendSlice(allocator, try expandWordPart(shell, part, status));
         },
     };
     return output.toOwnedSlice(allocator);

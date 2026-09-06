@@ -3,6 +3,18 @@
     .mode = .posix,
     .cases = .{
         .{
+            .name = "case treats bang and braces as words in the selector and patterns",
+            .script =
+            \\case ! in !) echo bang;; esac
+            \\case { in {) echo left;; esac
+            \\case } in }) echo right;; esac
+            \\case '!' in { | ! | }) echo alternatives;; esac
+            ,
+            .stdout = "bang\nleft\nright\nalternatives\n",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "reserved words can be used as assignment variable names",
             .script =
             \\if=ok

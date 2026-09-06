@@ -654,23 +654,25 @@ fn evalGetopts(shell: anytype, args: []const []const u8) !result.EvalResult {
     const operand_index = optind - 1;
     if (operand_index >= operands.len) {
         try putGetoptsOptind(shell, optind);
-        shell.state.getopts_char_index = 1;
-        return .{ .status = 1 };
+        return finishGetopts(shell, name);
     }
 
     const operand = operands[operand_index];
     if (shell.state.getopts_char_index == 1) {
-        if (!isGetoptsOptionOperand(operand)) return .{ .status = 1 };
+        if (!isGetoptsOptionOperand(operand)) {
+            try putGetoptsOptind(shell, optind);
+            return finishGetopts(shell, name);
+        }
         if (std.mem.eql(u8, operand, "--")) {
             try putGetoptsOptind(shell, optind + 1);
-            return .{ .status = 1 };
+            return finishGetopts(shell, name);
         }
     }
 
     if (shell.state.getopts_char_index >= operand.len) {
         shell.state.getopts_char_index = 1;
         try putGetoptsOptind(shell, optind + 1);
-        return .{ .status = 1 };
+        return finishGetopts(shell, name);
     }
 
     const option = operand[shell.state.getopts_char_index];
@@ -678,7 +680,13 @@ fn evalGetopts(shell: anytype, args: []const []const u8) !result.EvalResult {
     const option_index = std.mem.indexOfScalar(u8, optstring, option);
     if (option_index == null or option == ':') {
         try shell.state.putVariable(.{ .name = name, .value = "?" });
-        shell.state.removeVariable("OPTARG");
+        const option_text = operand[shell.state.getopts_char_index..][0..1];
+        if (std.mem.startsWith(u8, optstring, ":")) {
+            try shell.state.putVariable(.{ .name = "OPTARG", .value = option_text });
+        } else {
+            shell.state.removeVariable("OPTARG");
+            try writeGetoptsDiagnostic(shell, "illegal option -- ", option_text);
+        }
         try advanceGetopts(shell, optind, operand);
         return .{};
     }
@@ -701,6 +709,7 @@ fn evalGetopts(shell: anytype, args: []const []const u8) !result.EvalResult {
             } else {
                 try shell.state.putVariable(.{ .name = name, .value = "?" });
                 shell.state.removeVariable("OPTARG");
+                try writeGetoptsDiagnostic(shell, "option requires an argument -- ", option_text);
             }
             shell.state.getopts_char_index = 1;
             try putGetoptsOptind(shell, optind + 1);
@@ -710,6 +719,21 @@ fn evalGetopts(shell: anytype, args: []const []const u8) !result.EvalResult {
         try advanceGetopts(shell, optind, operand);
     }
     return .{};
+}
+
+fn finishGetopts(shell: anytype, name: []const u8) !result.EvalResult {
+    try shell.state.putVariable(.{ .name = name, .value = "?" });
+    shell.state.removeVariable("OPTARG");
+    shell.state.getopts_char_index = 1;
+    return .{ .status = 1 };
+}
+
+fn writeGetoptsDiagnostic(shell: anytype, message: []const u8, option: []const u8) !void {
+    try shell.host.writeAll(.stderr, shell.state.arg_zero);
+    try shell.host.writeAll(.stderr, ": getopts: ");
+    try shell.host.writeAll(.stderr, message);
+    try shell.host.writeAll(.stderr, option);
+    try shell.host.writeAll(.stderr, "\n");
 }
 
 fn getoptsOptind(shell: anytype) usize {
