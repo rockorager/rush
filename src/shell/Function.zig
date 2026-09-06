@@ -159,6 +159,7 @@ test "function owns a complete AST in one allocation after parser storage is fre
             defer arena.deinit();
             const text = try arena.allocator().dupe(u8,
                 \\f() {
+                \\    local a=([1]="${x:-${fallback:-value}}")
                 \\    inner() { : "${1:-$(printf nested)}"; }
                 \\    if test "$1" = x; then
                 \\        printf '%s\n' "${a[1]:-fallback}"

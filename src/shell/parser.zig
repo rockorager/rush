@@ -945,13 +945,16 @@ const Parser = struct {
             } else if (self.simpleCommandStartsDeclarationBuiltin(words.items) and self.at(.left_paren)) {
                 if (try self.parseAssignment(word_token)) |assignment| {
                     std.debug.assert(assignment.array_values != null);
+                    const declaration = try self.allocator.create(ast.DeclarationArrayAssignment);
+                    errdefer self.allocator.destroy(declaration);
+                    declaration.* = .{
+                        .name = assignment.name,
+                        .values = assignment.array_values.?,
+                        .append = assignment.append,
+                        .span = assignment.span,
+                    };
                     try words.append(self.allocator, .{
-                        .data = .{ .declaration_array_assignment = .{
-                            .name = assignment.name,
-                            .values = assignment.array_values.?,
-                            .append = assignment.append,
-                            .span = assignment.span,
-                        } },
+                        .data = .{ .declaration_array_assignment = declaration },
                         .span = assignment.span,
                     });
                     command_span = extendCommandSpan(command_span, assignment.span);
@@ -1189,6 +1192,17 @@ const Parser = struct {
         here_doc,
     };
 
+    fn appendParameterPart(
+        self: *Parser,
+        parts: *std.ArrayList(ast.WordPart),
+        parameter: ast.ParameterExpansion,
+    ) ParserError!void {
+        const owned = try self.allocator.create(ast.ParameterExpansion);
+        errdefer self.allocator.destroy(owned);
+        owned.* = parameter;
+        try parts.append(self.allocator, .{ .parameter = owned });
+    }
+
     fn appendWordParts(
         self: *Parser,
         parts: *std.ArrayList(ast.WordPart),
@@ -1342,7 +1356,7 @@ const Parser = struct {
                         )) |parameter| {
                             // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                             if (literal_start < index) try parts.append(self.allocator, .{ .literal = text[literal_start..index] });
-                            try parts.append(self.allocator, .{ .parameter = parameter });
+                            try self.appendParameterPart(parts, parameter);
                             index = expansion_end + 1;
                             literal_start = index;
                             continue;
@@ -1353,11 +1367,9 @@ const Parser = struct {
                         if (parseSingleParameter(text[name_start])) |parameter| {
                             // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                             if (literal_start < index) try parts.append(self.allocator, .{ .literal = text[literal_start..index] });
-                            try parts.append(self.allocator, .{
-                                .parameter = .{
-                                    .parameter = parameter,
-                                    .span = spanFromRelativeOffsets(span, text, index, name_start + 1),
-                                },
+                            try self.appendParameterPart(parts, .{
+                                .parameter = parameter,
+                                .span = spanFromRelativeOffsets(span, text, index, name_start + 1),
                             });
                             index = name_start + 1;
                             literal_start = index;
@@ -1367,11 +1379,9 @@ const Parser = struct {
                     if (name_start < end and text[name_start] == '?') {
                         // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                         if (literal_start < index) try parts.append(self.allocator, .{ .literal = text[literal_start..index] });
-                        try parts.append(self.allocator, .{
-                            .parameter = .{
-                                .parameter = .{ .special = .question },
-                                .span = spanFromRelativeOffsets(span, text, index, name_start + 1),
-                            },
+                        try self.appendParameterPart(parts, .{
+                            .parameter = .{ .special = .question },
+                            .span = spanFromRelativeOffsets(span, text, index, name_start + 1),
                         });
                         index = name_start + 1;
                         literal_start = index;
@@ -1384,11 +1394,9 @@ const Parser = struct {
                     }
                     // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                     if (literal_start < index) try parts.append(self.allocator, .{ .literal = text[literal_start..index] });
-                    try parts.append(self.allocator, .{
-                        .parameter = .{
-                            .parameter = .{ .variable = text[name_start..name_end] },
-                            .span = spanFromRelativeOffsets(span, text, index, name_end),
-                        },
+                    try self.appendParameterPart(parts, .{
+                        .parameter = .{ .variable = text[name_start..name_end] },
+                        .span = spanFromRelativeOffsets(span, text, index, name_end),
                     });
                     index = name_end;
                     literal_start = index;

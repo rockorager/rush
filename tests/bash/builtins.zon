@@ -334,6 +334,30 @@
             .status = 0,
         },
         .{
+            .name = "stored functions retain nested expansions in array declarations",
+            .script =
+            \\f() {
+            \\    local values=([2]="${value:-${fallback:-unset}}")
+            \\    local values+=("${value:+set}")
+            \\    printf '<%s>\n' "${values[@]}"
+            \\}
+            \\value=first
+            \\f
+            \\unset value
+            \\fallback=last
+            \\f
+            ,
+            .stdout =
+            \\<first>
+            \\<set>
+            \\<last>
+            \\<>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "local outside functions fails",
             .script =
             \\local x=bad

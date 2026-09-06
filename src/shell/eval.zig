@@ -1441,7 +1441,7 @@ fn wordPartArrayAtExpansion(part: ast.WordPart) ?ArrayAtExpansion {
             const array = parameter.parameter.array;
             return switch (array.subscript) {
                 .all => |special| if (special == .at) .{
-                    .parameter = parameter,
+                    .parameter = parameter.*,
                     .indices = parameter.array_indices,
                     .transform_prompt = parameter.op == .transform_prompt,
                 } else null,
@@ -1467,7 +1467,7 @@ fn singleDoubleQuotedParameter(word: ast.Word) ?*const ast.ParameterExpansion {
         .literal => null,
         .parts => |parts| if (parts.len == 1) switch (parts[0]) {
             .double_quoted => |quoted| if (quoted.len == 1) switch (quoted[0]) {
-                .parameter => |*parameter| parameter,
+                .parameter => |parameter| parameter,
                 else => null,
             } else null,
             else => null,
@@ -1480,9 +1480,9 @@ fn singleParameterWord(word: ast.Word) ?*const ast.ParameterExpansion {
     return switch (word.data) {
         .literal => null,
         .parts => |parts| if (parts.len == 1) switch (parts[0]) {
-            .parameter => |*parameter| parameter,
+            .parameter => |parameter| parameter,
             .double_quoted => |quoted| if (quoted.len == 1) switch (quoted[0]) {
-                .parameter => |*parameter| parameter,
+                .parameter => |parameter| parameter,
                 else => null,
             } else null,
             else => null,
@@ -1495,7 +1495,7 @@ fn singleUnquotedParameter(word: ast.Word) ?*const ast.ParameterExpansion {
     return switch (word.data) {
         .literal => null,
         .parts => |parts| if (parts.len == 1) switch (parts[0]) {
-            .parameter => |*parameter| parameter,
+            .parameter => |parameter| parameter,
             else => null,
         } else null,
         .declaration_array_assignment => null,
@@ -1503,11 +1503,11 @@ fn singleUnquotedParameter(word: ast.Word) ?*const ast.ParameterExpansion {
 }
 
 test "single parameter inspection borrows the original AST node" {
-    const parts = [_]ast.WordPart{.{ .parameter = .{ .parameter = .{ .variable = "x" } } }};
+    const parts = [_]ast.WordPart{.{ .parameter = &.{ .parameter = .{ .variable = "x" } } }};
     const quoted_parts = [_]ast.WordPart{.{ .double_quoted = &parts }};
     const unquoted: ast.Word = .{ .data = .{ .parts = &parts } };
     const quoted: ast.Word = .{ .data = .{ .parts = &quoted_parts }, .quoted = true };
-    const parameter = &parts[0].parameter;
+    const parameter = parts[0].parameter;
 
     try std.testing.expect(singleParameterWord(unquoted).? == parameter);
     try std.testing.expect(singleUnquotedParameter(unquoted).? == parameter);
@@ -1561,7 +1561,7 @@ fn appendEmbeddedUnquotedPositionalFields(shell: anytype, fields: *std.ArrayList
     for (parts) |part| switch (part) {
         .literal => {},
         .parameter => |parameter| {
-            if (!isUnquotedPositionalListParameter(parameter)) return false;
+            if (!isUnquotedPositionalListParameter(parameter.*)) return false;
             has_positional = true;
         },
         else => return false,
@@ -3956,7 +3956,7 @@ fn evalDeclareOperands(
 
 fn applyDeclaredArrayAssignment(
     shell: anytype,
-    assignment: ast.DeclarationArrayAssignment,
+    assignment: *const ast.DeclarationArrayAssignment,
     options: DeclarationOptions,
     status: *result.ExitStatus,
 ) !void {
@@ -5499,7 +5499,7 @@ const ParameterWordFields = struct {
             .parameter => |parameter| {
                 if (parameter.op == .default_value or parameter.op == .alternate_value) {
                     const value = try parameterCurrentValue(shell, parameter.parameter);
-                    const set = isParameterSet(parameter, value);
+                    const set = isParameterSet(parameter.*, value);
                     const selected = if (parameter.op == .default_value) !set else set;
                     if (selected) return self.appendWord(shell, parameter.word.?, quoted, true, status);
                     return self.append(shell, if (parameter.op == .default_value) value.? else "", quoted, true);
@@ -5560,7 +5560,7 @@ fn braceAtomsFromWord(shell: anytype, word: ast.Word) ![]const BraceAtom {
         .literal => |literal| try appendBraceTextAtoms(shell, &atoms, literal),
         .parts => |parts| for (parts) |part| switch (part) {
             .literal => |literal| try appendBraceTextAtoms(shell, &atoms, literal),
-            .parameter => |parameter| if (!try appendBraceParameterAtoms(shell, &atoms, parameter)) {
+            .parameter => |parameter| if (!try appendBraceParameterAtoms(shell, &atoms, parameter.*)) {
                 try atoms.append(shell.scratchAllocator(), .{ .part = part });
             },
             else => try atoms.append(shell.scratchAllocator(), .{ .part = part }),
@@ -6696,7 +6696,7 @@ fn expandWordPart(
         .literal, .escaped, .single_quoted => |bytes| bytes,
         .arithmetic => |text| expandArithmetic(shell, text, substitution_status),
         .double_quoted => |parts| expandWordParts(shell, parts, substitution_status),
-        .parameter => |*parameter| expandParameter(shell, parameter, substitution_status),
+        .parameter => |parameter| expandParameter(shell, parameter, substitution_status),
         .command_substitution => |substitution| expandCommandSubstitution(shell, substitution, substitution_status),
         .process_substitution => |substitution| expandProcessSubstitution(shell, substitution),
     };

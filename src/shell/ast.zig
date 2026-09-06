@@ -145,7 +145,7 @@ pub const Word = struct {
 pub const WordData = union(enum) {
     literal: []const u8,
     parts: []const WordPart,
-    declaration_array_assignment: DeclarationArrayAssignment,
+    declaration_array_assignment: *const DeclarationArrayAssignment,
 
     pub fn validate(self: WordData) void {
         switch (self) {
@@ -174,7 +174,9 @@ pub const WordPart = union(enum) {
     escaped: []const u8,
     single_quoted: []const u8,
     double_quoted: []const WordPart,
-    parameter: ParameterExpansion,
+    // Large payloads live in the owning AST arena so ordinary fragments do
+    // not reserve space for every optional parameter operator and operand.
+    parameter: *const ParameterExpansion,
     command_substitution: CommandSubstitution,
     process_substitution: ProcessSubstitution,
     arithmetic: []const u8,

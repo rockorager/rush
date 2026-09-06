@@ -90,10 +90,13 @@ pub fn run(
             }, src);
         },
         .script_file => |script| {
-            const text = file_util.readFileAlloc(process_allocator, &real_host, script.path) catch {
+            // Reclaim intermediate read buffers instead of retaining their
+            // growth in the process arena for the entire script execution.
+            const text = file_util.readFileAlloc(root_allocator, &real_host, script.path) catch {
                 try real_host.writeAll(.stderr, "rush: cannot read script file\n");
                 return 2;
             };
+            defer root_allocator.free(text);
             const src: shell.source.Source = .{
                 .id = 1,
                 .kind = .script_file,
@@ -176,6 +179,24 @@ test "command evaluation does not allocate shell state from the process arena" {
     ;
     const status = try run(std.testing.allocator, process_allocator.allocator(), .{
         .args = .{ .vector = &.{ "rush", "--posix", "-c", script, "rush", "x" ** 1024 } },
+        .environ = .empty,
+    });
+    try std.testing.expectEqual(@as(u8, 0), status);
+}
+
+test "script input does not consume the process arena" {
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    try dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "script",
+        .data = "#" ++ "x" ** (128 * 1024) ++ "\nf() { : \"${x:-ok}\"; }; trap f EXIT\n",
+    });
+    const path = try std.fs.path.joinZ(std.testing.allocator, &.{ ".zig-cache", "tmp", &dir.sub_path, "script" });
+    defer std.testing.allocator.free(path);
+    var process_buffer: [4096]u8 = undefined;
+    var process_allocator = std.heap.FixedBufferAllocator.init(&process_buffer);
+    const status = try run(std.testing.allocator, process_allocator.allocator(), .{
+        .args = .{ .vector = &.{ "rush", "--posix", path } },
         .environ = .empty,
     });
     try std.testing.expectEqual(@as(u8, 0), status);
