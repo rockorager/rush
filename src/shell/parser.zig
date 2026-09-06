@@ -315,8 +315,14 @@ pub const Incremental = struct {
 
     /// Returns the next allocator-backed command, or null when only separators
     /// remain. Its textual data follows the source/token-text lifetime of `init`.
+    /// No parse allocations are retained between calls: once the returned AST
+    /// is consumed, its allocator may be reset independently of source/tokens.
     // ziglint-ignore: Z015 matches the existing public parse API error set exposure
     pub fn next(self: *Incremental) ParserError!?ast.Program {
+        defer {
+            self.parser.pending_here_docs.deinit(self.parser.allocator);
+            self.parser.pending_here_docs = .empty;
+        }
         return self.nextCommand() catch |err| {
             self.last_failure = self.parser.currentFailure();
             return err;
@@ -2636,6 +2642,32 @@ test "incremental parser consumes here-document bodies within command boundaries
 
     const second = (try incremental.next()).?;
     try std.testing.expectEqual(@as(usize, 1), second.body.entries.len);
+    try std.testing.expectEqual(@as(?ast.Program, null), try incremental.next());
+}
+
+test "incremental parser permits reclaiming command storage between here-documents" {
+    var source_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer source_arena.deinit();
+    var command_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer command_arena.deinit();
+    var shell_state = state_mod.State.init(std.testing.allocator, .{});
+    defer shell_state.deinit();
+
+    const src: source_mod.Source = .{
+        .id = 1,
+        .kind = .script_file,
+        .name = "test",
+        .text = "cat <<E\nfirst\nE\ncat <<E\nsecond\nE\n",
+    };
+    const tokens = try lexer.lex(source_arena.allocator(), src);
+    var incremental: Incremental = .init(command_arena.allocator(), src, tokens, shell_state);
+    for ([_][]const u8{ "first\n", "second\n" }) |expected| {
+        const program = (try incremental.next()).?;
+        const redirection = program.body.entries[0].and_or.pipelines[0].pipeline.stages[0].simple.redirections[0];
+        try std.testing.expectEqualStrings(expected, redirection.here_doc.?.body);
+        try std.testing.expectEqual(@as(usize, 0), incremental.parser.pending_here_docs.capacity);
+        _ = command_arena.reset(.free_all);
+    }
     try std.testing.expectEqual(@as(?ast.Program, null), try incremental.next());
 }
 

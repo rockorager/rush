@@ -215,19 +215,22 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
             };
             if (src.text.len == 0) return last;
 
-            // A nested source must not retain its parsed commands until the
-            // caller's top-level command finishes. Definitions are copied into
-            // persistent storage during evaluation; all other AST data dies here.
+            // Tokens live for the entire source, but parsed commands live only
+            // through evaluation. Persistent definitions copy their AST data.
+            // Local arenas also keep nested eval/dot from resetting the caller.
             var source_arena = memory.Arena.init(self.allocator);
             defer source_arena.deinit();
-            const ast_allocator = if (reset_chunks) self.astAllocator() else source_arena.allocator();
-            const tokens = try lexer.lex(ast_allocator, src);
+            var command_arena = memory.Arena.init(self.allocator);
+            defer command_arena.deinit();
+            const ast_allocator = command_arena.allocator();
+            const tokens = try lexer.lex(source_arena.allocator(), src);
             var incremental = parser.Incremental.init(ast_allocator, src, tokens, self.state);
             var boundaries_failed = false;
 
             var start: usize = 0;
             var verbose_offset: usize = 0;
             while (start < src.text.len) {
+                defer command_arena.resetRetainingCapacity();
                 var end: usize = undefined;
                 var direct_program: ?ast.Program = null;
                 if (boundaries_failed) {

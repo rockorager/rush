@@ -797,5 +797,35 @@
             .stderr = "",
             .status = 0,
         },
+        .{
+            .name = "function here-documents survive intervening commands and nested eval",
+            .script =
+            \\f() {
+            \\    cat <<EOF
+            \\$value
+            \\$(printf '%s' "$value")
+            \\EOF
+            \\}
+            \\value=first
+            \\eval 'g() { f; }'
+            \\cat <<EOF
+            \\outer
+            \\EOF
+            \\value=second
+            \\g
+            \\value=third
+            \\f
+            ,
+            .stdout =
+            \\outer
+            \\second
+            \\second
+            \\third
+            \\third
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
     },
 }
