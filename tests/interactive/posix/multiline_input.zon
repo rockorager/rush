@@ -3,6 +3,26 @@
     .mode = .posix,
     .cases = .{
         .{
+            .name = "blank and comment-only interactive input preserve last status through EOF",
+            .script = "",
+            .stdin =
+            \\false
+            \\
+            \\# comment
+            \\printf '%s\n' "$?"
+            \\false
+            \\eval ''
+            \\printf '%s\n' "$?"
+            \\false
+            \\
+            \\# EOF
+            \\
+            ,
+            .stdout = "1\n0\n",
+            .stderr_match = .any,
+            .status = 1,
+        },
+        .{
             .name = "parenthesized command is accumulated",
             .script = "",
             .stdin = "value=outer\n(\nvalue=inner\necho subshell\n)\nprintf '%s:%s\\n' \"$?\" \"$value\"\nexit\n",

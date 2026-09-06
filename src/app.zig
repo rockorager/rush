@@ -54,17 +54,26 @@ pub fn run(
             return 0;
         },
         .interactive => |interactive_invocation| {
+            var pipe_action: std.posix.Sigaction = undefined;
+            std.posix.sigaction(.PIPE, null, &pipe_action);
             var threaded_io: std.Io.Threaded = .init(root_allocator, .{
                 .argv0 = .init(init.args),
                 .environ = init.environ,
+                // RealHost's atomic signal wait requires delivery on the shell
+                // thread. Async I/O runs inline; worker threads are not enabled.
+                .async_limit = .nothing,
+                .concurrent_limit = .nothing,
             });
             defer threaded_io.deinit();
+            // Threaded installs a no-op SIGPIPE handler. Shell signal semantics
+            // must instead start from the disposition inherited across exec.
+            std.posix.sigaction(.PIPE, &pipe_action, null);
             return interactive.run(root_allocator, real_host, threaded_io.io(), init.environ.block.view().slice, .{
                 .state_options = interactive_invocation.options,
                 .arg_zero = interactive_invocation.arg_zero,
                 .positionals = interactive_invocation.positionals,
                 .login = interactive_invocation.login,
-                .forced_interactive = interactive_invocation.forced_interactive,
+                .interactive_override = interactive_invocation.interactive_override,
             });
         },
         .command_string => |command| {
@@ -118,6 +127,7 @@ fn evalSource(
         .initial_pwd_unavailable = initial_pwd == null,
     });
     defer sh.deinit();
+    try shell.builtin.initializeSignals(&sh);
     sh.setFunctionAutoload(autoloadRushFunction);
 
     if (options.state_options.interactive) {

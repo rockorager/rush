@@ -26,7 +26,7 @@ pub const Options = struct {
     arg_zero: []const u8,
     positionals: []const []const u8 = &.{},
     login: bool = false,
-    forced_interactive: bool = false,
+    interactive_override: ?bool = null,
 };
 
 pub fn run(
@@ -39,9 +39,9 @@ pub fn run(
 ) !u8 {
     var host_probe = real_host;
     const stdin_terminal = host_probe.isTerminalFd(.stdin);
-    // Without -i, POSIX requires both standard input and standard error to
+    // Without an explicit selection, both standard input and standard error must
     // be terminals before treating standard-input commands as interactive.
-    const interactive = options.forced_interactive or (stdin_terminal and host_probe.isTerminalFd(.stderr));
+    const interactive = options.interactive_override orelse (stdin_terminal and host_probe.isTerminalFd(.stderr));
     var state_options = options.state_options;
     state_options.interactive = interactive;
     if (interactive) state_options.history = true;
@@ -56,6 +56,7 @@ pub fn run(
         .initial_pwd = initial_pwd,
     });
     defer sh.deinit();
+    try shell.builtin.initializeSignals(&sh);
     sh.setFunctionAutoload(autoloadRushFunction);
 
     var source_id: shell.source.SourceId = 1;
@@ -145,7 +146,8 @@ fn enableJobControl(sh: *RushShell, tty_fd: host.Fd) ?host.Pid {
 }
 
 fn ignoreInteractiveJobControlSignals(sh: *RushShell) void {
-    inline for (.{ "TSTP", "TTIN", "TTOU" }) |name| {
+    for ([_][]const u8{ "TSTP", "TTIN", "TTOU" }) |name| {
+        if (sh.state.getSignalTrap(name) != null) continue;
         if (shell.builtin.signalNumber(name)) |signal| {
             // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
             sh.host.setSignalIgnored(signal) catch {};

@@ -363,6 +363,9 @@ pub const HereDoc = struct {
 pub const CompoundInvocation = struct {
     body: CompoundCommand,
     redirections: []const Redirection = &.{},
+    /// Original spelling for job descriptions; borrowed from parser source.
+    /// Function storage deep-copies this along with the rest of the AST.
+    source_text: []const u8 = "compound command",
 
     pub fn validate(self: CompoundInvocation) void {
         self.body.validate();

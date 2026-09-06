@@ -3,6 +3,72 @@
     .mode = .posix,
     .cases = .{
         .{
+            // Issue 8 sh: outside line editing INT is caught without action;
+            // QUIT is ignored. Explicit traps override these defaults.
+            .name = "interactive INT and QUIT defaults survive trap reset",
+            .script = "",
+            .stdin =
+            \\kill -s INT "$$"
+            \\kill -s QUIT "$$"
+            \\echo initial
+            \\trap 'echo caught' INT QUIT
+            \\kill -s INT "$$"
+            \\kill -s QUIT "$$"
+            \\trap - INT QUIT
+            \\kill -s INT "$$"
+            \\kill -s QUIT "$$"
+            \\echo reset
+            \\
+            ,
+            .stdout = "initial\ncaught\ncaught\nreset\n",
+            .stderr_match = .any,
+        },
+        .{
+            .name = "job control preserves explicit and inherited terminal signal ignores in children",
+            .script =
+            \\set -m
+            \\for sig in TSTP TTIN TTOU; do
+            \\  trap '' "$sig"
+            \\  sh -c 'trap "echo bad" "$1"; kill -s "$1" "$$"; echo "$1:spawn"' sh "$sig"
+            \\  (exec sh -c 'trap "echo bad" "$1"; kill -s "$1" "$$"; echo "$1:exec"' sh "$sig")
+            \\  sh -c 'set -m; sh -c '\''trap "echo bad" "$1"; kill -s "$1" "$$"; echo "$1:inherited"'\'' sh "$1"' sh "$sig"
+            \\  trap - "$sig"
+            \\done
+            ,
+            .stdout = "TSTP:spawn\nTSTP:exec\nTSTP:inherited\nTTIN:spawn\nTTIN:exec\nTTIN:inherited\nTTOU:spawn\nTTOU:exec\nTTOU:inherited\n",
+            .stderr_match = .any,
+        },
+        .{
+            .name = "interactive SIGTERM ignore does not leak into child environments",
+            .script =
+            \\kill -s TERM "$$"
+            \\echo parent
+            \\sh -c 'kill -TERM "$$"; echo unexpected'
+            \\kill -l "$?"
+            \\(sh -c 'kill -TERM "$PPID"'; echo unexpected)
+            \\kill -l "$?"
+            \\value=$(sh -c 'kill -TERM "$PPID"'; echo unexpected)
+            \\kill -l "$?"
+            \\{ sh -c 'kill -TERM "$PPID"'; echo unexpected; } & wait "$!"
+            \\kill -l "$?"
+            \\true | { sh -c 'kill -TERM "$PPID"'; echo unexpected; }
+            \\kill -l "$?"
+            ,
+            .stdout = "parent\nTERM\nTERM\nTERM\nTERM\nTERM\n",
+            .stderr_match = .any,
+        },
+        .{
+            .name = "interactive exec restores default SIGTERM but preserves explicit ignore",
+            .script =
+            \\ln -s "$(command -v "$0")" sh
+            \\./sh -i -c 'exec sh -c '\''kill -TERM "$$"; echo unexpected'\'
+            \\kill -l "$?"
+            \\./sh -i -c 'trap "" TERM; exec sh -c '\''kill -TERM "$$"; echo ignored'\'
+            ,
+            .stdout = "TERM\nignored\n",
+            .stderr_match = .any,
+        },
+        .{
             .name = "EXIT trap exec preserves preceding top-level output order",
             .script =
             \\trap 'echo T; exec /bin/echo EXECED' EXIT

@@ -10,6 +10,7 @@ const output = @import("output.zig");
 const printf = @import("printf.zig");
 const result = @import("result.zig");
 const state_mod = @import("state.zig");
+const word_quoting = @import("word_quoting.zig");
 
 pub const Kind = enum {
     special,
@@ -771,10 +772,13 @@ fn evalKill(shell: anytype, args: []const []const u8) !result.EvalResult {
         if (index >= args.len) return .{ .status = 2 };
         kill_signal = parseKillSignal(args[index]) orelse return .{ .status = 2 };
         index += 1;
-    } else if (index < args.len and args[index].len > 1 and args[index][0] == '-') {
+    } else if (index < args.len and args[index].len > 1 and args[index][0] == '-' and
+        !std.mem.eql(u8, args[index], "--"))
+    {
         kill_signal = parseKillSignal(args[index][1..]) orelse return .{ .status = 2 };
         index += 1;
     }
+    if (index < args.len and std.mem.eql(u8, args[index], "--")) index += 1;
     if (index >= args.len) return .{ .status = 2 };
 
     var status: result.ExitStatus = 0;
@@ -789,6 +793,9 @@ fn evalKill(shell: anytype, args: []const []const u8) !result.EvalResult {
                 status = 1;
                 continue;
             };
+            if (kill_signal.number == signalNumber("CONT").?) {
+                for (job.pids.items) |pid| discardStoppedStatus(shell, pid);
+            }
             continue;
         }
         const pid = killOperandPid(shell, args[index]) orelse {
@@ -809,13 +816,15 @@ fn evalKill(shell: anytype, args: []const []const u8) !result.EvalResult {
             status = 1;
             continue;
         };
+        if (kill_signal.number == signalNumber("CONT").?) discardStoppedStatus(shell, pid);
     }
     return .{ .status = status };
 }
 
 fn backgroundProcessCompleted(shell: anytype, pid: host.Pid) !bool {
     if (shell.state.completed_background.get(pid)) |cached| {
-        if (cached.owner_pid == shell.host.currentProcessId()) return true;
+        if (cached.owner_pid == shell.host.currentProcessId() and
+            (cached.status == .exited or cached.status == .signaled)) return true;
     }
     if (std.mem.indexOfScalar(host.Pid, shell.state.background_pids.items, pid) == null) return false;
     const Host = switch (@typeInfo(@TypeOf(shell.host))) {
@@ -940,6 +949,11 @@ fn writeNoCurrentJob(shell: anytype, builtin_name: []const u8) !void {
 fn resumeBackgroundJob(shell: anytype, job: state_mod.BackgroundJob) !result.EvalResult {
     sendContinueToJob(shell, job) catch return .{ .status = 1 };
     _ = shell.state.setBackgroundJobStatus(job.id, .running);
+    for (job.pids.items) |pid| {
+        if (std.mem.indexOfScalar(host.Pid, shell.state.background_pids.items, pid) == null)
+            try shell.state.addBackgroundPid(pid);
+    }
+    shell.state.last_background_pid = job.pid;
     const text = try std.fmt.allocPrint(shell.scratchAllocator(), "[{}] {s}\n", .{ job.id, job.command });
     defer shell.scratchAllocator().free(text);
     try shell.host.writeAll(.stdout, text);
@@ -965,9 +979,10 @@ fn foregroundJob(shell: anytype, job: state_mod.BackgroundJob) !result.EvalResul
     defer shell.scratchAllocator().free(pids);
     var status: result.ExitStatus = 0;
     for (pids) |pid| {
-        const waited = waitForegroundJobPid(shell, pid) catch return .{ .status = 127 };
+        const waited = try waitBackgroundPid(shell, pid, true);
         status = waited.shellStatus();
-        switch (waited) {
+        if (waited == .interrupted) return .{ .status = status };
+        switch (waited.status) {
             .stopped => {
                 _ = shell.state.setBackgroundJobStatusByPid(pid, .stopped);
                 return .{ .status = status };
@@ -987,24 +1002,98 @@ fn notifyForegroundCommand(shell: anytype, command: ?[]const u8) void {
     if (comptime @hasDecl(ShellType, "notifyForegroundCommand")) shell.notifyForegroundCommand(command);
 }
 
-fn waitForegroundJobPid(shell: anytype, pid: host.Pid) !host.WaitStatus {
+/// Retain any child event consumed alongside an interruption for a later wait.
+/// Host wait failures mean the child is no longer waitable; allocation failures
+/// propagate before consuming an event.
+pub fn waitBackgroundPid(shell: anytype, pid: host.Pid, job_events: bool) !host.InterruptibleWait {
+    if (shell.state.takeBackgroundStatus(pid, shell.host.currentProcessId())) |status| {
+        if (status != .stopped or job_events) return .{ .status = status };
+    }
+    try shell.state.completed_background.ensureUnusedCapacity(shell.state.allocator, 1);
     const HostType = switch (@typeInfo(@TypeOf(shell.host))) {
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
     };
-    if (@hasDecl(HostType, "waitJobEventInterruptible")) return shell.host.waitJobEventInterruptible(pid);
-    return shell.host.waitInterruptible(pid);
+    const waited: host.InterruptibleWait = wait: {
+        if (job_events and @hasDecl(HostType, "waitJobEventInterruptible")) {
+            break :wait shell.host.waitJobEventInterruptible(pid) catch .{ .status = .{ .exited = 127 } };
+        }
+        break :wait shell.host.waitInterruptible(pid) catch .{ .status = .{ .exited = 127 } };
+    };
+    if (waited == .interrupted) {
+        if (waited.interrupted.status) |status| {
+            shell.state.completed_background.putAssumeCapacity(pid, .{
+                .owner_pid = shell.host.currentProcessId(),
+                .status = status,
+            });
+            if (status == .stopped) _ = shell.state.setBackgroundJobStatusByPid(pid, .stopped);
+        }
+    }
+    return waited;
 }
 
-fn giveTerminalToJob(shell: anytype, process_group: host.Pid) !?host.Pid {
-    if (!shell.state.options.monitor) return null;
+test "interrupted job wait retains stopped children and resume discards the cached stop" {
+    const TestHost = struct {
+        const Self = @This();
+
+        next: host.InterruptibleWait = .{ .interrupted = .{ .signal = 15, .status = .{ .stopped = 19 } } },
+
+        pub fn currentProcessId(_: *Self) host.Pid {
+            return 1;
+        }
+
+        pub fn waitInterruptible(self: *Self, _: host.Pid) error{}!host.InterruptibleWait {
+            return self.next;
+        }
+
+        pub fn sendSignal(_: *Self, _: host.Pid, _: u8) error{}!void {}
+
+        pub fn writeAll(_: *Self, _: host.Fd, _: []const u8) error{}!void {}
+    };
+    const TestShell = struct {
+        const Self = @This();
+
+        host: *TestHost,
+        state: state_mod.State,
+
+        pub fn scratchAllocator(_: *Self) std.mem.Allocator {
+            return std.testing.allocator;
+        }
+    };
+    var test_host: TestHost = .{};
+    var shell: TestShell = .{ .host = &test_host, .state = .init(std.testing.allocator, .{}) };
+    defer shell.state.deinit();
+    try shell.state.addBackgroundPid(42);
+    try shell.state.addBackgroundJob(42, "stopping child", true);
+    try std.testing.expectEqual(@as(u8, 143), (try waitBackgroundPid(&shell, 42, true)).shellStatus());
+    try std.testing.expectEqual(state_mod.JobStatus.stopped, shell.state.background_jobs.items[0].status);
+    try std.testing.expect(!try backgroundProcessCompleted(&shell, 42));
+    try sendContinueToJob(&shell, shell.state.background_jobs.items[0]);
+    try std.testing.expect(!shell.state.completed_background.contains(42));
+    test_host.next = .{ .status = .{ .exited = 7 } };
+    try std.testing.expectEqual(@as(u8, 7), (try waitBackgroundPid(&shell, 42, true)).shellStatus());
+    for ([_][]const u8{ "42", "%1" }) |operand| {
+        test_host.next = .{ .interrupted = .{ .signal = 15, .status = .{ .stopped = 19 } } };
+        _ = try waitBackgroundPid(&shell, 42, true);
+        try std.testing.expectEqual(@as(u8, 0), (try evalKill(&shell, &.{ "kill", "-CONT", operand })).status);
+        try std.testing.expect(!shell.state.completed_background.contains(42));
+    }
+}
+
+/// Gives the controlling terminal to a job, returning the previous group to
+/// restore. Null means job control is disabled or there is no controlling tty.
+pub fn giveTerminalToJob(shell: anytype, process_group: host.Pid) !?host.Pid {
+    if (!shell.state.jobControlEnabled()) return null;
     const HostType = switch (@typeInfo(@TypeOf(shell.host))) {
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
     };
     if (!@hasDecl(HostType, "terminalProcessGroup") or
         !@hasDecl(HostType, "setTerminalProcessGroup")) return null;
-    const tty_fd = shell.state.controlling_tty orelse .stdin;
+    // Script input and builtin redirections need not refer to the controlling tty.
+    const tty_fd = shell.state.controlling_tty orelse
+        (shell.host.openZ("/dev/tty", .{ .access = .read_write }) catch return null);
+    defer if (shell.state.controlling_tty == null) shell.host.close(tty_fd) catch {};
     const shell_process_group = shell.host.terminalProcessGroup(tty_fd) catch |err| switch (err) {
         error.NotATerminal => return null,
         else => return err,
@@ -1016,33 +1105,90 @@ fn giveTerminalToJob(shell: anytype, process_group: host.Pid) !?host.Pid {
     return shell_process_group;
 }
 
-fn restoreTerminalToShell(shell: anytype, process_group: host.Pid) void {
+pub fn restoreTerminalToShell(shell: anytype, process_group: host.Pid) void {
     const HostType = switch (@typeInfo(@TypeOf(shell.host))) {
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
     };
     if (!@hasDecl(HostType, "setTerminalProcessGroup")) return;
+    const tty_fd = shell.state.controlling_tty orelse
+        (shell.host.openZ("/dev/tty", .{ .access = .read_write }) catch return);
+    defer if (shell.state.controlling_tty == null) shell.host.close(tty_fd) catch {};
     // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
-    shell.host.setTerminalProcessGroup(shell.state.controlling_tty orelse .stdin, process_group) catch {};
+    shell.host.setTerminalProcessGroup(tty_fd, process_group) catch {};
+}
+
+test "terminal handoff uses the controlling tty independently of redirected stdin" {
+    const TestHost = struct {
+        const Self = @This();
+
+        opened: usize = 0,
+        closed: usize = 0,
+        foreground: host.Pid = 10,
+
+        pub fn openZ(self: *Self, path: [:0]const u8, options: host.OpenOptions) !host.Fd {
+            try std.testing.expectEqualStrings("/dev/tty", path);
+            try std.testing.expectEqual(host.OpenAccess.read_write, options.access);
+            self.opened += 1;
+            return @enumFromInt(7);
+        }
+
+        pub fn close(self: *Self, fd: host.Fd) !void {
+            try std.testing.expectEqual(@as(i32, 7), fd.raw());
+            self.closed += 1;
+        }
+
+        pub fn terminalProcessGroup(self: *Self, fd: host.Fd) anyerror!host.Pid {
+            try std.testing.expectEqual(@as(i32, 7), fd.raw());
+            return self.foreground;
+        }
+
+        pub fn setTerminalProcessGroup(self: *Self, fd: host.Fd, group: host.Pid) anyerror!void {
+            try std.testing.expectEqual(@as(i32, 7), fd.raw());
+            self.foreground = group;
+        }
+    };
+    var test_host: TestHost = .{};
+    var shell = .{ .host = &test_host, .state = state_mod.State.init(std.testing.allocator, .{}) };
+    defer shell.state.deinit();
+    shell.state.options.monitor = true;
+    for ([_]?host.Fd{ null, @enumFromInt(7) }) |borrowed_tty| {
+        shell.state.controlling_tty = borrowed_tty;
+        const previous = (try giveTerminalToJob(&shell, 20)).?;
+        try std.testing.expectEqual(@as(host.Pid, 10), previous);
+        try std.testing.expectEqual(@as(host.Pid, 20), test_host.foreground);
+        restoreTerminalToShell(&shell, previous);
+        try std.testing.expectEqual(@as(host.Pid, 10), test_host.foreground);
+        // Only the unborrowed descriptor is opened/closed, once per operation.
+        try std.testing.expectEqual(@as(usize, 2), test_host.opened);
+        try std.testing.expectEqual(test_host.opened, test_host.closed);
+    }
 }
 
 fn sendContinueToJob(shell: anytype, job: state_mod.BackgroundJob) !void {
     const cont = signalNumber("CONT") orelse return error.InvalidSignal;
-    if (shell.state.options.monitor) {
+    if (job.job_control) {
         try shell.host.sendSignal(-job.process_group, cont);
-        return;
+    } else {
+        var failed = false;
+        for (job.pids.items) |pid| {
+            shell.host.sendSignal(pid, cont) catch {
+                failed = true;
+            };
+        }
+        if (failed) return error.SignalFailed;
     }
-    var failed = false;
-    for (job.pids.items) |pid| {
-        shell.host.sendSignal(pid, cont) catch {
-            failed = true;
-        };
+    for (job.pids.items) |pid| discardStoppedStatus(shell, pid);
+}
+
+fn discardStoppedStatus(shell: anytype, pid: host.Pid) void {
+    if (shell.state.completed_background.get(pid)) |cached| {
+        if (cached.status == .stopped) _ = shell.state.completed_background.remove(pid);
     }
-    if (failed) return error.SignalFailed;
 }
 
 fn evalBg(shell: anytype, args: []const []const u8) !result.EvalResult {
-    if (!shell.state.options.monitor) {
+    if (!shell.state.jobControlEnabled()) {
         try shell.host.writeAll(.stderr, "bg: job control disabled\n");
         return .{ .status = 1 };
     }
@@ -1069,7 +1215,7 @@ fn evalBg(shell: anytype, args: []const []const u8) !result.EvalResult {
 
 fn evalFg(shell: anytype, args: []const []const u8) !result.EvalResult {
     if (args.len > 2) return .{ .status = 2 };
-    if (!shell.state.options.monitor) {
+    if (!shell.state.jobControlEnabled()) {
         try shell.host.writeAll(.stderr, "fg: job control disabled\n");
         return .{ .status = 1 };
     }
@@ -1704,6 +1850,7 @@ fn evalSet(shell: anytype, args: []const []const u8) !result.EvalResult {
             index += 1;
             if (index >= args.len) return listSetOptions(shell, enabled);
             if (!setNamedOption(&shell.state.options, args[index], enabled)) return setUsageError(shell);
+            if (std.mem.eql(u8, args[index], "monitor")) shell.state.job_control_suppressed = false;
             continue;
         }
         for (arg[1..]) |option| switch (option) {
@@ -1711,8 +1858,12 @@ fn evalSet(shell: anytype, args: []const []const u8) !result.EvalResult {
                 index += 1;
                 if (index >= args.len) return listSetOptions(shell, enabled);
                 if (!setNamedOption(&shell.state.options, args[index], enabled)) return setUsageError(shell);
+                if (std.mem.eql(u8, args[index], "monitor")) shell.state.job_control_suppressed = false;
             },
-            else => if (!setShortOption(&shell.state.options, option, enabled)) return setUsageError(shell),
+            else => {
+                if (!setShortOption(&shell.state.options, option, enabled)) return setUsageError(shell);
+                if (option == 'm') shell.state.job_control_suppressed = false;
+            },
         };
     }
     return .{};
@@ -2049,51 +2200,96 @@ fn unsetArrayIndex(subscript: []const u8, array: state_mod.ArrayVariable) UnsetA
     return max_index + 1 - @as(usize, @intCast(magnitude));
 }
 
+/// Captures entry dispositions before shell startup scripts can change traps.
+/// Call once for a new shell process, not for forked shell environments.
+pub fn initializeSignals(shell: anytype) !void {
+    std.debug.assert(shell.state.signal_traps.count() == 0);
+    for (trap_signal_names) |name| {
+        const number = signalNumber(name) orelse continue;
+        if (!shell.host.isSignalIgnored(number)) continue;
+        try shell.state.setSignalTrap(name, "");
+        shell.state.signal_traps.getPtr(name).?.untrappable = !shell.state.options.interactive;
+    }
+    shell.state.interactive_signal_defaults = shell.state.options.interactive;
+    if (shell.state.interactive_signal_defaults) {
+        for ([_][]const u8{ "INT", "QUIT", "TERM", "TSTP", "TTIN", "TTOU" }) |name| {
+            if (shell.state.getSignalTrap(name) == null) try restoreSignalDefault(shell, name);
+        }
+    }
+}
+
+fn restoreSignalDefault(shell: anytype, name: []const u8) !void {
+    const number = signalNumber(name) orelse return;
+    // KILL/STOP already have immutable defaults. Accept resetting them as a
+    // no-op, as Bash and Dash do, rather than leaking a host sigaction error.
+    if (std.mem.eql(u8, name, "KILL") or std.mem.eql(u8, name, "STOP")) return;
+    if (shell.state.interactive_signal_defaults) {
+        if (std.mem.eql(u8, name, "INT")) return shell.host.installSignalTrap(number);
+        if (std.mem.eql(u8, name, "QUIT") or std.mem.eql(u8, name, "TERM") or
+            std.mem.eql(u8, name, "TSTP") or std.mem.eql(u8, name, "TTIN") or std.mem.eql(u8, name, "TTOU"))
+            return shell.host.setSignalIgnored(number);
+    }
+    try shell.host.setSignalDefault(number);
+}
+
 fn evalTrap(shell: anytype, args: []const []const u8) !result.EvalResult {
-    if (args.len == 1) {
-        try listAllTraps(shell);
+    var index: usize = 1;
+    var print = false;
+    while (index < args.len) {
+        if (std.mem.eql(u8, args[index], "--")) {
+            index += 1;
+            break;
+        }
+        if (std.mem.eql(u8, args[index], "-p")) {
+            print = true;
+            index += 1;
+        } else {
+            break;
+        }
+    }
+    if (index >= args.len) {
+        try listAllTraps(shell, print);
         return .{};
     }
-
-    var index: usize = 1;
-    if (std.mem.eql(u8, args[index], "--")) {
-        index += 1;
-        if (index >= args.len) return .{ .status = 2 };
-    }
-    if (std.mem.eql(u8, args[index], "-p")) {
-        index += 1;
-        if (index >= args.len) {
-            try listAllTraps(shell);
-            return .{};
-        }
+    if (print) {
         var status: result.ExitStatus = 0;
         while (index < args.len) : (index += 1) {
             const signal = parseTrapSignal(args[index]) orelse {
+                try writeInvalidTrapSignal(shell, args[index]);
                 status = 1;
                 continue;
             };
-            try listTrap(shell, signal);
+            try listTrap(shell, signal, true);
         }
         return .{ .status = status };
     }
 
-    const reset = std.mem.eql(u8, args[index], "-");
+    const numeric_reset = args[index].len != 0 and for (args[index]) |byte| {
+        if (!std.ascii.isDigit(byte)) break false;
+    } else true;
+    const reset = numeric_reset or std.mem.eql(u8, args[index], "-");
     const action = args[index];
-    index += 1;
+    if (!numeric_reset) index += 1;
     if (index >= args.len) return .{ .status = 2 };
 
+    shell.state.discardInheritedSignalTraps();
     var status: result.ExitStatus = 0;
     while (index < args.len) : (index += 1) {
         const signal = parseTrapSignal(args[index]) orelse {
+            try writeInvalidTrapSignal(shell, args[index]);
             status = 1;
             continue;
         };
+        if (signal == .other) {
+            if (shell.state.signal_traps.get(signal.other)) |trap| {
+                if (trap.untrappable) continue;
+            }
+        }
         switch (signal) {
             .exit => if (reset) shell.state.clearExitTrap() else try shell.state.setExitTrap(action),
             .other => |name| if (reset) {
                 shell.state.clearSignalTrap(name);
-                // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
-                if (signalNumber(name)) |number| shell.host.setSignalDefault(number) catch {};
+                try restoreSignalDefault(shell, name);
             } else {
                 try shell.state.setSignalTrap(name, action);
                 if (signalNumber(name)) |number| {
@@ -2111,28 +2307,39 @@ fn evalTrap(shell: anytype, args: []const []const u8) !result.EvalResult {
     return .{ .status = status };
 }
 
-fn listAllTraps(shell: anytype) !void {
-    try listTrap(shell, .exit);
-    for (trap_signal_names) |signal| try listTrap(shell, .{ .other = signal });
+fn writeInvalidTrapSignal(shell: anytype, name: []const u8) !void {
+    try shell.host.writeAll(.stderr, try std.fmt.allocPrint(
+        shell.scratchAllocator(),
+        "trap: {s}: invalid signal\n",
+        .{name},
+    ));
 }
 
-fn listTrap(shell: anytype, signal: TrapSignal) !void {
-    switch (signal) {
-        .exit => if (shell.state.exit_trap_listing) |action| {
-            try shell.host.writeAll(.stdout, try std.fmt.allocPrint(
-                shell.scratchAllocator(),
-                "trap -- '{s}' EXIT\n",
-                .{action},
-            ));
-        },
-        .other => |name| if (shell.state.getSignalTrap(name)) |action| {
-            try shell.host.writeAll(.stdout, try std.fmt.allocPrint(
-                shell.scratchAllocator(),
-                "trap -- '{s}' {s}\n",
-                .{ action, name },
-            ));
-        },
+fn listAllTraps(shell: anytype, defaults: bool) !void {
+    try listTrap(shell, .exit, defaults);
+    for (trap_signal_names) |signal| {
+        // These conditions cannot be trapped; omit them from the restorable set.
+        if (std.mem.eql(u8, signal, "KILL") or std.mem.eql(u8, signal, "STOP")) continue;
+        if (signalNumber(signal) != null) try listTrap(shell, .{ .other = signal }, defaults);
     }
+}
+
+fn listTrap(shell: anytype, signal: TrapSignal, defaults: bool) !void {
+    const action: ?[]const u8 = switch (signal) {
+        .exit => shell.state.exit_trap_listing,
+        .other => |name| if (shell.state.signal_traps.get(name)) |trap| trap.action else null,
+    };
+    if (action == null and !defaults) return;
+    const quoted = if (action) |text| try word_quoting.singleQuote(shell.scratchAllocator(), text) else "-";
+    const name = switch (signal) {
+        .exit => "EXIT",
+        .other => |name| name,
+    };
+    try shell.host.writeAll(.stdout, try std.fmt.allocPrint(
+        shell.scratchAllocator(),
+        "trap -- {s} {s}\n",
+        .{ quoted, name },
+    ));
 }
 
 const TrapSignal = union(enum) { exit, other: []const u8 };
@@ -2833,6 +3040,13 @@ test "set -o monitor toggles and lists the monitor option" {
         (try eval(&shell, set_definition, &.{ "set", "-o", "monitor" })).status,
     );
     try std.testing.expect(shell.state.options.monitor);
+    shell.state.job_control_suppressed = true;
+    try std.testing.expect(!shell.state.jobControlEnabled());
+    try std.testing.expectEqual(
+        @as(result.ExitStatus, 0),
+        (try eval(&shell, set_definition, &.{ "set", "-m" })).status,
+    );
+    try std.testing.expect(shell.state.jobControlEnabled());
     try std.testing.expectEqual(
         @as(result.ExitStatus, 0),
         (try eval(&shell, set_definition, &.{ "set", "-o" })).status,

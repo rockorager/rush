@@ -904,7 +904,7 @@ fn startPromptAsyncRefresh(sh: anytype, entry: *PromptAsyncEntry, command_args: 
         if (read_open) sh.host.close(pipe_desc.read) catch {};
         if (write_open) sh.host.close(pipe_desc.write) catch {};
     }
-    switch (try sh.host.forkProcess()) {
+    switch (try sh.host.forkProcess(.{})) {
         .child => {
             // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
             sh.host.close(pipe_desc.read) catch {};

@@ -3,6 +3,20 @@
     .mode = .posix,
     .cases = .{
         .{
+            .name = "plus i invocation accepts all input forms and cancels earlier minus i",
+            .script =
+            \\ln -s "$(command -v "$0")" sh
+            \\printf '%s\n' 'case $- in *i*) echo interactive;; *) echo noninteractive;; esac' >input
+            \\./sh +i -c "$(cat input)"
+            \\./sh -i +i input
+            \\./sh +i <input
+            \\./sh +i -i -c "$(cat input)" 2>/dev/null
+            ,
+            .stdout = "noninteractive\nnoninteractive\nnoninteractive\ninteractive\n",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "system shell external prefix assignments expand exactly once",
             .script =
             \\ln -s "$(command -v "$0")" sh

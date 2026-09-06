@@ -329,7 +329,15 @@ pub const State = struct {
     aliases: std.StringHashMapUnmanaged(Alias) = .empty,
     command_hashes: std.StringHashMapUnmanaged(CommandHash) = .empty,
     named_directories: std.StringHashMapUnmanaged(NamedDirectory) = .empty,
-    signal_traps: std.StringHashMapUnmanaged([]const u8) = .empty,
+    signal_traps: std.StringHashMapUnmanaged(struct {
+        action: []const u8,
+        // Caught entry traps remain listable in subshells but are not active.
+        inherited: bool = false,
+        // Signals ignored on entry to a noninteractive shell cannot be changed.
+        untrappable: bool = false,
+    }) = .empty,
+    /// Implicit interactive signal actions apply only in the original environment.
+    interactive_signal_defaults: bool = false,
     pending_traps: std.ArrayListUnmanaged([]const u8) = .empty,
     process_substitutions: std.ArrayListUnmanaged(ProcessSubstitution) = .empty,
     reap_process_substitutions: std.ArrayListUnmanaged(ReapOnlyProcessSubstitution) = .empty,
@@ -357,6 +365,9 @@ pub const State = struct {
     /// Controlling terminal used for job-control handoff. Prefer this over
     /// stdin so fg/bg still work when the interactive editor owns /dev/tty.
     controlling_tty: ?host.Fd = null,
+    /// Subshells inherit the monitor option but do not manage their own jobs
+    /// until they explicitly enable it again with set -m.
+    job_control_suppressed: bool = false,
     parent_pid: ?host.Pid = null,
     start_time_ns: i128 = 0,
     seconds_base_time_ns: i128 = 0,
@@ -376,6 +387,10 @@ pub const State = struct {
             .allocator = allocator,
             .options = options,
         };
+    }
+
+    pub fn jobControlEnabled(self: State) bool {
+        return self.options.monitor and !self.job_control_suppressed;
     }
 
     pub fn deinit(self: *State) void {
@@ -410,7 +425,7 @@ pub const State = struct {
         }
         self.named_directories.deinit(self.allocator);
         var signal_trap_iterator = self.signal_traps.iterator();
-        while (signal_trap_iterator.next()) |entry| self.allocator.free(entry.value_ptr.*);
+        while (signal_trap_iterator.next()) |entry| self.allocator.free(entry.value_ptr.action);
         self.signal_traps.deinit(self.allocator);
         self.pending_traps.deinit(self.allocator);
         self.process_substitutions.deinit(self.allocator);
@@ -1290,29 +1305,33 @@ pub const State = struct {
     }
 
     pub fn getSignalTrap(self: State, name: []const u8) ?[]const u8 {
-        return self.signal_traps.get(name);
+        const trap = self.signal_traps.get(name) orelse return null;
+        return if (trap.inherited) null else trap.action;
     }
 
     pub fn setSignalTrap(self: *State, name: []const u8, action: []const u8) !void {
         const owned_action = try self.allocator.dupe(u8, action);
         errdefer self.allocator.free(owned_action);
         if (self.signal_traps.getPtr(name)) |existing| {
-            self.allocator.free(existing.*);
-            existing.* = owned_action;
+            self.allocator.free(existing.action);
+            existing.* = .{ .action = owned_action };
             return;
         }
-        try self.signal_traps.put(self.allocator, name, owned_action);
+        try self.signal_traps.put(self.allocator, name, .{ .action = owned_action });
     }
 
     pub fn clearSignalTrap(self: *State, name: []const u8) void {
-        if (self.signal_traps.fetchRemove(name)) |entry| self.allocator.free(entry.value);
+        if (self.signal_traps.fetchRemove(name)) |entry| self.allocator.free(entry.value.action);
     }
 
-    pub fn clearSignalTraps(self: *State) void {
+    /// The entry listing stops applying after a trap command changes dispositions.
+    pub fn discardInheritedSignalTraps(self: *State) void {
         var iterator = self.signal_traps.iterator();
-        while (iterator.next()) |entry| self.allocator.free(entry.value_ptr.*);
-        self.signal_traps.clearRetainingCapacity();
-        self.pending_traps.clearRetainingCapacity();
+        while (iterator.next()) |entry| {
+            if (!entry.value_ptr.inherited) continue;
+            self.allocator.free(entry.value_ptr.action);
+            self.signal_traps.removeByPtr(entry.key_ptr);
+        }
     }
 
     pub fn queueTrap(self: *State, name: []const u8) !void {
@@ -1420,6 +1439,7 @@ pub const State = struct {
     }
 
     pub fn resolveJobSpec(self: State, spec: []const u8) ?BackgroundJob {
+        if (std.mem.eql(u8, spec, "%")) return self.currentBackgroundJob();
         if (spec.len < 2 or spec[0] != '%') return null;
         const selector = spec[1..];
         if (std.mem.eql(u8, selector, "%") or std.mem.eql(u8, selector, "+")) return self.currentBackgroundJob();

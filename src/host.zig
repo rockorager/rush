@@ -219,6 +219,7 @@ pub const SpawnRequest = struct {
     cwd: ?[]const u8 = null,
     fd_actions: []const SpawnFdAction = &.{},
     default_signals: []const u8 = &.{},
+    ignored_signals: []const u8 = &.{},
     process_group: ?Pid = null,
 
     pub fn validate(self: SpawnRequest) void {
@@ -231,6 +232,13 @@ pub const SpawnRequest = struct {
 
 pub const SpawnResult = struct {
     pid: Pid,
+};
+
+/// Child dispositions are installed before delivery of signals resumes after
+/// fork. Ignores take precedence over defaults; the parent is unchanged.
+pub const ForkOptions = struct {
+    default_signals: []const u8 = &.{},
+    ignored_signals: []const u8 = &.{},
 };
 
 pub const ForkResult = union(enum) {
@@ -285,6 +293,20 @@ pub const WaitStatus = union(enum) {
             .signaled => |signal| 128 + signal,
             .stopped => |signal| 128 + signal,
             .continued => 0,
+        };
+    }
+};
+
+/// An interrupted wait may also have consumed a child event. The caller must
+/// retain that event for a later wait rather than treating interruption as death.
+pub const InterruptibleWait = union(enum) {
+    status: WaitStatus,
+    interrupted: struct { signal: u8, status: ?WaitStatus = null },
+
+    pub fn shellStatus(self: InterruptibleWait) u8 {
+        return switch (self) {
+            .status => |status| status.shellStatus(),
+            .interrupted => |interrupted| 128 + interrupted.signal,
         };
     }
 };

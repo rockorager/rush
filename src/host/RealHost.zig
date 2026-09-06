@@ -16,6 +16,8 @@ extern "c" fn getpgrp() c_int;
 extern "c" fn tcgetpgrp(fd: c_int) c_int;
 extern "c" fn tcsetpgrp(fd: c_int, pgrp: c_int) c_int;
 extern "c" fn ttyname_r(fd: c_int, buffer: [*]u8, length: usize) c_int;
+extern "c" fn sigsuspend(mask: *const std.posix.sigset_t) c_int;
+extern "c" fn __sigsuspend14(mask: *const std.posix.sigset_t) c_int;
 
 const CTime = extern struct {
     sec: c_int,
@@ -356,12 +358,23 @@ pub fn pipe(_: RealHost) PipeError!host.Pipe {
     };
 }
 
-pub fn forkProcess(_: RealHost) ForkError!host.ForkResult {
-    return switch (builtin.os.tag) {
+pub fn forkProcess(self: RealHost, options: host.ForkOptions) ForkError!host.ForkResult {
+    // A published child PID can be signalled immediately, before evaluator-side
+    // setup. Keep those signals pending until the child has its own dispositions.
+    const blocked = std.posix.sigfillset();
+    var previous: std.posix.sigset_t = undefined;
+    std.posix.sigprocmask(std.posix.SIG.BLOCK, &blocked, &previous);
+    defer std.posix.sigprocmask(std.posix.SIG.SETMASK, &previous, null);
+    const forked = try switch (builtin.os.tag) {
         .linux => linuxForkProcess(),
         .macos, .freebsd, .openbsd, .netbsd => libcForkProcess(),
         else => @compileError("unsupported host OS"),
     };
+    if (forked == .child) {
+        applyDefaultSignals(options.default_signals) catch self.exit(127);
+        applyIgnoredSignals(options.ignored_signals) catch self.exit(127);
+    }
+    return forked;
 }
 
 pub fn exit(_: RealHost, status: u8) noreturn {
@@ -440,6 +453,12 @@ pub fn setTerminalProcessGroup(_: RealHost, fd: host.Fd, process_group: host.Pid
             else => return error.Unexpected,
         }
     }
+}
+
+pub fn isSignalIgnored(_: RealHost, signal: u8) bool {
+    var action: std.posix.Sigaction = undefined;
+    std.posix.sigaction(@enumFromInt(signal), null, &action);
+    return action.handler.handler == std.posix.SIG.IGN;
 }
 
 pub fn setSignalIgnored(_: RealHost, signal: u8) SignalDispositionError!void {
@@ -672,20 +691,12 @@ pub fn waitJobEvent(_: RealHost, pid: host.Pid) WaitError!host.WaitStatus {
     };
 }
 
-pub fn waitJobEventInterruptible(_: RealHost, pid: host.Pid) WaitError!host.WaitStatus {
-    return switch (builtin.os.tag) {
-        .linux => linuxWaitJobEventInterruptible(pid),
-        .macos, .freebsd, .openbsd, .netbsd => libcWaitJobEventInterruptible(pid),
-        else => @compileError("unsupported host OS"),
-    };
+pub fn waitJobEventInterruptible(_: RealHost, pid: host.Pid) WaitError!host.InterruptibleWait {
+    return waitForChildInterruptible(pid, std.c.W.UNTRACED);
 }
 
-pub fn waitInterruptible(_: RealHost, pid: host.Pid) WaitError!host.WaitStatus {
-    return switch (builtin.os.tag) {
-        .linux => linuxWaitInterruptible(pid),
-        .macos, .freebsd, .openbsd, .netbsd => libcWaitInterruptible(pid),
-        else => @compileError("unsupported host OS"),
-    };
+pub fn waitInterruptible(_: RealHost, pid: host.Pid) WaitError!host.InterruptibleWait {
+    return waitForChildInterruptible(pid, 0);
 }
 
 fn linuxRead(fd: host.Fd, buffer: []u8) ReadError!usize {
@@ -1375,6 +1386,10 @@ fn libcFileKindFromMode(mode: std.c.mode_t) host.FileKind {
 
 fn linuxSpawn(request: host.SpawnRequest) SpawnError!host.SpawnResult {
     const linux = std.os.linux;
+    const blocked = std.posix.sigfillset();
+    var previous: std.posix.sigset_t = undefined;
+    std.posix.sigprocmask(std.posix.SIG.BLOCK, &blocked, &previous);
+    defer std.posix.sigprocmask(std.posix.SIG.SETMASK, &previous, null);
     const fork_rc = linux.fork();
     switch (linux.errno(fork_rc)) {
         .SUCCESS => {},
@@ -1386,6 +1401,8 @@ fn linuxSpawn(request: host.SpawnRequest) SpawnError!host.SpawnResult {
     if (pid == 0) {
         if (request.process_group) |process_group| linuxSetProcessGroup(0, process_group) catch linux.exit(127);
         applyDefaultSignals(request.default_signals) catch linux.exit(127);
+        applyIgnoredSignals(request.ignored_signals) catch linux.exit(127);
+        std.posix.sigprocmask(std.posix.SIG.SETMASK, &previous, null);
         applyLinuxFdActions(request.fd_actions);
         const exec_rc = linux.execve(request.path.ptr, request.argv.ptr, request.envp.ptr);
         if (linux.errno(exec_rc) == .NOEXEC) {
@@ -1401,6 +1418,7 @@ fn linuxExec(request: host.SpawnRequest) SpawnError!void {
     const linux = std.os.linux;
     if (request.process_group) |process_group| linuxSetProcessGroup(0, process_group) catch return error.Unexpected;
     applyDefaultSignals(request.default_signals) catch return error.Unexpected;
+    applyIgnoredSignals(request.ignored_signals) catch return error.Unexpected;
     applyLinuxFdActions(request.fd_actions);
     const exec_rc = linux.execve(request.path.ptr, request.argv.ptr, request.envp.ptr);
     if (linux.errno(exec_rc) == .NOEXEC) {
@@ -1448,33 +1466,11 @@ fn linuxWaitJobEvent(pid: host.Pid) WaitError!host.WaitStatus {
     }
 }
 
-fn linuxWaitJobEventInterruptible(pid: host.Pid) WaitError!host.WaitStatus {
-    const linux = std.os.linux;
-    var status: u32 = 0;
-    while (true) {
-        const wait_rc = linux.waitpid(pid, &status, linux.W.UNTRACED);
-        switch (linux.errno(wait_rc)) {
-            .SUCCESS => return decodeWaitStatus(status),
-            .INTR => if (peekPendingSignal()) |signal| return .{ .signaled = signal } else continue,
-            else => return error.Unexpected,
-        }
-    }
-}
-
-fn linuxWaitInterruptible(pid: host.Pid) WaitError!host.WaitStatus {
-    const linux = std.os.linux;
-    var status: u32 = 0;
-    while (true) {
-        const wait_rc = linux.waitpid(pid, &status, 0);
-        switch (linux.errno(wait_rc)) {
-            .SUCCESS => return decodeWaitStatus(status),
-            .INTR => if (peekPendingSignal()) |signal| return .{ .signaled = signal } else continue,
-            else => return error.Unexpected,
-        }
-    }
-}
-
 fn libcSpawn(request: host.SpawnRequest) SpawnError!host.SpawnResult {
+    const blocked = std.posix.sigfillset();
+    var previous: std.posix.sigset_t = undefined;
+    std.posix.sigprocmask(std.posix.SIG.BLOCK, &blocked, &previous);
+    defer std.posix.sigprocmask(std.posix.SIG.SETMASK, &previous, null);
     const fork_rc = std.c.fork();
     switch (std.c.errno(fork_rc)) {
         .SUCCESS => {},
@@ -1486,6 +1482,8 @@ fn libcSpawn(request: host.SpawnRequest) SpawnError!host.SpawnResult {
     if (pid == 0) {
         if (request.process_group) |process_group| libcSetProcessGroup(0, process_group) catch std.c._exit(127);
         applyDefaultSignals(request.default_signals) catch std.c._exit(127);
+        applyIgnoredSignals(request.ignored_signals) catch std.c._exit(127);
+        std.posix.sigprocmask(std.posix.SIG.SETMASK, &previous, null);
         applyLibcFdActions(request.fd_actions);
         const exec_rc = std.c.execve(request.path.ptr, request.argv.ptr, request.envp.ptr);
         if (std.c.errno(exec_rc) == .NOEXEC) {
@@ -1500,6 +1498,7 @@ fn libcSpawn(request: host.SpawnRequest) SpawnError!host.SpawnResult {
 fn libcExec(request: host.SpawnRequest) SpawnError!void {
     if (request.process_group) |process_group| libcSetProcessGroup(0, process_group) catch return error.Unexpected;
     applyDefaultSignals(request.default_signals) catch return error.Unexpected;
+    applyIgnoredSignals(request.ignored_signals) catch return error.Unexpected;
     applyLibcFdActions(request.fd_actions);
     const exec_rc = std.c.execve(request.path.ptr, request.argv.ptr, request.envp.ptr);
     if (std.c.errno(exec_rc) == .NOEXEC) {
@@ -1546,32 +1545,65 @@ fn libcWaitJobEvent(pid: host.Pid) WaitError!host.WaitStatus {
     }
 }
 
-fn libcWaitJobEventInterruptible(pid: host.Pid) WaitError!host.WaitStatus {
-    var status: c_int = 0;
-    while (true) {
-        const wait_rc = std.c.waitpid(pid, &status, std.c.W.UNTRACED);
-        switch (std.c.errno(wait_rc)) {
-            .SUCCESS => return decodeWaitStatus(@bitCast(status)),
-            .INTR => if (peekPendingSignal()) |signal| return .{ .signaled = signal } else continue,
-            else => return error.Unexpected,
-        }
-    }
-}
+fn wakeChildWait(_: std.posix.SIG) callconv(.c) void {}
 
-fn libcWaitInterruptible(pid: host.Pid) WaitError!host.WaitStatus {
-    var status: c_int = 0;
+// Signal delivery and the mask/suspend handshake are confined to the shell
+// thread. app disables Threaded's worker pool to maintain that invariant.
+fn waitForChildInterruptible(pid: host.Pid, flags: u32) WaitError!host.InterruptibleWait {
+    const blocked = std.posix.sigfillset();
+    var previous_mask: std.posix.sigset_t = undefined;
+    std.posix.sigprocmask(std.posix.SIG.BLOCK, &blocked, &previous_mask);
+    defer std.posix.sigprocmask(std.posix.SIG.SETMASK, &previous_mask, null);
+
+    var previous_chld: std.posix.Sigaction = undefined;
+    std.posix.sigaction(.CHLD, null, &previous_chld);
+    const needs_handler = previous_chld.handler.handler == std.posix.SIG.DFL or
+        previous_chld.handler.handler == std.posix.SIG.IGN;
+    if (needs_handler) {
+        // SIG_DFL/IGN does not wake sigsuspend. Preserve real trap/editor handlers.
+        const action: std.posix.Sigaction = .{
+            .handler = .{ .handler = wakeChildWait },
+            .mask = std.posix.sigemptyset(),
+            .flags = 0,
+        };
+        std.posix.sigaction(.CHLD, &action, null);
+    }
+    defer if (needs_handler) std.posix.sigaction(.CHLD, &previous_chld, null);
+    var suspend_mask = previous_mask;
+    std.posix.sigdelset(&suspend_mask, .CHLD);
+
     while (true) {
-        const wait_rc = std.c.waitpid(pid, &status, 0);
-        switch (std.c.errno(wait_rc)) {
-            .SUCCESS => return decodeWaitStatus(@bitCast(status)),
-            .INTR => if (peekPendingSignal()) |signal| return .{ .signaled = signal } else continue,
-            else => return error.Unexpected,
+        if (peekPendingSignal()) |signal| return .{ .interrupted = .{ .signal = signal } };
+        var status: c_int = 0;
+        const wait_rc = std.c.waitpid(pid, &status, @intCast(flags | std.c.W.NOHANG));
+        if (wait_rc > 0) {
+            // A signal can be kernel-pending while waitpid reports completion.
+            // Deliver it before choosing the result, retaining BOTH events.
+            std.posix.sigprocmask(std.posix.SIG.SETMASK, &previous_mask, null);
+            const waited = decodeWaitStatus(@bitCast(status));
+            if (peekPendingSignal()) |signal| {
+                return .{ .interrupted = .{ .signal = signal, .status = waited } };
+            }
+            return .{ .status = waited };
         }
+        if (wait_rc < 0) switch (std.c.errno(wait_rc)) {
+            .INTR => continue,
+            else => return error.Unexpected,
+        };
+
+        // Atomically unblock and sleep: a signal arriving after the checks
+        // cannot be lost between a separate mask restoration and blocking wait.
+        const rc = if (builtin.os.tag == .netbsd) __sigsuspend14(&suspend_mask) else sigsuspend(&suspend_mask);
+        if (std.c.errno(rc) != .INTR) return error.Unexpected;
     }
 }
 
 fn applyDefaultSignals(signals: []const u8) SignalDispositionError!void {
     for (signals) |signal| try real_host.setSignalDefault(signal);
+}
+
+fn applyIgnoredSignals(signals: []const u8) SignalDispositionError!void {
+    for (signals) |signal| try real_host.setSignalIgnored(signal);
 }
 
 fn applyLinuxFdActions(actions: []const host.SpawnFdAction) void {

@@ -197,7 +197,7 @@ pub fn pipe(_: *const WasmHost) PipeError!host.Pipe {
     return error.SystemResources;
 }
 
-pub fn forkProcess(_: *const WasmHost) ForkError!host.ForkResult {
+pub fn forkProcess(_: *const WasmHost, _: host.ForkOptions) ForkError!host.ForkResult {
     return error.SystemResources;
 }
 
@@ -338,11 +338,11 @@ pub fn waitJobEvent(_: *const WasmHost, _: host.Pid) WaitError!host.WaitStatus {
     return error.Unexpected;
 }
 
-pub fn waitJobEventInterruptible(_: *const WasmHost, _: host.Pid) WaitError!host.WaitStatus {
+pub fn waitJobEventInterruptible(_: *const WasmHost, _: host.Pid) WaitError!host.InterruptibleWait {
     return error.Unexpected;
 }
 
-pub fn waitInterruptible(_: *const WasmHost, _: host.Pid) WaitError!host.WaitStatus {
+pub fn waitInterruptible(_: *const WasmHost, _: host.Pid) WaitError!host.InterruptibleWait {
     return error.Unexpected;
 }
 

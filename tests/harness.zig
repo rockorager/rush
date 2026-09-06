@@ -146,6 +146,15 @@ const Progress = struct {
 };
 
 pub fn main(init: std.process.Init) !u8 {
+    // A background launcher can pass SIG_IGN for INT/QUIT through exec. Cases
+    // require a default baseline; inheritance tests set their own dispositions.
+    const default_action: std.posix.Sigaction = .{
+        .handler = .{ .handler = std.posix.SIG.DFL },
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
+    };
+    std.posix.sigaction(.INT, &default_action, null);
+    std.posix.sigaction(.QUIT, &default_action, null);
     const allocator = init.gpa;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len >= 4 and std.mem.eql(u8, args[1], "--mismatched-ids")) {

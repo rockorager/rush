@@ -208,7 +208,12 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
             defer self.state.current_source_name = previous_source_name;
 
             if (reset_chunks) self.resetForTopLevelCommand();
-            if (src.text.len == 0) return .{};
+            // Empty interactive input is not a command and must not overwrite
+            // the preceding status. Empty eval/dot sources still return zero.
+            var last: result.EvalResult = .{
+                .status = if (src.kind == .interactive) self.state.last_status else 0,
+            };
+            if (src.text.len == 0) return last;
 
             // A nested source must not retain its parsed commands until the
             // caller's top-level command finishes. Definitions are copied into
@@ -222,7 +227,6 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
 
             var start: usize = 0;
             var verbose_offset: usize = 0;
-            var last: result.EvalResult = .{};
             while (start < src.text.len) {
                 var end: usize = undefined;
                 var direct_program: ?ast.Program = null;

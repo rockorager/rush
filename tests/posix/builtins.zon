@@ -3,6 +3,18 @@
     .mode = .posix,
     .cases = .{
         .{
+            .name = "kill accepts an option terminator after the signal",
+            .script =
+            \\kill -s 0 -- "$$"
+            \\printf '%s\n' "$?"
+            \\kill -0 -- "$$"
+            \\printf '%s\n' "$?"
+            ,
+            .stdout = "0\n0\n",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             // Legacy expression grammar is a Debian/Git compatibility choice,
             // not an Issue 8 requirement for expressions with many operands.
             .name = "system shell test logical expressions retain primary precedence",
@@ -1041,6 +1053,18 @@
             .status = 0,
         },
         .{
+            // Issue 8 requires the last operand's status, including an unknown PID.
+            // Diagnostics are permitted; Bash prints one and Yash stays silent.
+            .name = "wait for a known then unknown pid returns the last operand status",
+            .script =
+            \\(exit 7) & p=$!
+            \\wait "$p" 999999
+            \\printf '<%s>\n' "$?"
+            ,
+            .stdout = "<127>\n",
+            .stderr_match = .any,
+        },
+        .{
             .name = "wait rejects operands that are not process ids or job specs",
             .script =
             \\wait notapid
@@ -1648,6 +1672,86 @@
             \\
             ,
             .stderr = "visible\n",
+            .status = 0,
+        },
+        .{
+            .name = "trap numeric-leading operands reset every named condition",
+            .script =
+            \\sh -c 'trap "echo bad" INT; trap 2; kill -s INT "$$"; echo bad'
+            \\case $? in 0) echo lone:bad ;; *) echo lone:reset ;; esac
+            \\sh -c 'trap "echo bad" INT TERM; trap 2 TERM; kill -s TERM "$$"; echo bad'
+            \\case $? in 0) echo multi:bad ;; *) echo multi:reset ;; esac
+            ,
+            .stdout = "lone:reset\nmulti:reset\n",
+            .stderr_match = .any,
+            .status = 0,
+        },
+        .{
+            .name = "fatal failure in an EXIT trap determines shell status",
+            .script =
+            \\trap 'set <_no_such_file_' EXIT
+            ,
+            .stdout = "",
+            .stderr_match = .nonempty,
+            .status = 0,
+            .status_match = .nonzero,
+        },
+        .{
+            .name = "trap actions survive replacement and temporary assignment lifetimes",
+            .script =
+            \\trap 'trap "echo replaced" USR1; echo original' USR1
+            \\kill -s USR1 $$
+            \\kill -s USR1 $$
+            \\( trap 'trap - EXIT; echo exit-original' EXIT; : )
+            \\foo=1 trap 'printf "EXIT %s\\n" "$foo"' EXIT
+            \\foo=2
+            \\foo=3 echo $foo
+            ,
+            .stdout = "original\nreplaced\nexit-original\n2\nEXIT 2\n",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            // Issue 8 requires the asynchronous subshell's EXIT environment to be the
+            // environment after the redirected trap command; Bash differs here.
+            .name = "asynchronous EXIT trap runs after local redirection restoration",
+            .script =
+            \\trap 'echo async-exit' EXIT >/dev/null &
+            \\wait "$!"
+            ,
+            .stdout = "async-exit\n",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            // trap -p is required by Issue 8; Dash does not yet implement it.
+            .name = "trap -p selected and all output restores defaults and quoted actions",
+            .script =
+            \\trap "printf '%s\\n' \"it's quoted\"" TERM
+            \\trap -p -- TERM >selected
+            \\trap - TERM
+            \\. ./selected
+            \\kill -s TERM $$
+            \\( trap - USR1; trap -p >all; trap 'printf bad' USR1; . ./all
+            \\  pid=$(sh -c 'printf %s "$PPID"'); kill -s USR1 "$pid"; printf bad ) &
+            \\wait "$!"; case $? in 0) printf 'all:bad\n' ;; *) printf 'all:restored\n' ;; esac
+            \\( trap '' TERM; trap - USR2; trap -p TERM USR2 >selected-defaults
+            \\  trap 'printf bad' TERM USR2; . ./selected-defaults
+            \\  pid=$(sh -c 'printf %s "$PPID"'); kill -s TERM "$pid"
+            \\  kill -s USR2 "$pid"; printf bad ) &
+            \\wait "$!"; case $? in 0) printf 'selected:bad\n' ;; *) printf 'selected:restored\n' ;; esac
+            ,
+            .stdout = "it's quoted\nall:restored\nselected:restored\n",
+            .stderr_match = .any,
+            .status = 0,
+        },
+        .{
+            .name = "trap warns for an invalid signal without aborting the shell",
+            .script =
+            \\trap '' '' || printf 'reached\n'
+            ,
+            .stdout = "reached\n",
+            .stderr_match = .nonempty,
             .status = 0,
         },
     },

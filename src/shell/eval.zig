@@ -26,11 +26,7 @@ const command_suggestion_limit = 2;
 const command_suggestion_max_distance = 2;
 const cd_suggestion_max_distance = 2;
 const cd_suggestion_confirm_timeout_ms = 5 * 1000;
-const job_control_signals = [_]u8{
-    builtin.signalNumber("TSTP").?,
-    builtin.signalNumber("TTIN").?,
-    builtin.signalNumber("TTOU").?,
-};
+const interactive_signal_names = [_][]const u8{ "INT", "QUIT", "TERM", "TSTP", "TTIN", "TTOU" };
 
 fn validateAst(value: anytype) void {
     if (zig_builtin.mode != .ReleaseFast and zig_builtin.mode != .ReleaseSmall) value.validate();
@@ -43,8 +39,11 @@ pub fn evalProgram(comptime Host: type, shell: anytype, program: ast.Program) Ev
 }
 
 pub fn runExitTrap(shell: anytype, status: result.ExitStatus) EvalError!result.ExitStatus {
-    const action = shell.state.exit_trap orelse return status;
+    const stored_action = shell.state.exit_trap orelse return status;
     if (shell.state.running_exit_trap) return status;
+    // A trap may replace itself while the parser still refers to its source.
+    const action = try shell.allocator.dupe(u8, stored_action);
+    defer shell.allocator.free(action);
 
     shell.state.running_exit_trap = true;
     defer shell.state.running_exit_trap = false;
@@ -52,19 +51,23 @@ pub fn runExitTrap(shell: anytype, status: result.ExitStatus) EvalError!result.E
     shell.state.last_status = status;
     const src: source_mod.Source = .{ .id = 0, .kind = .command_string, .name = "trap", .text = action };
     const evaluated = try shell.evalSourceNested(src);
-    if (evaluated.flow == .exit) return evaluated.status;
+    if (evaluated.flow != .normal) return evaluated.status;
     const pending = try runPendingTrapCheckpoint(shell);
     return if (pending.flow != .normal) pending.status else status;
 }
 
 fn runPendingTrapCheckpoint(shell: anytype) EvalError!result.EvalResult {
     if (shell.state.running_signal_trap) return .{};
+    if (shell.state.interactive_signal_defaults and shell.state.getSignalTrap("INT") == null)
+        _ = shell.host.consumePendingSignal(builtin.signalNumber("INT").?);
     // Fast path for the common trap-free shell: nothing can be queued and
     // nothing is pending, so skip the polling walk.
     if (shell.state.signal_traps.count() == 0 and shell.state.pending_traps.items.len == 0) return .{};
     try queuePolledSignalTraps(shell);
     const name = shell.state.popPendingTrap() orelse return .{};
-    const action = shell.state.getSignalTrap(name) orelse return .{};
+    const stored_action = shell.state.getSignalTrap(name) orelse return .{};
+    const action = try shell.allocator.dupe(u8, stored_action);
+    defer shell.allocator.free(action);
 
     shell.state.running_signal_trap = true;
     defer shell.state.running_signal_trap = false;
@@ -118,18 +121,22 @@ fn evalBackgroundAndOr(shell: anytype, and_or: ast.AndOr) EvalError!result.EvalR
     _ = shellProcessId(shell);
     _ = parentProcessId(shell);
     const background_subshell = backgroundSubshellInvocation(and_or);
-    const pid = switch (try shell.host.forkProcess()) {
+    const fork_scratch = try shell.beginScratchScope();
+    defer fork_scratch.end();
+    const pid = switch (try shell.host.forkProcess(.{
+        .default_signals = try childDefaultSignals(shell),
+        .ignored_signals = if (shell.state.jobControlEnabled()) &.{} else &.{ 2, 3 },
+    })) {
         .parent => |child_pid| child_pid,
         .child => {
             const scratch = shell.beginScratchScope() catch shell.host.exit(2);
             defer scratch.end();
-            if (shell.state.options.monitor) setChildProcessGroup(shell, 0) catch shell.host.exit(2);
-            resetJobControlSignalsForChild(shell);
-            resetCaughtSignalTrapsForAsyncChild(shell);
-            if (!shell.state.options.monitor) {
-                ignoreAsynchronousJobSignals(shell) catch shell.host.exit(2);
+            if (shell.state.jobControlEnabled()) setChildProcessGroup(shell, 0) catch shell.host.exit(2);
+            resetCaughtSignalTrapsForChild(shell);
+            if (!shell.state.jobControlEnabled()) {
                 redirectStdinFromNull(shell) catch shell.host.exit(2);
             }
+            shell.state.job_control_suppressed = true;
             if (background_subshell) |subshell| {
                 // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                 const evaluated = evalSubshellInCurrentProcess(shell, subshell.body.subshell, subshell.redirections) catch shell.host.exit(2);
@@ -144,27 +151,28 @@ fn evalBackgroundAndOr(shell: anytype, and_or: ast.AndOr) EvalError!result.EvalR
                         // redirections once, then replace it with the external.
                         const evaluated = evalCommand(shell, &pipeline.stages[0], .replaceable_child) catch
                             shell.host.exit(2);
-                        shell.host.exit(evaluated.status);
+                        const status = runExitTrap(shell, evaluated.status) catch shell.host.exit(2);
+                        shell.host.exit(status);
                     }
                 }
                 const evaluated = evalAndOr(shell, and_or) catch shell.host.exit(2);
-                shell.host.exit(evaluated.status);
+                const status = runExitTrap(shell, evaluated.status) catch shell.host.exit(2);
+                shell.host.exit(status);
             }
         },
     };
     // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
-    if (shell.state.options.monitor) setParentProcessGroup(shell, pid, pid) catch {};
+    if (shell.state.jobControlEnabled()) setParentProcessGroup(shell, pid, pid) catch {};
     shell.state.last_background_pid = pid;
     try shell.state.addBackgroundPid(pid);
     const job_scratch = try shell.beginScratchScope();
     defer job_scratch.end();
-    try shell.state.addBackgroundJob(pid, try backgroundAndOrCommandText(shell, and_or), shell.state.options.monitor);
+    try shell.state.addBackgroundJob(
+        pid,
+        try backgroundAndOrCommandText(shell, and_or),
+        shell.state.jobControlEnabled(),
+    );
     return .{ .status = 0 };
-}
-
-fn ignoreAsynchronousJobSignals(shell: anytype) !void {
-    try shell.host.setSignalIgnored(2);
-    try shell.host.setSignalIgnored(3);
 }
 
 fn redirectStdinFromNull(shell: anytype) !void {
@@ -177,15 +185,19 @@ fn redirectStdinFromNull(shell: anytype) !void {
     }
 }
 
-fn resetCaughtSignalTrapsForAsyncChild(shell: anytype) void {
+fn resetCaughtSignalTrapsForChild(shell: anytype) void {
+    // Host fork installed child dispositions atomically with signal unmasking.
+    // Retain caught actions only for the subshell's initial trap listing.
+    shell.state.interactive_signal_defaults = false;
+    shell.state.forgetActiveExitTrap();
+    shell.state.running_exit_trap = false;
     var iterator = shell.state.signal_traps.iterator();
     while (iterator.next()) |entry| {
-        const number = builtin.signalNumber(entry.key_ptr.*) orelse continue;
-        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
-        shell.host.setSignalDefault(number) catch {};
+        if (entry.value_ptr.action.len == 0 or entry.value_ptr.inherited) continue;
+        entry.value_ptr.inherited = true;
     }
     shell.state.running_signal_trap = false;
-    shell.state.clearSignalTraps();
+    shell.state.pending_traps.clearRetainingCapacity();
 }
 
 fn shellProcessId(shell: anytype) host_mod.Pid {
@@ -218,14 +230,14 @@ fn evalBackgroundPipeline(shell: anytype, pipeline: ast.Pipeline) EvalError!resu
     std.debug.assert(pipeline.stages.len > 1);
     _ = shellProcessId(shell);
     _ = parentProcessId(shell);
-    const pids = try spawnPipelineStages(shell, pipeline.stages, true, shell.state.options.monitor);
+    const pids = try spawnPipelineStages(shell, pipeline.stages, true, shell.state.jobControlEnabled());
     defer shell.allocator.free(pids);
     for (pids) |pid| try shell.state.addBackgroundPid(pid);
     shell.state.last_background_pid = pids[pids.len - 1];
     const job_scratch = try shell.beginScratchScope();
     defer job_scratch.end();
     // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
-    try shell.state.addBackgroundJobPids(pids, pids[0], try pipelineCommandText(shell, pipeline), shell.state.options.monitor);
+    try shell.state.addBackgroundJobPids(pids, pids[0], try pipelineCommandText(shell, pipeline), shell.state.jobControlEnabled());
     return .{ .status = 0 };
 }
 
@@ -249,7 +261,7 @@ fn commandText(shell: anytype, command: ast.Command) ![]const u8 {
     return switch (command) {
         .simple => |simple| simpleCommandText(shell, simple),
         .function_definition => |definition| definition.name,
-        .compound => "compound command",
+        .compound => |compound| compound.source_text,
     };
 }
 
@@ -323,23 +335,23 @@ fn evalExternalPipeline(shell: anytype, pipeline: ast.Pipeline) EvalError!result
         notifyForegroundCommand(shell, try pipelineCommandText(shell, pipeline));
     }
     defer notifyForegroundCommand(shell, null);
-    const pids = try spawnPipelineStages(shell, stages, false, shell.state.options.monitor);
+    const pids = try spawnPipelineStages(shell, stages, false, shell.state.jobControlEnabled());
     defer shell.allocator.free(pids);
-    const foreground_restore_group = giveTerminalToProcessGroup(shell, pids[0]) catch {
+    const foreground_restore_group = builtin.giveTerminalToJob(shell, pids[0]) catch {
         const scratch = try shell.beginScratchScope();
         defer scratch.end();
         // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
         _ = waitPids(shell, pids) catch {};
         return .{ .status = 1 };
     };
-    defer if (foreground_restore_group) |process_group| restoreTerminalToProcessGroup(shell, process_group);
+    defer if (foreground_restore_group) |process_group| builtin.restoreTerminalToShell(shell, process_group);
     const scratch = try shell.beginScratchScope();
     defer scratch.end();
     const statuses = try waitForegroundPids(shell, pids);
     try setPipelineStatusArray(shell, statuses);
     if (pipelineStopped(statuses)) {
         // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
-        try shell.state.addBackgroundJobPids(pids, pids[0], try pipelineCommandText(shell, pipeline), shell.state.options.monitor);
+        try shell.state.addBackgroundJobPids(pids, pids[0], try pipelineCommandText(shell, pipeline), shell.state.jobControlEnabled());
         _ = shell.state.setBackgroundJobStatusByPid(pids[0], .stopped);
         return .{ .status = stoppedPipelineStatus(statuses) };
     }
@@ -366,36 +378,6 @@ fn stoppedPipelineStatus(statuses: []const host_mod.WaitStatus) result.ExitStatu
         else => {},
     };
     return 0;
-}
-
-fn giveTerminalToProcessGroup(shell: anytype, process_group: host_mod.Pid) !?host_mod.Pid {
-    if (!shell.state.options.monitor) return null;
-    const HostType = switch (@typeInfo(@TypeOf(shell.host))) {
-        .pointer => |pointer| pointer.child,
-        else => @TypeOf(shell.host),
-    };
-    if (!@hasDecl(HostType, "terminalProcessGroup") or
-        !@hasDecl(HostType, "setTerminalProcessGroup")) return null;
-    const tty_fd = shell.state.controlling_tty orelse .stdin;
-    const shell_process_group = shell.host.terminalProcessGroup(tty_fd) catch |err| switch (err) {
-        error.NotATerminal => return null,
-        else => return err,
-    };
-    shell.host.setTerminalProcessGroup(tty_fd, process_group) catch |err| switch (err) {
-        error.NotATerminal => return null,
-        else => return err,
-    };
-    return shell_process_group;
-}
-
-fn restoreTerminalToProcessGroup(shell: anytype, process_group: host_mod.Pid) void {
-    const HostType = switch (@typeInfo(@TypeOf(shell.host))) {
-        .pointer => |pointer| pointer.child,
-        else => @TypeOf(shell.host),
-    };
-    if (!@hasDecl(HostType, "setTerminalProcessGroup")) return;
-    // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
-    shell.host.setTerminalProcessGroup(shell.state.controlling_tty orelse .stdin, process_group) catch {};
 }
 
 fn pipelineStatus(statuses: []const host_mod.WaitStatus, pipefail: bool) result.ExitStatus {
@@ -478,7 +460,7 @@ fn waitForegroundPids(shell: anytype, pids: []const host_mod.Pid) ![]const host_
         else => @TypeOf(shell.host),
     };
     for (pids, 0..) |pid, index| {
-        statuses[index] = if (@hasDecl(HostType, "waitJobEvent"))
+        statuses[index] = if (@hasDecl(HostType, "waitJobEvent") and shell.state.jobControlEnabled())
             try shell.host.waitJobEvent(pid)
         else
             try shell.host.wait(pid);
@@ -503,26 +485,31 @@ fn forkPipelineStage(
     suppress_child_xtrace: bool,
 ) !host_mod.Pid {
     const fd_actions = try pipelineFdActions(shell, pipes, stage_index);
-    const null_stdin = asynchronous and !shell.state.options.monitor and stage_index == 0;
+    const null_stdin = asynchronous and !shell.state.jobControlEnabled() and stage_index == 0;
     // Opening the initial stdin is a child effect not expressible by spawn's
     // duplicate/close actions. Other static background stages can still spawn.
     if (asynchronous and !null_stdin) {
         if (try staticExternalPipelineStageRequest(shell, command, fd_actions)) |request| {
             var grouped_request = request;
             grouped_request.process_group = process_group;
+            if (!shell.state.jobControlEnabled()) grouped_request.ignored_signals = &.{ 2, 3 };
             const pid = (try shell.host.spawn(grouped_request)).pid;
             if (process_group) |pgid| try setParentProcessGroup(shell, pid, if (pgid == 0) pid else pgid);
             return pid;
         }
     }
-    return switch (try shell.host.forkProcess()) {
+    return switch (try shell.host.forkProcess(.{
+        .default_signals = try childDefaultSignals(shell),
+        .ignored_signals = if (asynchronous and !shell.state.jobControlEnabled()) &.{ 2, 3 } else &.{},
+    })) {
         .parent => |pid| {
             if (process_group) |pgid| try setParentProcessGroup(shell, pid, if (pgid == 0) pid else pgid);
             return pid;
         },
         .child => {
             if (process_group) |pgid| setChildProcessGroup(shell, pgid) catch shell.host.exit(2);
-            resetJobControlSignalsForChild(shell);
+            resetCaughtSignalTrapsForChild(shell);
+            shell.state.job_control_suppressed = true;
             applyPipelineChildFdActions(shell, fd_actions) catch shell.host.exit(127);
             if (null_stdin) redirectStdinFromNull(shell) catch shell.host.exit(127);
             if (!shell.state.options.xtrace) {
@@ -531,7 +518,8 @@ fn forkPipelineStage(
             }
             if (suppress_child_xtrace) shell.state.options.xtrace = false;
             const evaluated = evalCommand(shell, &command, .replaceable_child) catch shell.host.exit(2);
-            shell.host.exit(evaluated.status);
+            const status = runExitTrap(shell, evaluated.status) catch shell.host.exit(2);
+            shell.host.exit(status);
         },
     };
 }
@@ -557,12 +545,6 @@ fn staticPipelineStageFields(shell: anytype, command: ast.Command) !?[]const []c
     }
     if (shell.state.getFunction(fields[0]) != null) return null;
     return fields;
-}
-
-fn resetJobControlSignalsForChild(shell: anytype) void {
-    if (!shell.state.options.monitor) return;
-    // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
-    for (job_control_signals) |signal| shell.host.setSignalDefault(signal) catch {};
 }
 
 fn setParentProcessGroup(shell: anytype, pid: host_mod.Pid, process_group: host_mod.Pid) !void {
@@ -841,17 +823,29 @@ fn evalLoop(shell: anytype, command: ast.LoopCommand) EvalError!result.EvalResul
 fn evalSubshell(shell: anytype, body: ast.List, redirections: []const ast.Redirection) EvalError!result.EvalResult {
     _ = shellProcessId(shell);
     _ = parentProcessId(shell);
-    const pid = switch (try shell.host.forkProcess()) {
+    const scratch = try shell.beginScratchScope();
+    defer scratch.end();
+    const pid = switch (try shell.host.forkProcess(.{ .default_signals = try childDefaultSignals(shell) })) {
         .child => {
-            const scratch = shell.beginScratchScope() catch shell.host.exit(2);
-            defer scratch.end();
+            if (shell.state.jobControlEnabled()) setChildProcessGroup(shell, 0) catch shell.host.exit(2);
             const evaluated = evalSubshellInCurrentProcess(shell, body, redirections) catch shell.host.exit(2);
             const status = runExitTrap(shell, evaluated.status) catch shell.host.exit(2);
             shell.host.exit(status);
         },
         .parent => |child_pid| child_pid,
     };
-    const wait_status = try shell.host.wait(pid);
+    if (shell.state.jobControlEnabled()) try setParentProcessGroup(shell, pid, pid);
+    const foreground_restore_group = builtin.giveTerminalToJob(shell, pid) catch {
+        // ziglint-ignore: Z026 reap best effort after terminal handoff has already failed
+        _ = shell.host.wait(pid) catch {};
+        return .{ .status = 1 };
+    };
+    defer if (foreground_restore_group) |group| builtin.restoreTerminalToShell(shell, group);
+    const wait_status = (try waitForegroundPids(shell, &.{pid}))[0];
+    if (wait_status == .stopped) {
+        try shell.state.addBackgroundJob(pid, "subshell", true);
+        _ = shell.state.setBackgroundJobStatusByPid(pid, .stopped);
+    }
     return .{ .status = wait_status.shellStatus() };
 }
 
@@ -860,6 +854,8 @@ fn evalSubshellInCurrentProcess(
     body: ast.List,
     redirections: []const ast.Redirection,
 ) EvalError!result.EvalResult {
+    resetCaughtSignalTrapsForChild(shell);
+    shell.state.job_control_suppressed = true;
     shell.state.loop_depth = 0;
     shell.state.running_exit_trap = false;
     shell.state.forgetActiveExitTrap();
@@ -2945,21 +2941,21 @@ fn writeTypeMatch(shell: anytype, name: []const u8, kind: []const u8, verbose_ki
 fn evalWaitBuiltin(shell: anytype, args: []const []const u8) !result.EvalResult {
     std.debug.assert(args.len != 0);
     if (args.len == 1) {
-        var status: result.ExitStatus = 0;
-        for (shell.state.background_pids.items) |pid| {
-            const waited = shell.state.takeBackgroundStatus(pid, shell.host.currentProcessId()) orelse
-                (shell.host.waitInterruptible(pid) catch continue);
-            status = waited.shellStatus();
-            if (status > 128) break;
+        while (shell.state.background_pids.items.len != 0) {
+            const pid = shell.state.background_pids.items[0];
+            const waited = try builtin.waitBackgroundPid(shell, pid, false);
+            if (waited == .interrupted) return .{ .status = waited.shellStatus() };
+            std.debug.assert(shell.state.removeBackgroundPid(pid));
         }
-        shell.state.clearBackgroundPids();
-        return .{ .status = status };
+        return .{};
     }
 
     var status: result.ExitStatus = 0;
     for (args[1..]) |arg| {
         if (waitOperandJob(shell, arg)) |job| {
-            status = try waitBackgroundJob(shell, job);
+            const waited = try waitBackgroundJob(shell, job);
+            status = waited.shellStatus();
+            if (waited == .interrupted) break;
             continue;
         }
         const pid = waitOperandPid(shell, arg) orelse {
@@ -2967,55 +2963,97 @@ fn evalWaitBuiltin(shell: anytype, args: []const []const u8) !result.EvalResult 
             status = 1;
             continue;
         };
-        const cached_status = shell.state.takeBackgroundStatus(pid, shell.host.currentProcessId());
-        if (!shell.state.removeBackgroundPid(pid)) {
+        if (std.mem.indexOfScalar(host_mod.Pid, shell.state.background_pids.items, pid) == null) {
             try shell.host.writeAll(.stderr, "wait: unknown pid\n");
             status = 127;
             continue;
         }
-        const waited = cached_status orelse (shell.host.waitInterruptible(pid) catch {
-            status = 127;
-            continue;
-        });
+        const waited = try builtin.waitBackgroundPid(shell, pid, false);
         status = waited.shellStatus();
+        if (waited == .interrupted) break;
+        std.debug.assert(shell.state.removeBackgroundPid(pid));
     }
     return .{ .status = status };
 }
 
-fn waitBackgroundJob(shell: anytype, job: state_mod.BackgroundJob) !result.ExitStatus {
+fn waitBackgroundJob(shell: anytype, job: state_mod.BackgroundJob) !host_mod.InterruptibleWait {
     const pids = try shell.scratchAllocator().dupe(host_mod.Pid, job.pids.items);
     defer shell.scratchAllocator().free(pids);
-    var status: result.ExitStatus = 0;
+    var waited: host_mod.InterruptibleWait = .{ .status = .{ .exited = 0 } };
     for (pids) |pid| {
-        const waited = waitBackgroundJobPid(shell, pid) catch {
-            status = 127;
-            continue;
-        };
-        status = waited.shellStatus();
-        switch (waited) {
+        waited = try builtin.waitBackgroundPid(shell, pid, true);
+        if (waited == .interrupted) return waited;
+        switch (waited.status) {
             .stopped => {
                 _ = shell.state.setBackgroundJobStatusByPid(pid, .stopped);
-                return status;
+                return waited;
             },
             else => {},
         }
-        if (!shell.state.removeBackgroundPid(pid)) status = 127;
+        std.debug.assert(shell.state.removeBackgroundPid(pid));
     }
-    return status;
-}
-
-fn waitBackgroundJobPid(shell: anytype, pid: host_mod.Pid) !host_mod.WaitStatus {
-    if (shell.state.takeBackgroundStatus(pid, shell.host.currentProcessId())) |status| return status;
-    const HostType = switch (@typeInfo(@TypeOf(shell.host))) {
-        .pointer => |pointer| pointer.child,
-        else => @TypeOf(shell.host),
-    };
-    if (@hasDecl(HostType, "waitJobEventInterruptible")) return shell.host.waitJobEventInterruptible(pid);
-    return shell.host.waitInterruptible(pid);
+    return waited;
 }
 
 fn waitOperandJob(shell: anytype, arg: []const u8) ?state_mod.BackgroundJob {
     return shell.state.resolveJobSpec(arg);
+}
+
+test "interrupted wait retains live children and simultaneously consumed child events" {
+    const TestHost = struct {
+        const Self = @This();
+
+        next: host_mod.InterruptibleWait,
+        calls: usize = 0,
+
+        pub fn currentProcessId(_: *Self) host_mod.Pid {
+            return 1;
+        }
+
+        pub fn waitInterruptible(self: *Self, _: host_mod.Pid) error{}!host_mod.InterruptibleWait {
+            self.calls += 1;
+            return self.next;
+        }
+
+        pub fn writeAll(_: *Self, _: host_mod.Fd, _: []const u8) error{}!void {}
+    };
+    const TestShell = struct {
+        const Self = @This();
+
+        host: *TestHost,
+        state: state_mod.State,
+
+        pub fn scratchAllocator(_: *Self) std.mem.Allocator {
+            return std.testing.allocator;
+        }
+    };
+    const operands = [_][]const []const u8{ &.{"wait"}, &.{ "wait", "42", "43" }, &.{ "wait", "%1", "%2" } };
+    for (operands) |args| {
+        for ([_]?host_mod.WaitStatus{ null, .{ .exited = 7 }, .{ .signaled = 15 } }) |consumed| {
+            var test_host: TestHost = .{ .next = .{ .interrupted = .{ .signal = 15, .status = consumed } } };
+            var shell: TestShell = .{ .host = &test_host, .state = .init(std.testing.allocator, .{}) };
+            defer shell.state.deinit();
+            try shell.state.addBackgroundPid(42);
+            try shell.state.addBackgroundPid(43);
+            try shell.state.addBackgroundJob(42, "first", false);
+            try shell.state.addBackgroundJob(43, "second", false);
+
+            try std.testing.expectEqual(@as(u8, 143), (try evalWaitBuiltin(&shell, args)).status);
+            try std.testing.expectEqual(@as(usize, 1), test_host.calls);
+            try std.testing.expectEqualSlices(host_mod.Pid, &.{ 42, 43 }, shell.state.background_pids.items);
+
+            test_host.next = .{ .status = .{ .exited = 9 } };
+            const first_status: u8 = if (consumed) |status| status.shellStatus() else 9;
+            try std.testing.expectEqual(first_status, (try evalWaitBuiltin(&shell, &.{ "wait", "42" })).status);
+            try std.testing.expectEqual(@as(usize, if (consumed == null) 2 else 1), test_host.calls);
+            // No-operand wait is zero even when the remaining child is signaled.
+            test_host.next = .{ .status = .{ .signaled = 15 } };
+            try std.testing.expectEqual(@as(u8, 0), (try evalWaitBuiltin(&shell, &.{"wait"})).status);
+            try std.testing.expectEqual(@as(usize, 0), shell.state.background_pids.items.len);
+            try std.testing.expectEqual(@as(usize, 0), shell.state.background_jobs.items.len);
+            try std.testing.expectEqual(@as(u32, 0), shell.state.completed_background.count());
+        }
+    }
 }
 
 fn waitOperandPid(shell: anytype, arg: []const u8) ?host_mod.Pid {
@@ -4928,7 +4966,7 @@ fn applyPipeInputRedirection(shell: anytype, target: host_mod.Fd, body: []const 
         shell.host.close(pipe_desc.write) catch {};
     }
 
-    const pid = switch (try shell.host.forkProcess()) {
+    const pid = switch (try shell.host.forkProcess(.{})) {
         .child => {
             shell.host.close(pipe_desc.read) catch shell.host.exit(127);
             shell.host.writeAll(pipe_desc.write, body) catch shell.host.exit(1);
@@ -5295,6 +5333,7 @@ fn expandWordFields(
     var fields: std.ArrayList([]const u8) = .empty;
 
     for (words) |word| {
+        const start = fields.items.len;
         if (try braceExpandWord(shell, word)) |brace_expanded| {
             for (brace_expanded) |expanded_word| {
                 try appendExpandedWordFields(shell, &fields, expanded_word, substitution_status);
@@ -5302,6 +5341,9 @@ fn expandWordFields(
         } else {
             try appendExpandedWordFields(shell, &fields, word, substitution_status);
         }
+        // Later expansions and command-prefix assignments can replace variables
+        // whose storage was borrowed by the expansion fast paths.
+        for (fields.items[start..]) |*field| field.* = try allocator.dupe(u8, field.*);
     }
 
     return fields.toOwnedSlice(allocator);
@@ -6705,9 +6747,11 @@ fn expandProcessSubstitution(shell: anytype, substitution: ast.ProcessSubstituti
     var spawned_pid: ?host_mod.Pid = null;
     errdefer if (spawned_pid) |spawned| reapOrDeferProcessSubstitution(shell, spawned);
 
-    const pid = switch (try shell.host.forkProcess()) {
+    const pid = switch (try shell.host.forkProcess(.{ .default_signals = try childDefaultSignals(shell) })) {
         .child => {
             closeInheritedProcessSubstitutionFds(shell);
+            resetCaughtSignalTrapsForChild(shell);
+            shell.state.job_control_suppressed = true;
             shell.host.close(parent_fd) catch shell.host.exit(127);
             switch (substitution.kind) {
                 .input => {
@@ -7379,12 +7423,14 @@ fn evalCommandSubstitutionInChild(
         shell.host.close(pipe_desc.write) catch {};
     }
 
-    const pid = switch (try shell.host.forkProcess()) {
+    const pid = switch (try shell.host.forkProcess(.{ .default_signals = try childDefaultSignals(shell) })) {
         .child => {
             shell.host.close(pipe_desc.read) catch shell.host.exit(127);
             shell.host.duplicateTo(pipe_desc.write, .stdout) catch shell.host.exit(127);
             shell.host.close(pipe_desc.write) catch shell.host.exit(127);
             closeInheritedProcessSubstitutionFds(shell);
+            resetCaughtSignalTrapsForChild(shell);
+            shell.state.job_control_suppressed = true;
             shell.state.loop_depth = 0;
             shell.state.running_exit_trap = false;
             shell.state.diagnostic_line_offset += substitution.line_offset;
@@ -7672,6 +7718,7 @@ fn optionFlags(shell: anytype) ![]const u8 {
     if (shell.state.options.errexit) try flags.append(allocator, 'e');
     if (shell.state.options.noglob) try flags.append(allocator, 'f');
     if (shell.state.options.hashall) try flags.append(allocator, 'h');
+    if (shell.state.options.interactive) try flags.append(allocator, 'i');
     if (shell.state.options.monitor) try flags.append(allocator, 'm');
     if (shell.state.options.noexec) try flags.append(allocator, 'n');
     if (shell.state.options.nounset) try flags.append(allocator, 'u');
@@ -8378,18 +8425,18 @@ fn evalExternalWithSearchPath(
         else => @TypeOf(shell.host),
     };
     // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
-    const status = if (@hasDecl(HostType, "spawn") and @hasDecl(HostType, "wait") and shell.state.options.monitor) status: {
+    const status = if (@hasDecl(HostType, "spawn") and @hasDecl(HostType, "wait") and shell.state.jobControlEnabled()) status: {
         request.process_group = 0;
         const pid = (try shell.host.spawn(request)).pid;
         try setParentProcessGroup(shell, pid, pid);
-        const foreground_restore_group = giveTerminalToProcessGroup(shell, pid) catch {
+        const foreground_restore_group = builtin.giveTerminalToJob(shell, pid) catch {
             // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
             _ = shell.host.wait(pid) catch {};
             restoreVariables(shell, saved);
             restored_assignments = true;
             return .{ .status = 1 };
         };
-        defer if (foreground_restore_group) |process_group| restoreTerminalToProcessGroup(shell, process_group);
+        defer if (foreground_restore_group) |process_group| builtin.restoreTerminalToShell(shell, process_group);
         // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         const waited = if (@hasDecl(HostType, "waitJobEvent")) try shell.host.waitJobEvent(pid) else try shell.host.wait(pid);
         switch (waited) {
@@ -8749,8 +8796,27 @@ fn makeExternalSpawnRequestFromResolvedPath(
         .fallback_argv = try makeShellFallbackArgv(shell, path, arguments),
         .envp = envp,
         .fd_actions = fd_actions,
-        .default_signals = if (shell.state.options.monitor) &job_control_signals else &.{},
+        .default_signals = try childDefaultSignals(shell),
     };
+}
+
+fn childDefaultSignals(shell: anytype) ![]const u8 {
+    var default_signals: std.ArrayList(u8) = .empty;
+    if (shell.state.interactive_signal_defaults) {
+        for (interactive_signal_names) |name| {
+            if (shell.state.getSignalTrap(name) == null)
+                try default_signals.append(shell.scratchAllocator(), builtin.signalNumber(name).?);
+        }
+    }
+    var iterator = shell.state.signal_traps.iterator();
+    while (iterator.next()) |entry| {
+        if (entry.value_ptr.action.len == 0 or entry.value_ptr.inherited) continue;
+        if (builtin.signalNumber(entry.key_ptr.*)) |number| {
+            if (number == builtin.signalNumber("KILL").? or number == builtin.signalNumber("STOP").?) continue;
+            try default_signals.append(shell.scratchAllocator(), number);
+        }
+    }
+    return default_signals.toOwnedSlice(shell.scratchAllocator());
 }
 
 fn makeShellFallbackArgv(

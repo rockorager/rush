@@ -27,9 +27,8 @@ pub const Interactive = struct {
     arg_zero: []const u8,
     positionals: []const []const u8 = &.{},
     login: bool = false,
-    /// True only when -i was given explicitly. Otherwise both standard input
-    /// and standard error must be terminals to run interactively.
-    forced_interactive: bool = false,
+    /// Explicit -i/+i selection, or null to detect terminals at startup.
+    interactive_override: ?bool = null,
 };
 
 pub const CommandString = struct {
@@ -55,7 +54,7 @@ pub fn parse(args: []const []const u8) ParseError!Invocation {
     var mode: state.Mode = if (std.mem.eql(u8, name, "sh")) .posix else .bash;
     var options: state.Options = .{};
     var login = isLoginArgZero(args[0]);
-    var forced_interactive = false;
+    var interactive_override: ?bool = null;
     var command_string = false;
     var standard_input = false;
     var index: usize = 1;
@@ -87,10 +86,9 @@ pub fn parse(args: []const []const u8) ParseError!Invocation {
                     standard_input = true;
                 },
                 'i' => {
-                    if (!enabled) return error.UnsupportedOption;
-                    options.interactive = true;
-                    options.history = true;
-                    forced_interactive = true;
+                    options.interactive = enabled;
+                    options.history = enabled;
+                    interactive_override = enabled;
                 },
                 'l' => login = enabled,
                 'o' => {
@@ -126,15 +124,15 @@ pub fn parse(args: []const []const u8) ParseError!Invocation {
         } };
     }
 
-    options.interactive = true;
-    options.history = true;
+    options.interactive = interactive_override orelse true;
+    if (options.interactive) options.history = true;
     return .{ .interactive = .{
         .mode = mode,
         .options = options,
         .arg_zero = args[0],
         .positionals = args[index..],
         .login = login,
-        .forced_interactive = forced_interactive,
+        .interactive_override = interactive_override,
     } };
 }
 
@@ -153,7 +151,7 @@ test "invocation parses bare interactive shell" {
     try std.testing.expectEqual(state.Mode.bash, interactive.mode);
     try std.testing.expect(interactive.options.interactive);
     try std.testing.expect(interactive.options.history);
-    try std.testing.expect(!interactive.forced_interactive);
+    try std.testing.expectEqual(@as(?bool, null), interactive.interactive_override);
     try std.testing.expect(!interactive.login);
     try std.testing.expectEqualStrings("rush", interactive.arg_zero);
 }
@@ -166,7 +164,20 @@ test "invocation records explicit -i as forced interactive" {
         .help, .version, .command_string, .script_file => return error.TestExpectedEqual,
     };
     try std.testing.expect(interactive.options.interactive);
-    try std.testing.expect(interactive.forced_interactive);
+    try std.testing.expectEqual(@as(?bool, true), interactive.interactive_override);
+}
+
+test "invocation plus i disables interactive mode and the last selection wins" {
+    const input = (try parse(&.{ "sh", "-i", "+i" })).interactive;
+    try std.testing.expectEqual(@as(?bool, false), input.interactive_override);
+    try std.testing.expect(!input.options.interactive);
+    try std.testing.expect(!input.options.history);
+    const enabled = (try parse(&.{ "sh", "+i", "-i" })).interactive;
+    try std.testing.expectEqual(@as(?bool, true), enabled.interactive_override);
+    const command = (try parse(&.{ "sh", "-i", "+i", "-c", ":" })).command_string;
+    try std.testing.expect(!command.options.interactive);
+    const script = (try parse(&.{ "sh", "+i", "script" })).script_file;
+    try std.testing.expect(!script.options.interactive);
 }
 
 test "invocation parses explicit login shell" {
@@ -199,7 +210,7 @@ test "invocation parses bundled short login flag" {
         .help, .version, .command_string, .script_file => return error.TestExpectedEqual,
     };
     try std.testing.expect(interactive.login);
-    try std.testing.expect(interactive.forced_interactive);
+    try std.testing.expectEqual(@as(?bool, true), interactive.interactive_override);
 }
 
 test "invocation parses login shell arg zero" {

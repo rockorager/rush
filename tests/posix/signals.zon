@@ -3,6 +3,126 @@
     .mode = .posix,
     .cases = .{
         .{
+            .name = "interrupted wait retains children for a second wait with their real statuses",
+            .script =
+            \\trap ':' USR1
+            \\for mode in pid all multiple; do
+            \\    (sleep 0.1; kill -USR1 "$$"; sleep 0.1; exit 7) & p=$!
+            \\    (sleep 0.3; exit 9) & q=$!
+            \\    case $mode in
+            \\        pid) wait "$p";;
+            \\        all) wait;;
+            \\        multiple) wait "$p" "$q";;
+            \\    esac
+            \\    if [ "$?" -gt 128 ]; then echo interrupted; else echo missed; fi
+            \\    wait "$p"; echo "first:$?"
+            \\    wait "$q"; echo "second:$?"
+            \\done
+            ,
+            .stdout = "interrupted\nfirst:7\nsecond:9\ninterrupted\nfirst:7\nsecond:9\ninterrupted\nfirst:7\nsecond:9\n",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "wait without operands waits for every child and returns zero after nonzero exits",
+            .script =
+            \\(exit 143) & p=$!
+            \\(sleep 0.1; echo finished; exit 7) & q=$!
+            \\wait
+            \\echo "all:$?"
+            ,
+            .stdout = "finished\nall:0\n",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "signals ignored at noninteractive entry cannot be trapped or reset",
+            .script =
+            \\ln -s "$(command -v "$0")" sh
+            \\cat >input <<'EOF'
+            \\trap 'echo unexpected-trap' USR1
+            \\kill -s USR1 "$$"
+            \\trap - USR1
+            \\kill -s USR1 "$$"
+            \\(trap - USR1; sh -c 'kill -USR1 "$PPID"'; echo subshell-kept)
+            \\echo kept
+            \\EOF
+            \\(trap '' USR1; ./sh -c "$(cat input)"; ./sh input; ./sh <input)
+            ,
+            .stdout = "subshell-kept\nkept\nsubshell-kept\nkept\nsubshell-kept\nkept\n",
+            .stderr_match = .any,
+            .status = 0,
+        },
+        .{
+            .name = "stdin shell preserves incoming SIGPIPE disposition through startup and exec",
+            .script =
+            \\ln -s "$(command -v "$0")" sh
+            \\printf '%s\n' 'kill -s PIPE "$$"' 'echo survived' >input
+            \\./sh <input
+            \\kill -l "$?"
+            \\(exec ./sh <input)
+            \\kill -l "$?"
+            \\(trap '' PIPE; ./sh <input)
+            ,
+            .stdout = "PIPE\nPIPE\nsurvived\n",
+            .stderr_match = .any,
+            .status = 0,
+        },
+        .{
+            .name = "interactive SIGTERM defaults allow explicit traps and reset even when inherited ignored",
+            // POSIX permits this override for interactive shells. Rush follows
+            // Yash; Dash and Bash retain the incoming ignore in the second probe.
+            .script =
+            \\ln -s "$(command -v "$0")" sh
+            \\cat >input <<'EOF'
+            \\kill -s TERM "$$"
+            \\trap 'echo caught' TERM
+            \\kill -s TERM "$$"
+            \\trap - TERM
+            \\kill -s TERM "$$"
+            \\echo survived
+            \\EOF
+            \\./sh -i -c "$(cat input)"
+            \\(trap '' TERM; ./sh -i input)
+            \\./sh -i <input
+            ,
+            .stdout = "caught\nsurvived\ncaught\nsurvived\ncaught\nsurvived\n",
+            .stderr_match = .any,
+            .status = 0,
+        },
+        .{
+            .name = "subshells reset caught signal actions but retain trap listings",
+            .script =
+            \\trap 'echo parent' USR1
+            \\case $(trap) in *parent*) echo listed;; esac
+            \\(trap '' USR2; case $(trap) in *parent*) echo stale;; *) echo cleared;; esac)
+            \\(sh -c 'kill -USR1 "$PPID"'; echo bad)
+            \\test "$?" -gt 128 && echo subshell-reset
+            \\value=$(sh -c 'kill -USR1 "$PPID"'; echo bad)
+            \\test "$?" -gt 128 && echo substitution-reset
+            \\{ sh -c 'kill -USR1 "$PPID"'; echo bad; } & wait "$!"
+            \\test "$?" -gt 128 && echo async-reset
+            \\(trap 'echo child' USR1; sh -c 'kill -USR1 "$PPID"')
+            \\kill -s USR1 "$$"
+            ,
+            .stdout = "listed\ncleared\nsubshell-reset\nsubstitution-reset\nasync-reset\nchild\nparent\n",
+            .stderr_match = .any,
+            .status = 0,
+        },
+        .{
+            .name = "asynchronous children preserve ignored signal dispositions",
+            .script =
+            \\trap '' USR1
+            \\{ sh -c 'kill -USR1 "$PPID"'; echo shell-kept; } & wait "$!"
+            \\{ sh -c 'kill -USR1 "$$"; echo child-kept'; } & wait "$!"
+            \\{ exec sh -c 'kill -USR1 "$$"; echo exec-kept'; } & wait "$!"
+            \\trap - USR1
+            ,
+            .stdout = "shell-kept\nchild-kept\nexec-kept\n",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "EXIT trap runs after the script body completes",
             .script =
             \\trap 'printf "%s\n" exit-trap' 0
@@ -183,10 +303,13 @@
             .status = 142,
         },
         .{
+            // Bash/Dash compatibility: immutable dispositions can be reset as a no-op.
             .name = "trap and kill accept standard symbolic signal names",
             .script =
             \\trap 'printf bad' KILL
             \\printf 'trap-kill:%s\n' "$?"
+            \\trap - KILL STOP
+            \\printf 'trap-reset:%s\n' "$?"
             \\trap '' PIPE
             \\printf 'trap-pipe:%s\n' "$?"
             \\sleep 10 & pid=$!
@@ -199,6 +322,7 @@
             ,
             .stdout =
             \\trap-kill:0
+            \\trap-reset:0
             \\trap-pipe:0
             \\kill-tstp:0
             \\

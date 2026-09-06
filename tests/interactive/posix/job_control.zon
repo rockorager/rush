@@ -3,6 +3,53 @@
     .mode = .posix,
     .cases = .{
         .{
+            .name = "kill and wait find compound jobs by command and redirection substrings",
+            .script =
+            \\set -m
+            \\mkfifo fifo1 fifo2
+            \\launch() { (>fifo1; echo unreachable) | (>fifo2; echo unreachable) & }
+            \\launch
+            \\kill -s USR1 '%?unreachable'
+            \\wait '%?unreachable'
+            \\kill -l "$?"
+            \\(>fifo1; :) & first=$!
+            \\(>fifo2; :) & second=$!
+            \\kill '%?fifo1' '%?fifo2'
+            \\wait "$first"
+            \\kill -l "$?"
+            \\wait "$second"
+            \\kill -l "$?"
+            ,
+            .stdout = "USR1\nTERM\nTERM\n",
+        },
+        .{
+            .name = "subshell and asynchronous compound descendants share their job group",
+            .script =
+            \\set -m
+            \\(
+            \\  pid=$(exec sh -c 'echo "$PPID"')
+            \\  set -- $(sh -c 'ps -o pgid= -p "$$"' | cat)
+            \\  test "$1" = "$pid" && echo subshell-group
+            \\)
+            \\{ sh -c 'ps -o pgid= -p "$$"' | cat; } >group & pid=$!
+            \\wait "$pid"
+            \\set -- $(cat group)
+            \\test "$1" = "$pid" && echo async-group
+            ,
+            .stdout = "subshell-group\nasync-group\n",
+        },
+        .{
+            .name = "stopped foreground subshell returns control and resumes with fg",
+            .script =
+            \\set -m
+            \\(sh -c 'kill -STOP "$PPID"'; echo resumed)
+            \\case $? in 0) echo unexpected-success;; *) echo stopped;; esac
+            \\fg >/dev/null
+            \\printf 'fg:%s\n' "$?"
+            ,
+            .stdout = "stopped\nresumed\nfg:0\n",
+        },
+        .{
             .name = "stopped foreground command stays visible and waitable",
             .script =
             \\set -m
@@ -174,6 +221,41 @@
             \\fg:1
             \\
             ,
+        },
+        .{
+            // Issue 8 extends $! to the last pipeline PID resumed by bg.
+            .name = "bg publishes a stopped foreground job as an awaitable background pid",
+            .script =
+            \\set -m
+            \\sh -c 'kill -s STOP "$$"; exit 17'
+            \\bg >/dev/null
+            \\wait "$!"; echo "pid:$?"
+            \\sh -c 'kill -s STOP "$$"; exit 23'
+            \\bg >/dev/null
+            \\wait %; echo "current:$?"
+            ,
+            .stdout = "pid:17\ncurrent:23\n",
+            .stderr_match = .any,
+        },
+        .{
+            .name = "immediate TERM reaches a child before its blocking redirection",
+            .script =
+            \\mkfifo fifo
+            \\for action in - 'echo unexpected-trap'; do
+            \\  trap "$action" TERM
+            \\  i=0
+            \\  while [ "$i" -lt 20 ]; do
+            \\    (>fifo) & p=$!
+            \\    kill -s TERM "$p"
+            \\    wait "$p"; status=$?
+            \\    [ "$status" -gt 128 ] || exit 1
+            \\    i=$((i+1))
+            \\  done
+            \\done
+            \\echo terminated
+            ,
+            .stdout = "terminated\n",
+            .stderr_match = .any,
         },
     },
 }

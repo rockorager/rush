@@ -558,6 +558,7 @@ const Parser = struct {
     }
 
     fn parseCompoundCommand(self: *Parser) ParserError!?ast.CompoundInvocation {
+        const start = self.tokens[self.index].span.start;
         var body: ast.CompoundCommand = undefined;
         if (try self.parseIfCommand()) |if_command| {
             body = .{ .if_command = if_command };
@@ -590,7 +591,11 @@ const Parser = struct {
         }
 
         const redirections = try self.parseRedirectionList();
-        const invocation: ast.CompoundInvocation = .{ .body = body, .redirections = redirections };
+        const invocation: ast.CompoundInvocation = .{
+            .body = body,
+            .redirections = redirections,
+            .source_text = self.source.text[start..self.tokens[self.index - 1].span.end],
+        };
         if (self.canValidateHereDocs()) invocation.validate();
         return invocation;
     }
