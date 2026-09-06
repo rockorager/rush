@@ -353,6 +353,43 @@
             .status = 0,
         },
         .{
+            .name = "spawn fallback executes text once with environment arguments redirections and status",
+            .script =
+            \\unset VALUE
+            \\cat >script <<'EOF'
+            \\printf x >>count
+            \\read line
+            \\printf '%s:%s:%s\n' "$VALUE" "$1" "$line"
+            \\exit 7
+            \\EOF
+            \\chmod 755 script
+            \\printf 'input\n' >in
+            \\VALUE=child ./script arg <in >out
+            \\printf 'status:%s\n' "$?"
+            \\cat out
+            \\printf 'count:'; cat count; printf '\n'
+            \\printf 'parent:%s\n' "${VALUE-unset}"
+            ,
+            .stdout = "status:7\nchild:arg:input\ncount:x\nparent:unset\n",
+            .stderr = "",
+            .status = 0,
+        },
+        // Preserve Rush's Linux ENOENT compatibility behavior, also used by Dash.
+        // Shebang handling is not a POSIX requirement; Bash 5.3 returns 126 here.
+        .{
+            .name = "spawn missing interpreter failure preserves shell continuation",
+            .script =
+            \\printf '#!%s/missing-interpreter\n' "$PWD" >script
+            \\chmod 755 script
+            \\./script 2>/dev/null
+            \\printf 'status:%s\n' "$?"
+            \\printf 'alive\n'
+            ,
+            .stdout = "status:127\nalive\n",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "command utility preserves special built-in state effects",
             .script =
             \\command export COMMAND_EXPORT=ok

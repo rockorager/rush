@@ -650,6 +650,12 @@ fn createRushRootModule(
     });
     module.addOptions("build_config", build_config);
     module.addAnonymousImport("default_config", .{ .root_source_file = generatedDefaultConfig(b) });
+    if (target.result.os.tag == .linux and (target.result.abi.isGnu() or target.result.abi.isMusl())) {
+        module.addCSourceFile(.{
+            .file = b.path("src/host/posix_spawn.c"),
+            .flags = &.{ "-std=c99", "-Wall", "-Wextra", "-Werror" },
+        });
+    }
     linkSqlite(b, module, use_system_sqlite, options.lto);
     return module;
 }

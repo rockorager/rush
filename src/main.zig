@@ -25,4 +25,5 @@ pub fn main(init: std.process.Init.Minimal) !u8 {
 test {
     std.testing.refAllDecls(@This());
     _ = @import("shell/Function.zig");
+    _ = @import("host/RealHost.zig");
 }

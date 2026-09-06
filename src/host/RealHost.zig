@@ -18,6 +18,14 @@ extern "c" fn tcsetpgrp(fd: c_int, pgrp: c_int) c_int;
 extern "c" fn ttyname_r(fd: c_int, buffer: [*]u8, length: usize) c_int;
 extern "c" fn sigsuspend(mask: *const std.posix.sigset_t) c_int;
 extern "c" fn __sigsuspend14(mask: *const std.posix.sigset_t) c_int;
+extern "c" fn rush_posix_spawn(
+    pid: *host.Pid,
+    path: [*:0]const u8,
+    argv: [*:null]const ?[*:0]const u8,
+    envp: [*:null]const ?[*:0]const u8,
+    default_signals: [*]const u8,
+    signal_count: usize,
+) c_int;
 
 const CTime = extern struct {
     sec: c_int,
@@ -1385,6 +1393,27 @@ fn libcFileKindFromMode(mode: std.c.mode_t) host.FileKind {
 }
 
 fn linuxSpawn(request: host.SpawnRequest) SpawnError!host.SpawnResult {
+    // Ordinary launches need no child-side work beyond resetting dispositions.
+    // Keep the existing fork path for job control, fd actions, and new ignores.
+    if ((builtin.abi.isGnu() or builtin.abi.isMusl()) and request.cwd == null and request.fd_actions.len == 0 and
+        request.ignored_signals.len == 0 and request.process_group == null)
+    {
+        var pid: host.Pid = undefined;
+        if (rush_posix_spawn(
+            &pid,
+            request.path.ptr,
+            request.argv.ptr,
+            request.envp.ptr,
+            request.default_signals.ptr,
+            request.default_signals.len,
+        ) == 0) {
+            std.debug.assert(pid > 0);
+            return .{ .pid = pid };
+        }
+        // glibc and musl reap any failed child before reporting an error.
+        // Retry through fork to retain ENOEXEC fallback and waitable status 127
+        // for exec failures, rather than turning them into shell-fatal errors.
+    }
     const linux = std.os.linux;
     const blocked = std.posix.sigfillset();
     var previous: std.posix.sigset_t = undefined;
@@ -1412,6 +1441,60 @@ fn linuxSpawn(request: host.SpawnRequest) SpawnError!host.SpawnResult {
     }
 
     return .{ .pid = pid };
+}
+
+test "Linux spawn preserves ignored signals, requested defaults, and the caller mask" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    const usr1: u8 = @intFromEnum(std.posix.SIG.USR1);
+    var previous_action: std.posix.Sigaction = undefined;
+    std.posix.sigaction(.USR1, null, &previous_action);
+    defer std.posix.sigaction(.USR1, &previous_action, null);
+    var usr1_set = std.posix.sigemptyset();
+    std.posix.sigaddset(&usr1_set, .USR1);
+    var previous_mask: std.posix.sigset_t = undefined;
+    std.posix.sigprocmask(std.posix.SIG.UNBLOCK, &usr1_set, &previous_mask);
+    defer std.posix.sigprocmask(std.posix.SIG.SETMASK, &previous_mask, null);
+
+    const argv = [_:null]?[*:0]const u8{ "/bin/sh", "-c", "kill -USR1 \"$$\"; exit 23" };
+    const envp: [0:null]?[*:0]const u8 = .{};
+    const command_status: host.WaitStatus = .{ .exited = 23 };
+    const signal_status: host.WaitStatus = .{ .signaled = usr1 };
+    var request: host.SpawnRequest = .{ .path = "/bin/sh", .argv = &argv, .envp = &envp };
+    try real_host.setSignalIgnored(usr1);
+    try std.testing.expectEqualDeep(command_status, try real_host.spawnAndWait(request));
+
+    request.default_signals = &.{usr1};
+    try std.testing.expectEqualDeep(signal_status, try real_host.spawnAndWait(request));
+    try std.testing.expect(real_host.isSignalIgnored(usr1));
+
+    try real_host.setSignalDefault(usr1);
+    request.ignored_signals = &.{usr1};
+    try std.testing.expectEqualDeep(command_status, try real_host.spawnAndWait(request));
+    try std.testing.expect(!real_host.isSignalIgnored(usr1));
+
+    request.ignored_signals = &.{};
+    std.posix.sigprocmask(std.posix.SIG.BLOCK, &usr1_set, null);
+    try std.testing.expectEqualDeep(command_status, try real_host.spawnAndWait(request));
+    var current_mask: std.posix.sigset_t = undefined;
+    std.posix.sigprocmask(std.posix.SIG.SETMASK, null, &current_mask);
+    try std.testing.expect(std.posix.sigismember(&current_mask, .USR1));
+}
+
+test "Linux spawn returns waitable statuses for exec and fd-action failures" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    const argv = [_:null]?[*:0]const u8{ "/bin/sh", "-c", "exit 17" };
+    const envp: [0:null]?[*:0]const u8 = .{};
+    const command_status: host.WaitStatus = .{ .exited = 17 };
+    const failure_status: host.WaitStatus = .{ .exited = 127 };
+    var request: host.SpawnRequest = .{ .path = "/bin/sh", .argv = &argv, .envp = &envp };
+    try std.testing.expectEqualDeep(command_status, try real_host.spawnAndWait(request));
+
+    request.path = "/dev/null/rush-missing-executable";
+    try std.testing.expectEqualDeep(failure_status, try real_host.spawnAndWait(request));
+
+    request.path = "/bin/sh";
+    request.fd_actions = &.{.{ .close = @enumFromInt(-1) }};
+    try std.testing.expectEqualDeep(failure_status, try real_host.spawnAndWait(request));
 }
 
 fn linuxExec(request: host.SpawnRequest) SpawnError!void {
