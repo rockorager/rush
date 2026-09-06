@@ -1332,6 +1332,96 @@
             .status = 0,
         },
         .{
+            .name = "child final external command preserves assignments redirections and status",
+            .script =
+            \\printf 'input\n' >in
+            \\out=$(:; VALUE=child sh -c 'read line; printf "%s:%s\n" "$VALUE" "$line"; exit 7' <in)
+            \\printf '%s:%s\n' "$out" "$?"
+            \\(:; sh -c 'exit 9')
+            \\printf 'subshell:%s\n' "$?"
+            ,
+            .stdout = "child:input:7\nsubshell:9\n",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "child final external command retains EXIT trap and restores its output",
+            .script =
+            \\out=$(trap 'printf "exit:%s\n" "$?"' 0; sh -c 'printf body; exit 7' >file)
+            \\printf '%s:%s\n' "$out" "$?"
+            \\cat file
+            \\(trap 'printf "subshell:%s\n" "$?"' 0; sh -c 'exit 9')
+            \\printf 'status:%s\n' "$?"
+            ,
+            .stdout = "exit:7:7\nbodysubshell:9\nstatus:9\n",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "child final external command retains caught signal trap",
+            .script =
+            \\trap '' USR1
+            \\out=$(trap 'printf caught' USR1; sh -c 'kill -USR1 "$PPID"; exit 7')
+            \\printf '%s:%s\n' "$out" "$?"
+            ,
+            .stdout = "caught:7\n",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "child final external command resets caught traps and preserves ignored signals",
+            .script =
+            \\trap 'printf bad' USR1
+            \\if out=$(:; sh -c 'kill -USR1 "$$"; printf bad') 2>/dev/null; then
+            \\    printf bad
+            \\else
+            \\    printf 'caught-reset:<%s>\n' "$out"
+            \\fi
+            \\trap '' USR1
+            \\out=$(:; sh -c 'kill -USR1 "$$"; printf survived')
+            \\printf '%s:%s\n' "$out" "$?"
+            ,
+            .stdout = "caught-reset:<>\nsurvived:0\n",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "child final external command leaves continuation and negation intact",
+            .script =
+            \\out=$(sh -c 'exit 7'; printf after)
+            \\printf '%s:%s\n' "$out" "$?"
+            \\out=$(! sh -c 'exit 7')
+            \\printf 'negated:%s\n' "$?"
+            \\out=$(sh -c 'exit 7' || printf recovered)
+            \\printf '%s:%s\n' "$out" "$?"
+            \\out=$(false || sh -c 'printf fallback; exit 7')
+            \\printf '%s:%s\n' "$out" "$?"
+            \\out=$(true && sh -c 'printf final; exit 9')
+            \\printf '%s:%s\n' "$out" "$?"
+            \\out=$(false && sh -c 'printf bad')
+            \\printf 'skipped:<%s>:%s\n' "$out" "$?"
+            ,
+            .stdout = "after:0\nnegated:0\nrecovered:0\nfallback:7\nfinal:9\nskipped:<>:1\n",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "child final external command consumes heredoc in substitution and subshell",
+            .script =
+            \\out=$(:; cat <<EOF
+            \\substitution
+            \\EOF
+            \\)
+            \\printf '%s\n' "$out"
+            \\(:; cat) <<EOF
+            \\subshell
+            \\EOF
+            ,
+            .stdout = "substitution\nsubshell\n",
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "exec redirection without command persists inside command substitution stdin",
             .script =
             \\printf x >in
