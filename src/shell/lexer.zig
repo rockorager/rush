@@ -16,8 +16,26 @@ pub const LexError = error{};
 /// the tokens are used; use an arena when normalized token text also needs to
 /// be reclaimed with the token stream.
 pub fn lex(allocator: std.mem.Allocator, src: source_mod.Source) std.mem.Allocator.Error![]const token.Token {
+    return lexWithTokenAllocator(allocator, allocator, src);
+}
+
+/// Allocates the returned token slice with `token_allocator`, independently of
+/// normalized text allocated with `allocator`. Free the slice with
+/// `token_allocator`; source and normalized text must outlive all token use.
+/// A reclaiming token allocator avoids retaining old growable-array buffers
+/// when text storage uses an arena.
+pub fn lexWithTokenAllocator(
+    allocator: std.mem.Allocator,
+    token_allocator: std.mem.Allocator,
+    src: source_mod.Source,
+) std.mem.Allocator.Error![]const token.Token {
     src.validate();
-    var lexer: Lexer = .{ .allocator = allocator, .source = src, .position = .{ .source_id = src.id } };
+    var lexer: Lexer = .{
+        .allocator = allocator,
+        .token_allocator = token_allocator,
+        .source = src,
+        .position = .{ .source_id = src.id },
+    };
     return lexer.lex();
 }
 
@@ -54,6 +72,7 @@ pub fn lexWithTrivia(
     src.validate();
     var lexer: Lexer = .{
         .allocator = allocator,
+        .token_allocator = allocator,
         .source = src,
         .position = .{ .source_id = src.id },
         .trivia = trivia,
@@ -466,6 +485,7 @@ fn stripLeadingTabs(line: []const u8) []const u8 {
 
 const Lexer = struct {
     allocator: std.mem.Allocator,
+    token_allocator: std.mem.Allocator,
     source: source_mod.Source,
     position: source_mod.Position,
     pending_here_docs: std.ArrayList(PendingHereDoc) = .empty,
@@ -481,7 +501,7 @@ const Lexer = struct {
 
     fn lex(self: *Lexer) std.mem.Allocator.Error![]const token.Token {
         var tokens: std.ArrayList(token.Token) = .empty;
-        errdefer tokens.deinit(self.allocator);
+        errdefer tokens.deinit(self.token_allocator);
         defer self.pending_here_docs.deinit(self.allocator);
 
         while (!self.atEnd()) {
@@ -493,9 +513,11 @@ const Lexer = struct {
         // newline) still get body tokens so the parser never scans text.
         if (self.pending_here_docs.items.len != 0) try self.lexHereDocBodies(&tokens);
 
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
-        try tokens.append(self.allocator, .{ .kind = .eof, .span = source_mod.Span.init(self.position, self.position.byte_offset) });
-        return tokens.toOwnedSlice(self.allocator);
+        try tokens.append(self.token_allocator, .{
+            .kind = .eof,
+            .span = source_mod.Span.init(self.position, self.position.byte_offset),
+        });
+        return tokens.toOwnedSlice(self.token_allocator);
     }
 
     fn lexOne(self: *Lexer, tokens: *std.ArrayList(token.Token)) std.mem.Allocator.Error!void {
@@ -631,7 +653,7 @@ const Lexer = struct {
             .quoted = pending.quoted,
         };
         tok.validate();
-        try tokens.append(self.allocator, tok);
+        try tokens.append(self.token_allocator, tok);
     }
 
     fn atEnd(self: Lexer) bool {
@@ -653,7 +675,7 @@ const Lexer = struct {
         self.advanceOne();
         const tok: token.Token = .{ .kind = kind, .span = source_mod.Span.init(start, self.position.byte_offset) };
         tok.validate();
-        try tokens.append(self.allocator, tok);
+        try tokens.append(self.token_allocator, tok);
     }
 
     fn appendSemicolon(self: *Lexer, tokens: *std.ArrayList(token.Token)) !void {
@@ -676,7 +698,7 @@ const Lexer = struct {
         } else .semicolon;
         const tok: token.Token = .{ .kind = kind, .span = source_mod.Span.init(start, self.position.byte_offset) };
         tok.validate();
-        try tokens.append(self.allocator, tok);
+        try tokens.append(self.token_allocator, tok);
     }
 
     fn appendAmpersand(self: *Lexer, tokens: *std.ArrayList(token.Token)) !void {
@@ -699,7 +721,7 @@ const Lexer = struct {
         } else .ampersand;
         const tok: token.Token = .{ .kind = kind, .span = source_mod.Span.init(start, self.position.byte_offset) };
         tok.validate();
-        try tokens.append(self.allocator, tok);
+        try tokens.append(self.token_allocator, tok);
     }
 
     fn appendPipe(self: *Lexer, tokens: *std.ArrayList(token.Token)) !void {
@@ -718,7 +740,7 @@ const Lexer = struct {
         } else .pipe;
         const tok: token.Token = .{ .kind = kind, .span = source_mod.Span.init(start, self.position.byte_offset) };
         tok.validate();
-        try tokens.append(self.allocator, tok);
+        try tokens.append(self.token_allocator, tok);
     }
 
     fn appendRedirectionOperator(self: *Lexer, tokens: *std.ArrayList(token.Token)) !void {
@@ -768,7 +790,7 @@ const Lexer = struct {
         };
         const tok: token.Token = .{ .kind = kind, .span = source_mod.Span.init(start, self.position.byte_offset) };
         tok.validate();
-        try tokens.append(self.allocator, tok);
+        try tokens.append(self.token_allocator, tok);
     }
 
     fn appendIoNumber(self: *Lexer, tokens: *std.ArrayList(token.Token)) !void {
@@ -781,7 +803,7 @@ const Lexer = struct {
             .text = self.source.text[start_offset..self.position.byte_offset],
         };
         tok.validate();
-        try tokens.append(self.allocator, tok);
+        try tokens.append(self.token_allocator, tok);
     }
 
     fn emitTrivia(self: *Lexer, kind: Trivia.Kind, start: usize, end: usize) std.mem.Allocator.Error!void {
@@ -942,7 +964,7 @@ const Lexer = struct {
             .quoted = quoted,
         };
         tok.validate();
-        try tokens.append(self.allocator, tok);
+        try tokens.append(self.token_allocator, tok);
     }
 
     fn wordText(self: Lexer, raw_text: []const u8) ![]const u8 {
@@ -1374,6 +1396,26 @@ fn isNameContinue(byte: u8) bool {
 
 fn isRedirectionStart(byte: u8) bool {
     return byte == '<' or byte == '>';
+}
+
+test "token storage can be freed independently of normalized word and here-document text" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src: source_mod.Source = .{
+        .id = 1,
+        .kind = .script_file,
+        .name = "test",
+        .text = "echo foo\\\nbar\ncat <<-E\n\tbody\n\tE\n",
+    };
+    const normalized, const body = text: {
+        const tokens = try lexWithTokenAllocator(arena.allocator(), std.testing.allocator, src);
+        defer std.testing.allocator.free(tokens);
+        try std.testing.expectEqual(@as(usize, 9), tokens.len);
+        try std.testing.expectEqual(token.Kind.here_doc_body, tokens[7].kind);
+        break :text .{ tokens[1].text, tokens[7].text };
+    };
+    try std.testing.expectEqualStrings("foobar", normalized);
+    try std.testing.expectEqualStrings("body\n", body);
 }
 
 test "lexWithTrivia reports comments quotes and pending quotes" {

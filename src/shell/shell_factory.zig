@@ -223,7 +223,8 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
             var command_arena = memory.Arena.init(self.allocator);
             defer command_arena.deinit();
             const ast_allocator = command_arena.allocator();
-            const tokens = try lexer.lex(source_arena.allocator(), src);
+            const tokens = try lexer.lexWithTokenAllocator(source_arena.allocator(), self.allocator, src);
+            defer self.allocator.free(tokens);
             var incremental = parser.Incremental.init(ast_allocator, src, tokens, self.state);
             var boundaries_failed = false;
 
