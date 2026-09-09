@@ -464,9 +464,28 @@ pub fn setTerminalProcessGroup(_: RealHost, fd: host.Fd, process_group: host.Pid
 }
 
 pub fn isSignalIgnored(_: RealHost, signal: u8) bool {
+    // KILL and STOP cannot be ignored, and macOS rejects even querying their dispositions.
+    if (signal == @intFromEnum(std.posix.SIG.KILL) or signal == @intFromEnum(std.posix.SIG.STOP)) return false;
     var action: std.posix.Sigaction = undefined;
     std.posix.sigaction(@enumFromInt(signal), null, &action);
     return action.handler.handler == std.posix.SIG.IGN;
+}
+
+test "signal ignore queries handle immutable defaults and mutable dispositions" {
+    try std.testing.expect(!real_host.isSignalIgnored(@intFromEnum(std.posix.SIG.KILL)));
+    try std.testing.expect(!real_host.isSignalIgnored(@intFromEnum(std.posix.SIG.STOP)));
+
+    const usr1: u8 = @intFromEnum(std.posix.SIG.USR1);
+    var previous_action: std.posix.Sigaction = undefined;
+    std.posix.sigaction(.USR1, null, &previous_action);
+    defer std.posix.sigaction(.USR1, &previous_action, null);
+
+    try real_host.setSignalIgnored(usr1);
+    try std.testing.expect(real_host.isSignalIgnored(usr1));
+    try real_host.installSignalTrap(usr1);
+    try std.testing.expect(!real_host.isSignalIgnored(usr1));
+    try real_host.setSignalDefault(usr1);
+    try std.testing.expect(!real_host.isSignalIgnored(usr1));
 }
 
 pub fn setSignalIgnored(_: RealHost, signal: u8) SignalDispositionError!void {
