@@ -1,53 +1,47 @@
-{ pkgs }:
+{
+  callPackage,
+  lib,
+  stdenv,
+  zig_0_16,
+}:
 
 let
-  src = ../.;
+  zig_deps = callPackage ./zig-deps.nix { };
+  is_linux = stdenv.hostPlatform.isLinux;
+in
+stdenv.mkDerivation {
   pname = "rush";
   version = "0.1.0";
-  cache = pkgs.stdenvNoCC.mkDerivation {
-    inherit version src;
+  src = ../.;
 
-    pname = "${pname}-cache";
-
-    dontInstall = true;
-    nativeBuildInputs = with pkgs; [ zig_0_16 ];
-
-    buildPhase = ''
-      mkdir -p $out/tmp
-      export ZIG_GLOBAL_CACHE_DIR=$out
-      zig build --fetch --summary none
-    '';
-
-    # Failing this hash means the dependencies changed and it needs to be updated
-    outputHash = "sha256-Rpb0dEtm6Yq+5/Mg3RWvVzLH46NC1o/QvZL7jLYS9Vs=";
-    outputHashMode = "nar";
-  };
-  isLinux = pkgs.stdenv.hostPlatform.isLinux;
-in
-pkgs.stdenv.mkDerivation {
-  inherit pname version src;
-
+  strictDeps = true;
   dontInstall = true;
-  nativeBuildInputs = with pkgs; [ zig_0_16 ];
+
+  nativeBuildInputs = [ zig_0_16.hook ];
+
+  buildPhase = ''
+    runHook preBuild
+
+    TERM=dumb zig build \
+      --system ${zig_deps} \
+      ${lib.optionalString is_linux "-Dtarget=native-native-musl"} \
+      -Doptimize=ReleaseSafe \
+      -Dregister-shell=false \
+      --prefix "$out"
+
+    runHook postBuild
+  '';
+
   passthru = {
-    inherit cache;
+    inherit zig_deps;
     shellPath = "/bin/rush";
   };
 
-  buildPhase = ''
-    export ZIG_GLOBAL_CACHE_DIR=$TEMP
-    ln -sf ${cache}/p $ZIG_GLOBAL_CACHE_DIR/p
-    zig build ${pkgs.lib.optionalString isLinux "-Dtarget=native-native-musl"} \
-      -Doptimize=ReleaseSafe \
-      -Dregister-shell=false \
-      --prefix $out
-  '';
-
-  meta = with pkgs.lib; {
+  meta = {
     description = "rockorager's user-friendly shell";
     homepage = "https://github.com/rockorager/rush";
-    platforms = with platforms; linux ++ darwin;
-    license = licenses.mit;
+    platforms = lib.platforms.linux ++ lib.platforms.darwin;
+    license = lib.licenses.mit;
     mainProgram = "rush";
   };
 }

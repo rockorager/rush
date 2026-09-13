@@ -17,7 +17,7 @@
             .hash = "uucode-0.2.0-ZZjBPlK5VADj7fdoq7G8LIHzD5o6FSkcBXXrRWr4jnrA",
         },
         .zeit = .{
-            .url = "git+https://github.com/rockorager/zeit.git?ref=v0.9.0#b1c1c2fcbc71fd7799a316bbcf0ff88d06d80ccc",
+            .url = "git+https://github.com/rockorager/zeit.git#b1c1c2fcbc71fd7799a316bbcf0ff88d06d80ccc",
             .hash = "zeit-0.9.0-5I6bk2m9AgBSMH8-L6rYJkwuQAyhXplnfxnvTSGzVHUR",
         },
         .ziglint = .{

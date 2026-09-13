@@ -34,6 +34,8 @@ and Zig fetches the declared dependencies from `build.zig.zon`. SQLite is built
 from the bundled amalgamation by default; packagers can opt into system SQLite
 with `-fsys=sqlite3`.
 
+Nix packaging is provided via the local `flake.nix`, see the [nix readme](nix/README.md) for info.
+
 ```sh
 git clone https://github.com/rockorager/rush
 cd rush
