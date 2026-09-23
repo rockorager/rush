@@ -19,6 +19,11 @@ stdenv.mkDerivation {
 
   nativeBuildInputs = [ zig_0_16.hook ];
 
+  postConfigure = ''
+    # Cache paths appear in the static library's debug information.
+    export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
+  '';
+
   buildPhase = ''
     runHook preBuild
 

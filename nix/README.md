@@ -10,7 +10,7 @@ Outputs work exactly like any other nix flake:
 
 ```nix
 {
-    name = "Example Flake";
+    description = "Example Flake";
  
     # Add Rush to the inputs
     inputs = {
@@ -42,7 +42,7 @@ Outputs work exactly like any other nix flake:
                 ({networking.hostName = "exampleHost";})
             ];
         };
-    }
+    };
 }
 
 ```
@@ -85,4 +85,3 @@ nix build .
 
 The Zig dependencies are based on the project's dependencies itself and may need updating if you pulled
 from the project's `main` branch.
-
