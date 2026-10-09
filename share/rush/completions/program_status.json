@@ -1,0 +1,45 @@
+{
+  "$schema": "https://rush.horse/completion/schema/v1.schema.json",
+  "manifestVersion": 1,
+  "command": {
+    "name": "program_status",
+    "description": "report program status to the terminal",
+    "options": [
+      { "short": "a", "value": { "name": "app" }, "description": "set the machine-readable program name" },
+      { "short": "i", "value": { "name": "id" }, "description": "address a child record such as build/test" },
+      {
+        "short": "k",
+        "value": { "name": "kind", "provider": "program_status.kinds" },
+        "description": "set what a blocked program waits for"
+      },
+      { "short": "p", "value": { "name": "percent" }, "description": "set progress from 0 to 100" },
+      { "short": "t", "value": { "name": "title" }, "description": "set a short label for the record" }
+    ],
+    "arguments": {
+      "terminator": "--",
+      "states": [
+        { "name": "state", "index": 0, "provider": "program_status.states", "description": "program state" },
+        { "name": "message", "index": 1, "repeatable": true, "description": "message words" }
+      ]
+    },
+    "providers": {
+      "program_status.states": {
+        "values": [
+          { "value": "idle", "description": "waiting for the next instruction" },
+          { "value": "working", "description": "running" },
+          { "value": "done", "description": "finished with a result to look at" },
+          { "value": "blocked", "description": "waiting on the user" },
+          { "value": "error", "description": "failed and stopped" },
+          { "value": "clear", "description": "remove the record and its children" }
+        ]
+      },
+      "program_status.kinds": {
+        "values": [
+          { "value": "permission", "description": "approval to do something" },
+          { "value": "question", "description": "an answer the user must type" },
+          { "value": "auth", "description": "a login, token, or credential" }
+        ]
+      }
+    }
+  }
+}

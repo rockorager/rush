@@ -6,6 +6,7 @@ const completion_path = @import("../completion_path.zig");
 const completion = @import("../editor/completion.zig");
 const editor_render = @import("../editor/render.zig");
 const host = @import("../host.zig");
+const program_status_builtin = @import("program_status.zig");
 const shell = @import("../shell.zig");
 
 const builtin = shell.builtin;
@@ -16,6 +17,7 @@ pub const definitions = [_]builtin.Definition{
     builtin.extensionDefinition("abbr", .abbr),
     builtin.extensionDefinition("color", .color),
     builtin.extensionDefinition("event", .event),
+    builtin.extensionDefinition("program_status", .program_status),
     builtin.extensionDefinition("prompt", .prompt),
     builtin.extensionDefinition("prompt_duration", .prompt_duration),
     builtin.extensionDefinition("prompt_pwd", .prompt_pwd),
@@ -185,6 +187,7 @@ pub const State = struct {
             .abbr => evalAbbr(self, sh, args),
             .color => evalColor(sh, args),
             .event => evalEvent(self, sh, args),
+            .program_status => program_status_builtin.eval(sh, args),
             .prompt => evalPrompt(self, sh, args),
             .prompt_duration => evalPromptDuration(self, sh, args),
             .prompt_pwd => evalPromptPwd(sh, args),

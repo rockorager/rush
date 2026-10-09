@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>rush program_status builtin</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="site-header">
+    <div><a href="../../index.html">rush</a></div>
+    <nav class="site-nav" aria-label="Primary">
+      <a href="../index.html">docs</a>
+      <a href="https://github.com/rockorager/rush">source</a>
+    </nav>
+  </header>
+
+  <h1 id="program-status"><a href="#program-status">PROGRAM_STATUS(1)</a></h1>
+
+  <h2 id="name"><a href="#name">NAME</a></h2>
+
+  <p>program_status - report what a program is doing to the terminal.</p>
+
+  <h2 id="synopsis"><a href="#synopsis">SYNOPSIS</a></h2>
+
+  <pre><span class="cmd">program_status</span> [<span class="opt">-a</span> <span class="var">app</span>] [<span class="opt">-i</span> <span class="var">id</span>] [<span class="opt">-k</span> <span class="var">kind</span>] [<span class="opt">-p</span> <span class="var">percent</span>] [<span class="opt">-t</span> <span class="var">title</span>] <span class="var">state</span> [<span class="var">message</span> ...]</pre>
+
+  <h2 id="description"><a href="#description">DESCRIPTION</a></h2>
+
+  <p><code>program_status</code> writes one <a href="https://www.superlogical.com/rex/docs/build/program-status">Program Status Protocol</a> report (OSC 7501) to standard output. Terminals that support the protocol use it to show whether work is running, waiting on the user, finished, or failed, for example in tab headers or session lists. Terminals without support ignore it.</p>
+
+  <p>The <var>message</var> words are joined with spaces into one human-readable line. Rush handles the protocol encoding, including base64 for text values. It rejects invalid reports with a diagnostic instead of writing something the terminal would discard.</p>
+
+  <p>Each report <em>replaces</em> the terminal's record for its id completely. A key missing from a report is missing from the record afterwards. To keep <code>-a</code> or <code>-t</code> on a record, repeat them in every report.</p>
+
+  <p>Like <code>printf</code>, <code>program_status</code> writes to standard output whether or not it is a terminal. Redirect it, for example <code>program_status working &gt;/dev/tty</code>, when standard output is captured.</p>
+
+  <h2 id="states"><a href="#states">STATES</a></h2>
+
+  <dl>
+    <dt><code>idle</code></dt><dd>At rest, waiting for the user's next instruction. Report this when the user cancels work.</dd>
+    <dt><code>working</code></dt><dd>Running. Accepts <code>-p</code>. The terminal drops it when the process exits or the next shell prompt starts.</dd>
+    <dt><code>blocked</code></dt><dd>Cannot continue until the user acts. Accepts <code>-k</code> and <code>-p</code>. Dropped like <code>working</code>.</dd>
+    <dt><code>done</code></dt><dd>Finished, with a result the user has not seen yet. Survives process exit and the next prompt.</dd>
+    <dt><code>error</code></dt><dd>Failed and stopped. Survives like <code>done</code>.</dd>
+    <dt><code>clear</code></dt><dd>Removes the record and every record beneath it. Without <code>-i</code>, removes every record on the terminal. Accepts only <code>-i</code>.</dd>
+  </dl>
+
+  <h2 id="options"><a href="#options">OPTIONS</a></h2>
+
+  <dl>
+    <dt><code>-a</code> <var>app</var></dt><dd>Stable machine-readable program name, such as <code>cargo</code>: 1 to 32 characters from <code>A-Z a-z 0-9 _ . + -</code>. Child records without an app inherit the nearest ancestor's.</dd>
+    <dt><code>-i</code> <var>id</var></dt><dd>Record to address instead of the root record, as up to 8 slash-separated segments: for example <code>build/test</code> is a child of <code>build</code>. Each segment uses the same characters as <var>app</var>.</dd>
+    <dt><code>-k</code> <var>kind</var></dt><dd>What a <code>blocked</code> program waits for: <code>permission</code>, <code>question</code>, or <code>auth</code>.</dd>
+    <dt><code>-p</code> <var>percent</var></dt><dd>Progress from 0 to 100 for <code>working</code> and <code>blocked</code>.</dd>
+    <dt><code>-t</code> <var>title</var></dt><dd>Short label for the record, up to 192 bytes, for scripts that report several records.</dd>
+  </dl>
+
+  <p>Messages may be up to 2048 bytes. Messages and titles must be UTF-8 without control characters. Option values may also be attached, as in <code>-p40</code>. Use <code>--</code> before a state when the arguments that follow might begin with <code>-</code>.</p>
+
+  <h2 id="exit-status"><a href="#exit-status">EXIT STATUS</a></h2>
+
+  <p>Zero when the report was written, one when writing failed, and two for usage errors and invalid reports.</p>
+
+  <h2 id="examples"><a href="#examples">EXAMPLES</a></h2>
+
+  <pre><span class="cmd">program_status</span> <span class="opt">-a</span> rsync working <span class="str">"Syncing photos"</span>
+<span class="kw">if</span> rsync <span class="opt">-a</span> ~/Photos backup:/photos; <span class="kw">then</span>
+  <span class="cmd">program_status</span> <span class="opt">-a</span> rsync done <span class="str">"Photos synced"</span>
+<span class="kw">else</span>
+  <span class="cmd">program_status</span> <span class="opt">-a</span> rsync error <span class="str">"rsync failed"</span>
+<span class="kw">fi</span>
+
+<span class="cmd">program_status</span> <span class="opt">-a</span> deploy <span class="opt">-k</span> permission blocked <span class="str">"Approve deploy to production?"</span>
+<span class="cmd">program_status</span> <span class="opt">-i</span> deploy/eu-west <span class="opt">-t</span> <span class="str">"EU West"</span> <span class="opt">-p</span> 40 working <span class="str">"Pushing image"</span>
+<span class="cmd">program_status</span> <span class="opt">-i</span> deploy clear</pre>
+
+  <h2 id="see-also"><a href="#see-also">SEE ALSO</a></h2>
+
+  <p><a href="index.html">rush-builtins(7)</a>, <a href="../configuration.html#program-status">rush configuration: program status</a>, <a href="https://www.superlogical.com/rex/docs/build/program-status">Program Status Protocol</a>.</p>
+
+</body>
+</html>
