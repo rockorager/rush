@@ -2,6 +2,7 @@
 
 const std = @import("std");
 
+const command_status = @import("interactive/command_status.zig");
 const completion = @import("completion.zig");
 const editor = @import("editor.zig");
 const extensions = @import("extensions.zig");
@@ -11,6 +12,7 @@ const host = @import("host.zig");
 const interactive_event = @import("interactive/event.zig");
 const input_analysis = @import("interactive/input_analysis.zig");
 const interactive_style = @import("interactive/style.zig");
+const program_status = @import("program_status.zig");
 const startup = @import("interactive/startup.zig");
 const shell = @import("shell.zig");
 
@@ -173,6 +175,8 @@ const InteractiveSession = struct {
     restore_terminal_pgrp: ?host.Pid = null,
     last_command_status: shell.result.ExitStatus = 0,
     last_command_duration_ms: ?i64 = null,
+    /// Whether Rush left a Program Status record that the next command clears.
+    command_status_reported: bool = false,
     pending_event_exit_status: ?u8 = null,
     command_cache: input_analysis.PathCommandCache = .{},
     history_cwd: []const u8 = "",
@@ -586,6 +590,7 @@ const InteractiveSession = struct {
     ) !?u8 {
         self.sh.state.last_status = self.last_command_status;
         try terminal.leaveEditorMode();
+        self.clearCommandStatus(terminal);
 
         const src: shell.source.Source = .{
             .id = self.source_id.*,
@@ -618,6 +623,7 @@ const InteractiveSession = struct {
             if (!shell.parser.isParseError(err)) try self.sh.host.writeAll(.stderr, "rush: shell error\n");
             // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
             terminal.finishSemanticCommand(2) catch {};
+            self.reportCommandStatus(terminal, line, 2, duration_ms);
             try terminal.enterEditorMode();
             return null;
         };
@@ -628,6 +634,7 @@ const InteractiveSession = struct {
         self.last_command_status = evaluated.status;
         // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
         terminal.finishSemanticCommand(evaluated.status) catch {};
+        self.reportCommandStatus(terminal, line, evaluated.status, duration_ms);
         const job_event_output = try self.dispatchJobLifecycleEvents(
             self.allocator,
             background_jobs_before,
@@ -643,6 +650,30 @@ const InteractiveSession = struct {
                 return null;
             },
         }
+    }
+
+    fn reportCommandStatus(
+        self: *InteractiveSession,
+        terminal: *editor.driver.TerminalSession,
+        line: []const u8,
+        status: shell.result.ExitStatus,
+        duration_ms: i64,
+    ) void {
+        const setting = self.sh.state.lookupVariable(self.sh.env, command_status.threshold_variable) orelse
+            return;
+        const threshold = command_status.parseThreshold(setting.value) orelse return;
+        var buffer: [program_status.max_message_len]u8 = undefined;
+        const report = command_status.finishedReport(&buffer, line, status, duration_ms, threshold) orelse return;
+        // ziglint-ignore: Z026 status reports are best effort and must not affect the command result
+        terminal.reportProgramStatus(report) catch return;
+        self.command_status_reported = true;
+    }
+
+    fn clearCommandStatus(self: *InteractiveSession, terminal: *editor.driver.TerminalSession) void {
+        if (!self.command_status_reported) return;
+        self.command_status_reported = false;
+        // ziglint-ignore: Z026 status reports are best effort and must not affect the command result
+        terminal.reportProgramStatus(.{ .state = .clear, .id = command_status.record_id }) catch {};
     }
 
     fn startHistoryCommand(

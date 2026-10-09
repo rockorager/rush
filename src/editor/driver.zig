@@ -8,6 +8,7 @@ const vaxis = @import("vaxis");
 
 const event_loop = @import("../event_loop.zig");
 const line_editor = @import("session.zig");
+const program_status = @import("../program_status.zig");
 const completion = @import("completion.zig");
 const external_editor = @import("external_editor.zig");
 const signal = @import("signal.zig");
@@ -341,6 +342,14 @@ pub const TerminalSession = struct {
         try appendOscText(&writer.writer, title);
         try writer.writer.writeAll("\x1b\\");
         try writeTtyAll(&self.tty, writer.written());
+    }
+
+    pub fn reportProgramStatus(self: *TerminalSession, report: program_status.Report) !void {
+        var buffer: [program_status.max_sequence_len]u8 = undefined;
+        var writer: std.Io.Writer = .fixed(&buffer);
+        // Validated reports always fit within the protocol's sequence limit.
+        program_status.write(&writer, report) catch unreachable;
+        try writeTtyAll(&self.tty, writer.buffered());
     }
 
     pub fn requestPromptRedraw(self: *TerminalSession) void {

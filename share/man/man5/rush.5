@@ -361,6 +361,51 @@ its registration name in
 Event handlers preserve the visible value of
 .BR $? .
 Reusing an event/name pair replaces the existing handler.
+.SH PROGRAM STATUS
+Rush can report finished long-running commands to terminals that support the
+Program Status Protocol (OSC 7501).  Set
+.B rush_program_status_threshold
+to a whole number of seconds:
+.EX
+  rush_program_status_threshold=10
+.EE
+.PP
+When an interactive command line runs at least that long, Rush reports
+.B done
+if it succeeded, or
+.B error
+with the exit status if it failed, using the command line as the message.
+Reports use the record id
+.B rush
+and app
+.BR rush ,
+so they do not replace a status the command reported itself.  Rush clears its
+record when the next command line starts.  Commands interrupted or stopped
+from the keyboard are not reported.  Durations are measured in whole seconds.
+Unset the variable, or give it any value other than a whole number, to
+disable reports.
+.PP
+Scripts report their own state with the
+.B program_status
+builtin:
+.EX
+  program_status [-a app] [-i id] [-k kind] [-p percent] [-t title] state [message ...]
+.EE
+.PP
+.I state
+is one of
+.BR idle ,
+.BR working ,
+.BR done ,
+.BR blocked ,
+.BR error ,
+or
+.BR clear .
+Each report replaces the terminal's record for its id, so repeat
+.B -a
+and
+.B -t
+in every report that should keep them.
 .SH FILES
 .TP
 .I /etc/rush/profile.rush

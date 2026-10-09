@@ -332,6 +332,16 @@ index:236
 
   <p>Prefer <code>prompt async</code>, timers, and hooks over slow command substitutions in <code>rush_prompt</code>.</p>
 
+  <h2 id="program-status"><a href="#program-status">Program status</a></h2>
+
+  <p>Rush can tell terminals that support the <a href="https://www.superlogical.com/rex/docs/build/program-status">Program Status Protocol</a> when a long command finishes. Set <code>rush_program_status_threshold</code> to a whole number of seconds:</p>
+
+  <pre><span class="var">rush_program_status_threshold</span>=<span class="str">10</span></pre>
+
+  <p>When an interactive command line runs at least that long, Rush reports <code>done</code> if it succeeded, or <code>error</code> with the exit status if it failed. The message is the command line. The report uses the record id <code>rush</code> and app <code>rush</code>, so it does not replace a status that the command reported itself. Rush clears its record when the next command line starts. Commands interrupted or stopped from the keyboard are not reported, because you are already at the terminal. Durations are measured in whole seconds. Unset the variable, or give it any value other than a whole number, to turn reports off.</p>
+
+  <p>Scripts and functions can report their own progress with the <a href="builtins/program_status.html"><code>program_status</code></a> builtin.</p>
+
   <h2 id="ps1"><a href="#ps1">PS1 fallback</a></h2>
 
   <p>If <code>rush_prompt</code> is not defined, Rush uses <code>PS1</code>. Unset the default function to use a plain <code>PS1</code> prompt.</p>
