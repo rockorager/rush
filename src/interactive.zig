@@ -411,9 +411,18 @@ const InteractiveSession = struct {
             cwd,
             .{ .dir_length = 1 },
         );
-        if (command == null) return directory;
         defer self.allocator.free(directory);
-        return std.fmt.allocPrint(self.allocator, "{s} {s}", .{ command.?, directory });
+
+        var title: std.Io.Writer.Allocating = .init(self.allocator);
+        errdefer title.deinit();
+        // Like fish, name the host only over SSH, where it distinguishes remote windows.
+        const hostname = windowTitleHostname(self.command_history.hostname);
+        if (hostname.len != 0 and self.sh.state.lookupVariable(self.sh.env, "SSH_TTY") != null) {
+            try title.writer.print("[{s}] ", .{hostname});
+        }
+        if (command) |text| try title.writer.print("{s} ", .{text});
+        try title.writer.writeAll(directory);
+        return title.toOwnedSlice();
     }
 
     fn currentDirectoryForReporting(self: *InteractiveSession) ![]const u8 {
@@ -876,6 +885,16 @@ fn onDirectoryChange(context: *anyopaque, old_pwd: []const u8, new_pwd: []const 
     }
 }
 
+/// Returns the first label of `hostname`, capped at 10 bytes without splitting a UTF-8 sequence.
+fn windowTitleHostname(hostname: []const u8) []const u8 {
+    const max_len = 10;
+    const label = hostname[0 .. std.mem.findScalar(u8, hostname, '.') orelse hostname.len];
+    if (label.len <= max_len) return label;
+    var end: usize = max_len;
+    while (end > 0 and label[end] & 0xc0 == 0x80) end -= 1;
+    return label[0..end];
+}
+
 fn onForegroundCommand(context: *anyopaque, command: ?[]const u8) void {
     const session: *InteractiveSession = @ptrCast(@alignCast(context));
     const terminal = session.terminal orelse return;
@@ -1245,7 +1264,7 @@ test "interactive history cwd remains valid after prompt read" {
     try std.testing.expectEqualStrings("echo previous", entry.text);
 }
 
-test "interactive window title prefixes the foreground command" {
+test "interactive window title prefixes the SSH host and foreground command" {
     var sh = RushShell.init(std.testing.allocator, .{}, .{});
     defer sh.deinit();
     try sh.state.putVariable(.{ .name = "HOME", .value = "/home/test" });
@@ -1271,6 +1290,21 @@ test "interactive window title prefixes the foreground command" {
     const idle = try session.formatWindowTitle("/home/test/repos/rush", null);
     defer std.testing.allocator.free(idle);
     try std.testing.expectEqualStrings("~/r/rush", idle);
+
+    std.testing.allocator.free(command_history.hostname);
+    command_history.hostname = try std.testing.allocator.dupe(u8, "buildserver01.example.com");
+    const local = try session.formatWindowTitle("/home/test/repos/rush", null);
+    defer std.testing.allocator.free(local);
+    try std.testing.expectEqualStrings("~/r/rush", local);
+
+    try sh.state.putVariable(.{ .name = "SSH_TTY", .value = "/dev/pts/3" });
+    const remote_running = try session.formatWindowTitle("/home/test/repos/rush", "btop");
+    defer std.testing.allocator.free(remote_running);
+    try std.testing.expectEqualStrings("[buildserve] btop ~/r/rush", remote_running);
+
+    const remote_idle = try session.formatWindowTitle("/home/test/repos/rush", null);
+    defer std.testing.allocator.free(remote_idle);
+    try std.testing.expectEqualStrings("[buildserve] ~/r/rush", remote_idle);
 }
 
 test "interactive startup dispatch fires directory.change with empty old directory" {
