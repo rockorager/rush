@@ -687,7 +687,8 @@ fn writeJsonString(sh: anytype, value: []const u8) !void {
 }
 
 fn isEventName(name: []const u8) bool {
-    return std.mem.eql(u8, name, "directory.change") or
+    return std.mem.eql(u8, name, "command.complete") or
+        std.mem.eql(u8, name, "directory.change") or
         std.mem.eql(u8, name, "prompt.prepare") or
         std.mem.eql(u8, name, "prompt.async.start") or
         std.mem.eql(u8, name, "prompt.async.end") or
@@ -875,6 +876,10 @@ fn parsePromptAsyncSegment(args: []const []const u8) !?PromptAsyncSegmentOptions
         return null;
     }
     return null;
+}
+
+test "command.complete is a valid event name" {
+    try std.testing.expect(isEventName("command.complete"));
 }
 
 test "prompt async segment parser accepts style and prefix" {
