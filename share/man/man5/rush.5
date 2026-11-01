@@ -361,6 +361,17 @@ its registration name in
 Event handlers preserve the visible value of
 .BR $? .
 Reusing an event/name pair replaces the existing handler.
+.SH COMMAND EVENTS
+.TP
+.B command.complete
+Runs after a nonempty interactive command line evaluates normally, after its
+output and before the next prompt.  The completed status remains available in
+.BR $? ,
+and the submitted command text is in
+.BR $1 .
+It does not run after
+.B exit
+or fatal evaluation flow.
 .SH PROGRAM STATUS
 Rush can report finished long-running commands to terminals that support the
 Program Status Protocol (OSC 7501).  Set
