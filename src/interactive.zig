@@ -290,11 +290,18 @@ const InteractiveSession = struct {
             pending.clearRetainingCapacity();
             return null;
         };
-        pending.clearRetainingCapacity();
         const duration_ms = @max(unixTimestamp(self.io) - started_at, 0) * 1000;
         // ziglint-ignore: Z026 history updates remain best effort after command completion
         self.history_service.completeCommand(history_handle, evaluated.status, duration_ms) catch {};
         self.last_command_status = evaluated.status;
+        if (evaluated.flow == .normal) {
+            const command = trimFinalLineEnding(pending.items);
+            if (try self.dispatchCommandComplete(command)) |status| {
+                pending.clearRetainingCapacity();
+                return self.exit(status);
+            }
+        }
+        pending.clearRetainingCapacity();
         switch (evaluated.flow) {
             .exit => |status| return self.exit(status),
             else => {},
@@ -651,6 +658,9 @@ const InteractiveSession = struct {
         );
         defer self.allocator.free(job_event_output);
         if (job_event_output.len != 0) try self.sh.host.writeAll(.stderr, job_event_output);
+        if (evaluated.flow == .normal) {
+            if (try self.dispatchCommandComplete(line)) |status| return self.exit(status);
+        }
 
         switch (evaluated.flow) {
             .exit => |status| return self.exit(status),
@@ -659,6 +669,15 @@ const InteractiveSession = struct {
                 return null;
             },
         }
+    }
+
+    /// Runs post-evaluation hooks while the completed command's status remains visible.
+    fn dispatchCommandComplete(self: *InteractiveSession, command: []const u8) !?u8 {
+        if (std.mem.trim(u8, command, " \t\r\n").len == 0) return null;
+        var dispatched = try self.events.runEvent(self.allocator, self.io, "command.complete", &.{command});
+        defer dispatched.deinit(self.allocator);
+        if (dispatched.output.len != 0) try self.sh.host.writeAll(.stderr, dispatched.output);
+        return dispatched.exit_status;
     }
 
     fn reportCommandStatus(
@@ -1145,6 +1164,13 @@ test "line continuation detection counts trailing backslashes" {
     try std.testing.expect(!endsWithLineContinuation("echo a\n"));
     try std.testing.expect(!endsWithLineContinuation("echo a"));
     try std.testing.expect(!endsWithLineContinuation("\n"));
+}
+
+fn trimFinalLineEnding(text: []const u8) []const u8 {
+    if (!std.mem.endsWith(u8, text, "\n")) return text;
+    const without_newline = text[0 .. text.len - 1];
+    if (std.mem.endsWith(u8, without_newline, "\r")) return without_newline[0 .. without_newline.len - 1];
+    return without_newline;
 }
 
 fn readStdinLineWithNewline(allocator: std.mem.Allocator, sh: *RushShell) !?[]const u8 {
@@ -1759,6 +1785,91 @@ test "interactive right prompt uses prompt helpers and last command status" {
 
     try std.testing.expectEqualStrings("BAD-RIGHT", rendered);
     try std.testing.expectEqual(@as(shell.result.ExitStatus, 1), sh.state.last_status);
+}
+
+test "interactive command completion preserves status and receives the submitted command" {
+    var sh = RushShell.init(std.testing.allocator, .{}, .{});
+    defer sh.deinit();
+
+    const src: shell.source.Source = .{
+        .id = 1,
+        .kind = .command_string,
+        .name = "test",
+        .text =
+        \\on_complete() {
+        \\  completion_status=$?
+        \\  completion_command=$1
+        \\}
+        \\event add command.complete capture on_complete
+        ,
+    };
+    const defined = try sh.evalSource(src);
+    try std.testing.expectEqual(@as(shell.result.ExitStatus, 0), defined.status);
+
+    var command_history = try history.History.init(std.testing.allocator);
+    defer command_history.deinit();
+    var history_service = history.InteractiveHistoryService.init(&command_history);
+    var source_id: shell.source.SourceId = 2;
+    var session: InteractiveSession = .{
+        .allocator = std.testing.allocator,
+        .io = std.testing.io,
+        .sh = &sh,
+        .source_id = &source_id,
+        .command_history = &command_history,
+        .history_service = &history_service,
+        .events = .{ .sh = &sh },
+    };
+    try std.testing.expectEqual(@as(?u8, null), try session.dispatchCommandComplete(" \t\r\n"));
+    try std.testing.expect(sh.state.getVariable("completion_status") == null);
+
+    var pending: std.ArrayList(u8) = .empty;
+    defer pending.deinit(std.testing.allocator);
+    try pending.appendSlice(std.testing.allocator, "false\n");
+
+    try std.testing.expectEqual(@as(?u8, null), try session.evaluatePromptedStdinCommand(&pending));
+    try std.testing.expectEqual(@as(usize, 0), pending.items.len);
+    try std.testing.expectEqual(@as(shell.result.ExitStatus, 1), sh.state.last_status);
+    const completion_status = sh.state.getVariable("completion_status") orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("1", completion_status.value);
+    const completion_command = sh.state.getVariable("completion_command") orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("false", completion_command.value);
+}
+
+test "interactive command completion skips exit flow" {
+    var sh = RushShell.init(std.testing.allocator, .{}, .{});
+    defer sh.deinit();
+
+    const src: shell.source.Source = .{
+        .id = 1,
+        .kind = .command_string,
+        .name = "test",
+        .text =
+        \\on_complete() { command_completed=1; }
+        \\event add command.complete capture on_complete
+        ,
+    };
+    const defined = try sh.evalSource(src);
+    try std.testing.expectEqual(@as(shell.result.ExitStatus, 0), defined.status);
+
+    var command_history = try history.History.init(std.testing.allocator);
+    defer command_history.deinit();
+    var history_service = history.InteractiveHistoryService.init(&command_history);
+    var source_id: shell.source.SourceId = 2;
+    var session: InteractiveSession = .{
+        .allocator = std.testing.allocator,
+        .io = std.testing.io,
+        .sh = &sh,
+        .source_id = &source_id,
+        .command_history = &command_history,
+        .history_service = &history_service,
+        .events = .{ .sh = &sh },
+    };
+    var pending: std.ArrayList(u8) = .empty;
+    defer pending.deinit(std.testing.allocator);
+    try pending.appendSlice(std.testing.allocator, "exit 7");
+
+    try std.testing.expectEqual(@as(?u8, 7), try session.evaluatePromptedStdinCommand(&pending));
+    try std.testing.expect(sh.state.getVariable("command_completed") == null);
 }
 
 test "interactive terminal teardown restores process group before closing tty" {

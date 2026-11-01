@@ -46,6 +46,8 @@ timer.tick
   <h2 id="events"><a href="#events">EVENTS</a></h2>
 
   <dl>
+    <dt><code>command.complete</code></dt>
+    <dd>Runs after a nonempty interactive command line evaluates normally, after its output and before the next prompt. The completed status remains available as <code>$?</code>, and <code>$1</code> is the submitted command text. It does not run after <code>exit</code> or fatal evaluation flow.</dd>
     <dt><code>directory.change</code></dt>
     <dd>Runs after a successful current-shell directory change. Receives old directory as <code>$1</code> and new directory as <code>$2</code>. Also runs once at interactive startup before the first prompt, with an empty <code>$1</code> and the initial directory as <code>$2</code>.</dd>
     <dt><code>prompt.prepare</code></dt>
@@ -70,6 +72,11 @@ timer.tick
   <span class="var">rush_prompt_cwd</span>=<span class="str">"$PWD"</span>
 }
 
+<span class="cmd">postexec_echo</span>() {
+  <span class="cmd">echo</span>
+}
+
+<span class="cmd">event</span> add command.complete blank-line postexec_echo
 <span class="cmd">event</span> add directory.change project-env sync_project_env --priority -10
 <span class="cmd">event</span> add prompt.prepare prompt-cwd remember_prompt_cwd
 <span class="cmd">event</span> add timer.tick clock remember_prompt_cwd --every 1000</pre>
