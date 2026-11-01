@@ -294,6 +294,7 @@ index:236
   <p>Use <code>event</code> for advanced interactive hooks. Hooks preserve the visible <code>$?</code> by default.</p>
 
   <ul>
+    <li><code>command.complete</code>: after a nonempty interactive command line evaluates normally; <code>$?</code> is its status and <code>$1</code> is its submitted text.</li>
     <li><code>prompt.prepare</code>: before each prompt render.</li>
     <li><code>directory.change</code>: after <code>cd</code>, and once at startup with an empty <code>$1</code>; receives old and new directories as <code>$1</code> and <code>$2</code>.</li>
     <li><code>timer.tick</code>: while the editor is idle; receives the registration name as <code>$1</code>.</li>
@@ -309,6 +310,10 @@ index:236
   <span class="comment"># Update cheap prompt variables before rendering.</span>
 }
 
+<span class="cmd">postexec_echo</span>() {
+  <span class="cmd">echo</span>
+}
+
 <span class="cmd">on_directory_change</span>() {
   <span class="comment"># $1 is the old directory; $2 is the new directory.</span>
   <span class="var">rush_last_directory</span>=<span class="str">"$2"</span>
@@ -318,6 +323,7 @@ index:236
   <span class="var">CLOCK</span>=<span class="str">"$(date +%H:%M:%S)"</span>
 }
 
+<span class="cmd">event</span> add command.complete blank-line postexec_echo
 <span class="cmd">event</span> add prompt.prepare prompt-vars on_prompt_prepare
 <span class="cmd">event</span> add directory.change cwd-repaint on_directory_change
 <span class="cmd">event</span> add timer.tick clock on_clock <span class="opt">--every</span> 1000</pre>
