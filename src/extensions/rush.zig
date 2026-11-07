@@ -347,7 +347,10 @@ pub const State = struct {
     /// keeping their previous output. Called from the editor's hook deadline.
     pub fn expirePromptAsync(self: *State) void {
         const io = self.prompt_async_io orelse return;
-        const now_ms = monotonicMillis(io);
+        self.expirePromptAsyncAt(monotonicMillis(io));
+    }
+
+    fn expirePromptAsyncAt(self: *State, now_ms: u64) void {
         for (self.prompt_async_entries.items) |entry| {
             if (entry.read_fd == null or now_ms < entry.started_ms +| prompt_async_timeout_ms) continue;
             // The child leads its own process group; kill helpers it started too.
@@ -362,7 +365,10 @@ pub const State = struct {
     /// none is running.
     pub fn nextPromptAsyncDeadlineMs(self: *State) ?u64 {
         const io = self.prompt_async_io orelse return null;
-        const now_ms = monotonicMillis(io);
+        return self.nextPromptAsyncDeadlineMsAt(monotonicMillis(io));
+    }
+
+    fn nextPromptAsyncDeadlineMsAt(self: *State, now_ms: u64) ?u64 {
         var next: ?u64 = null;
         for (self.prompt_async_entries.items) |entry| {
             if (entry.read_fd == null) continue;
@@ -975,9 +981,11 @@ test "prompt async expiry stops an overdue refresh and keeps the cached output" 
     try std.testing.expect(entry.refreshing);
     try std.testing.expect(state.nextPromptAsyncDeadlineMs().? > prompt_async_timeout_ms - 5_000);
 
-    entry.started_ms -|= prompt_async_timeout_ms;
-    try std.testing.expectEqual(@as(?u64, 0), state.nextPromptAsyncDeadlineMs());
-    state.expirePromptAsync();
+    // A clock that has run less than the timeout since boot cannot be moved
+    // back past it, so expire at an explicit time instead.
+    const overdue_ms = entry.started_ms + prompt_async_timeout_ms;
+    try std.testing.expectEqual(@as(?u64, 0), state.nextPromptAsyncDeadlineMsAt(overdue_ms));
+    state.expirePromptAsyncAt(overdue_ms);
 
     try std.testing.expectEqualStrings("main", entry.stdout);
     try std.testing.expect(!entry.refreshing);
