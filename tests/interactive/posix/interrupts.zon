@@ -1,6 +1,8 @@
+// dash discards all of its buffered piped input on SIGINT, so these cases
+// lose the lines after the interrupted one there; Bash matches them.
 .{
-    .name = "Bash interactive interrupts",
-    .mode = .bash,
+    .name = "Interactive interrupts",
+    .mode = .posix,
     .cases = .{
         .{
             // Ctrl-C reaches the shell as SIGINT; with no INT trap the rest of

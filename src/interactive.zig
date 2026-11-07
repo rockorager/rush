@@ -362,8 +362,6 @@ const InteractiveSession = struct {
 
     // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     fn readLine(self: *InteractiveSession, terminal: *editor.driver.TerminalSession) ReadLineError!editor.driver.ReadLineResult {
-        self.sh.state.editing_command_line = true;
-        defer self.sh.state.editing_command_line = false;
         // Job events, PROMPT_COMMAND, and prompt functions run before the
         // editor reads keys; Ctrl-C interrupts them.
         terminal.beginShellCode();

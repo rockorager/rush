@@ -3,8 +3,8 @@
     .mode = .posix,
     .cases = .{
         .{
-            // Issue 8 sh: outside line editing INT is caught without action;
-            // QUIT is ignored. Explicit traps override these defaults.
+            // An untrapped INT abandons only the rest of its own line; QUIT is
+            // ignored. Explicit traps override these defaults.
             .name = "interactive INT and QUIT defaults survive trap reset",
             .script = "",
             .stdin =

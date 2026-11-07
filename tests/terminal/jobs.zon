@@ -15,6 +15,20 @@
             },
         },
         .{
+            .name = "Ctrl-C stops a builtin loop under --posix",
+            .posix = true,
+            .steps = .{
+                .{ .expect = "$ " },
+                .{ .send = "while :; do :; done; printf '%s%s\\n' NOT REACHED\r" },
+                .{ .sleep_ms = 300 },
+                .{ .send = "\x03" },
+                .{ .expect = "$ " },
+                .{ .send = "printf '%s%s\\n' status= $?\r" },
+                .{ .expect = "status=130" },
+                .{ .absent = "NOTREACHED" },
+            },
+        },
+        .{
             .name = "Ctrl-C stops a loop running an external command",
             .steps = .{
                 .{ .expect = "$ " },

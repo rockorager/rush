@@ -75,9 +75,7 @@ fn runPendingTrapCheckpoint(shell: anytype) EvalError!result.EvalResult {
         const signaled = shell.host.consumePendingSignal(builtin.signalNumber("INT").?);
         const foreground = shell.state.foreground_interrupted;
         shell.state.foreground_interrupted = false;
-        if ((signaled or foreground) and interactiveInterruptsCommands(shell)) {
-            return .{ .status = 130, .flow = .interrupt };
-        }
+        if (signaled or foreground) return .{ .status = 130, .flow = .interrupt };
     }
     // Fast path for the common trap-free shell: nothing can be queued and
     // nothing is pending, so skip the polling walk.
@@ -101,14 +99,9 @@ fn runPendingTrapCheckpoint(shell: anytype) EvalError!result.EvalResult {
 
 /// An interactive shell without an INT trap abandons the current input line
 /// on Ctrl-C, whether the shell itself or its foreground job received it, as
-/// dash and Bash do. --posix keeps Issue 8's literal rule that SIGINT outside
-/// line editing is caught with no action; shell code the editor runs while
-/// reading a line is line editing.
-fn interactiveInterruptsCommands(shell: anytype) bool {
-    return untrappedInteractiveInterrupt(shell) and
-        (shell.state.options.mode != .posix or shell.state.editing_command_line);
-}
-
+/// dash and Bash do, also under --posix. Issue 8 says SIGINT outside line
+/// editing is "caught but no action performed"; every reference shell
+/// abandons the line instead, and a shell Ctrl-C cannot stop is unusable.
 fn untrappedInteractiveInterrupt(shell: anytype) bool {
     return shell.state.interactive_signal_defaults and shell.state.getSignalTrap("INT") == null;
 }
@@ -119,7 +112,7 @@ fn untrappedInteractiveInterrupt(shell: anytype) bool {
 fn noteForegroundStatus(shell: anytype, status: host_mod.WaitStatus) void {
     // Without job control the shell shares the job's process group and
     // receives the Ctrl-C itself.
-    if (!interactiveInterruptsCommands(shell) or !shell.state.jobControlEnabled()) return;
+    if (!untrappedInteractiveInterrupt(shell) or !shell.state.jobControlEnabled()) return;
     switch (status) {
         .signaled => |signal| if (signal == builtin.signalNumber("INT").?) {
             shell.state.foreground_interrupted = true;
@@ -3414,22 +3407,10 @@ fn readBuiltinByte(shell: anytype, timeout_ms: ?u64) !?ReadByteResult {
         const read_len = try shell.host.read(.stdin, &byte);
         return if (read_len == 0) null else .{ .byte = byte[0] };
     }
-    const interrupt_signal = builtin.signalNumber("INT").?;
-    while (true) {
-        switch (try shell.host.readInterruptible(.stdin, &byte)) {
-            .read => |read_len| return if (read_len == 0) null else .{ .byte = byte[0] },
-            .signal => |signal| {
-                if (signal == interrupt_signal and untrappedInteractiveInterrupt(shell) and
-                    !interactiveInterruptsCommands(shell))
-                {
-                    // --posix: an untrapped interactive SIGINT takes no action.
-                    _ = shell.host.consumePendingSignal(signal);
-                    continue;
-                }
-                return .{ .stop = 128 +| signal };
-            },
-        }
-    }
+    return switch (try shell.host.readInterruptible(.stdin, &byte)) {
+        .read => |read_len| if (read_len == 0) null else .{ .byte = byte[0] },
+        .signal => |signal| .{ .stop = 128 +| signal },
+    };
 }
 
 fn appendReadCharacter(shell: anytype, line: *std.ArrayList(u8), first: u8, timeout_ms: ?u64) !void {

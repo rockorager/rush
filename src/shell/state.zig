@@ -340,10 +340,6 @@ pub const State = struct {
     interactive_signal_defaults: bool = false,
     /// A foreground job died of SIGINT; the next trap checkpoint interrupts.
     foreground_interrupted: bool = false,
-    /// The interactive editor is reading a command line. Shell code it runs
-    /// meanwhile, such as prompts, completion providers, and hooks, is part
-    /// of command line editing, which SIGINT abandons even under --posix.
-    editing_command_line: bool = false,
     pending_traps: std.ArrayListUnmanaged([]const u8) = .empty,
     process_substitutions: std.ArrayListUnmanaged(ProcessSubstitution) = .empty,
     reap_process_substitutions: std.ArrayListUnmanaged(ReapOnlyProcessSubstitution) = .empty,
