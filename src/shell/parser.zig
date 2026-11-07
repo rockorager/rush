@@ -60,7 +60,7 @@ pub fn parseWithAliases(
     allocator: std.mem.Allocator,
     src: source_mod.Source,
     tokens: token.Stream,
-    shell_state: state_mod.State,
+    shell_state: *const state_mod.State,
 ) ParserError!ast.Program {
     return parseWithAliasState(allocator, src, tokens, shell_state);
 }
@@ -71,7 +71,7 @@ pub fn parseWithAliasesRequiringCompleteHereDocs(
     allocator: std.mem.Allocator,
     src: source_mod.Source,
     tokens: token.Stream,
-    shell_state: state_mod.State,
+    shell_state: *const state_mod.State,
 ) ParserError!ast.Program {
     return parseWithAliasStateOptions(allocator, src, tokens, shell_state, .{ .require_complete_here_docs = true });
 }
@@ -217,7 +217,7 @@ fn parseWithAliasState(
     allocator: std.mem.Allocator,
     src: source_mod.Source,
     tokens: token.Stream,
-    alias_state: ?state_mod.State,
+    alias_state: ?*const state_mod.State,
 ) ParserError!ast.Program {
     return parseWithAliasStateOptions(allocator, src, tokens, alias_state, .{});
 }
@@ -266,7 +266,7 @@ pub fn parseWithAliasesAndOptions(
     allocator: std.mem.Allocator,
     src: source_mod.Source,
     tokens: token.Stream,
-    shell_state: state_mod.State,
+    shell_state: *const state_mod.State,
     options: ParseOptions,
 ) ParserError!ast.Program {
     return parseWithAliasStateOptions(allocator, src, tokens, shell_state, options);
@@ -276,7 +276,7 @@ fn parseWithAliasStateOptions(
     allocator: std.mem.Allocator,
     src: source_mod.Source,
     tokens: token.Stream,
-    alias_state: ?state_mod.State,
+    alias_state: ?*const state_mod.State,
     options: ParseOptions,
 ) ParserError!ast.Program {
     src.validate();
@@ -308,7 +308,7 @@ pub const Incremental = struct {
         allocator: std.mem.Allocator,
         src: source_mod.Source,
         tokens: token.Stream,
-        shell_state: state_mod.State,
+        shell_state: *const state_mod.State,
     ) Incremental {
         return initWithOptions(allocator, src, tokens, shell_state, .{});
     }
@@ -317,7 +317,7 @@ pub const Incremental = struct {
         allocator: std.mem.Allocator,
         src: source_mod.Source,
         tokens: token.Stream,
-        shell_state: state_mod.State,
+        shell_state: *const state_mod.State,
         options: ParseOptions,
     ) Incremental {
         src.validate();
@@ -414,7 +414,7 @@ const Parser = struct {
     allocator: std.mem.Allocator,
     source: source_mod.Source,
     tokens: token.Stream,
-    alias_state: ?state_mod.State,
+    alias_state: ?*const state_mod.State,
     require_complete_here_docs: bool = false,
     /// Keeps words and here-document bodies unsplit; see `checkGrammar`.
     grammar_only: bool = false,
@@ -2494,7 +2494,7 @@ test "parser treats append words as commands with redirections in POSIX mode" {
     var shell_state = state_mod.State.init(std.testing.allocator, .{ .mode = .posix });
     defer shell_state.deinit();
 
-    const program = try parseWithAliases(allocator, src, tokens, shell_state);
+    const program = try parseWithAliases(allocator, src, tokens, &shell_state);
     const command = program.body.entries[0].and_or.pipelines[0].pipeline.stages[0].simple;
     try std.testing.expectEqual(@as(usize, 0), command.assignments.len);
     try std.testing.expectEqual(@as(usize, 1), command.words.len);
@@ -2551,7 +2551,7 @@ test "POSIX parser treats adjacent parentheses as nested subshells" {
     var shell_state = state_mod.State.init(std.testing.allocator, .{ .mode = .posix });
     defer shell_state.deinit();
 
-    const program = try parseWithAliases(allocator, src, tokens, shell_state);
+    const program = try parseWithAliases(allocator, src, tokens, &shell_state);
     const assignment = program.body.entries[0].and_or.pipelines[0].pipeline.stages[0].simple.assignments[0];
     const substitution = assignment.value.data.parts[0].command_substitution.parsed.?;
     const outer_subshell = substitution.body.entries[0].and_or.pipelines[0].pipeline.stages[1].compound.body.subshell;
@@ -2592,7 +2592,7 @@ test "incremental parser yields one complete command per call" {
         .text = "echo one; echo two\nif true\nthen echo three\nfi\necho four\n",
     };
     const tokens = try lexer.lex(allocator, src);
-    var incremental: Incremental = .init(allocator, src, tokens, shell_state);
+    var incremental: Incremental = .init(allocator, src, tokens, &shell_state);
 
     const first = (try incremental.next()).?;
     try std.testing.expectEqual(@as(usize, 2), first.body.entries.len);
@@ -2626,7 +2626,7 @@ test "parsers reject adjacent commands without a list separator" {
 
     try std.testing.expectError(error.UnexpectedToken, parse(allocator, src, tokens));
 
-    var incremental: Incremental = .init(allocator, src, tokens, shell_state);
+    var incremental: Incremental = .init(allocator, src, tokens, &shell_state);
     try std.testing.expectError(error.UnexpectedToken, incremental.next());
 }
 
@@ -2679,7 +2679,7 @@ test "incremental parser consumes here-document bodies within command boundaries
         .text = "cat <<E\nbody\nE\necho after\n",
     };
     const tokens = try lexer.lex(allocator, src);
-    var incremental: Incremental = .init(allocator, src, tokens, shell_state);
+    var incremental: Incremental = .init(allocator, src, tokens, &shell_state);
 
     const first = (try incremental.next()).?;
     const redirection = first.body.entries[0].and_or.pipelines[0].pipeline.stages[0].simple.redirections[0];
@@ -2706,7 +2706,7 @@ test "incremental parser permits reclaiming command storage between here-documen
         .text = "cat <<E\nfirst\nE\ncat <<E\nsecond\nE\n",
     };
     const tokens = try lexer.lex(source_arena.allocator(), src);
-    var incremental: Incremental = .init(command_arena.allocator(), src, tokens, shell_state);
+    var incremental: Incremental = .init(command_arena.allocator(), src, tokens, &shell_state);
     for ([_][]const u8{ "first\n", "second\n" }) |expected| {
         const program = (try incremental.next()).?;
         const redirection = program.body.entries[0].and_or.pipelines[0].pipeline.stages[0].simple.redirections[0];
@@ -2789,7 +2789,7 @@ test "incremental parser records failure locations" {
         .text = "echo ok\n)\n",
     };
     const tokens = try lexer.lex(allocator, src);
-    var incremental: Incremental = .init(allocator, src, tokens, shell_state);
+    var incremental: Incremental = .init(allocator, src, tokens, &shell_state);
 
     _ = (try incremental.next()).?;
     try std.testing.expectError(error.ExpectedCommand, incremental.next());
@@ -2813,7 +2813,7 @@ test "whole-program parse reports failure at end of input" {
     };
     const tokens = try lexer.lex(allocator, src);
     var parse_failure: ?Failure = null;
-    const parsed = parseWithAliasesAndOptions(allocator, src, tokens, shell_state, .{ .failure = &parse_failure });
+    const parsed = parseWithAliasesAndOptions(allocator, src, tokens, &shell_state, .{ .failure = &parse_failure });
 
     try std.testing.expectError(error.UnexpectedToken, parsed);
     try std.testing.expectEqual(@as(usize, 3), parse_failure.?.line);

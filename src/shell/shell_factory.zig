@@ -225,7 +225,7 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
             const ast_allocator = command_arena.allocator();
             const tokens = try lexer.lexWithTokenAllocator(source_arena.allocator(), self.allocator, src);
             defer tokens.deinit(self.allocator);
-            var incremental = parser.Incremental.init(ast_allocator, src, tokens, self.state);
+            var incremental = parser.Incremental.init(ast_allocator, src, tokens, &self.state);
             var boundaries_failed = false;
 
             var start: usize = 0;
@@ -345,14 +345,14 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
         ) !result.EvalResult {
             const chunk_src: source.Source = .{ .id = src.id, .kind = src.kind, .name = src.name, .text = text };
 
-            const lexed = try lexer.lexWithAliasesSourceOptions(ast_allocator, chunk_src, self.state, .{
+            const lexed = try lexer.lexWithAliasesSourceOptions(ast_allocator, chunk_src, &self.state, .{
                 .autoload_function_name = self.autoloading_function,
             });
             const program = try parser.parseWithAliasesAndOptions(
                 ast_allocator,
                 lexed.source,
                 lexed.tokens,
-                self.state,
+                &self.state,
                 .{ .require_complete_here_docs = require_complete_here_docs, .failure = failure },
             );
             program.validate();
@@ -433,7 +433,7 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
         }
 
         fn aliasesMayRewrite(self: *Self) bool {
-            return self.state.aliases.count() != 0 and lexer.aliasesEnabled(self.state);
+            return self.state.aliases.count() != 0 and lexer.aliasesEnabled(&self.state);
         }
     };
 }

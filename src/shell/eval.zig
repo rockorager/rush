@@ -6783,8 +6783,8 @@ fn expandProcessSubstitution(shell: anytype, substitution: ast.ProcessSubstituti
         // parsed here on every evaluation; keep them in the caller's scratch
         // scope so a loop does not grow the per-source AST arena.
         const allocator = shell.scratchAllocator();
-        const tokens = try lexer.lexWithAliases(allocator, src, shell.state);
-        break :program try parser.parseWithAliases(allocator, src, tokens, shell.state);
+        const tokens = try lexer.lexWithAliases(allocator, src, &shell.state);
+        break :program try parser.parseWithAliases(allocator, src, tokens, &shell.state);
     };
 
     const pipe_desc = try shell.host.pipe();
@@ -7452,8 +7452,8 @@ fn expandCommandSubstitution(
         // parsed here on every evaluation; keep them in the caller's scratch
         // scope so a loop does not grow the per-source AST arena.
         const allocator = shell.scratchAllocator();
-        const tokens = try lexer.lexWithAliases(allocator, src, shell.state);
-        break :program try parser.parseWithAliases(allocator, src, tokens, shell.state);
+        const tokens = try lexer.lexWithAliases(allocator, src, &shell.state);
+        break :program try parser.parseWithAliases(allocator, src, tokens, &shell.state);
     };
     const capture = try evalCommandSubstitutionInChild(shell, substitution, program);
     const status = capture.status;

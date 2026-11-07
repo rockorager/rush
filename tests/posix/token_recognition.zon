@@ -459,6 +459,27 @@
             .status = 0,
         },
         .{
+            .name = "a dot script that defines many aliases still expands them in substitutions",
+            .script =
+            \\alias outer=printf
+            \\{
+            \\  printf '%s\n' "alias first='printf =%s='"
+            \\  i=0
+            \\  line=alias
+            \\  while [ "$i" -lt 300 ]; do line="$line a$i=echo"; i=$((i + 1)); done
+            \\  printf '%s\n' "$line"
+            \\  printf '%s\n' 'echo $(a5 hi) $(first x)'
+            \\} >aliases.sh
+            \\. ./aliases.sh
+            ,
+            .stdout =
+            \\hi =x=
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "digits separated from redirection operators remain command arguments",
             .script =
             \\printf '%s\n' 2 >out

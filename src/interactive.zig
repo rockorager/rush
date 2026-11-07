@@ -1184,7 +1184,7 @@ fn stdinCommandsComplete(sh: *RushShell, text: []const u8) bool {
     const src: shell.source.Source = .{ .id = 0, .kind = .standard_input, .name = "stdin", .text = text };
     const tokens = shell.lexer.lex(allocator, src) catch return true;
     defer tokens.deinit(allocator);
-    var incremental = shell.parser.Incremental.initWithOptions(allocator, src, tokens, sh.state, .{
+    var incremental = shell.parser.Incremental.initWithOptions(allocator, src, tokens, &sh.state, .{
         .require_complete_here_docs = true,
     });
     while (true) {

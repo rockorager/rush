@@ -213,7 +213,7 @@ const AliasExpansion = struct {
 pub fn lexWithAliases(
     allocator: std.mem.Allocator,
     src: source_mod.Source,
-    shell_state: state_mod.State,
+    shell_state: *const state_mod.State,
 ) std.mem.Allocator.Error!token.Stream {
     return (try lexWithAliasesSource(allocator, src, shell_state)).tokens;
 }
@@ -224,7 +224,7 @@ pub fn lexWithAliases(
 pub fn lexWithAliasesSource(
     allocator: std.mem.Allocator,
     src: source_mod.Source,
-    shell_state: state_mod.State,
+    shell_state: *const state_mod.State,
 ) std.mem.Allocator.Error!AliasLexResult {
     return lexWithAliasesSourceOptions(allocator, src, shell_state, .{});
 }
@@ -235,7 +235,7 @@ pub fn lexWithAliasesSource(
 pub fn lexWithAliasesSourceOptions(
     allocator: std.mem.Allocator,
     src: source_mod.Source,
-    shell_state: state_mod.State,
+    shell_state: *const state_mod.State,
     options: AliasOptions,
 ) std.mem.Allocator.Error!AliasLexResult {
     if (options.autoload_function_name) |name| std.debug.assert(name.len != 0);
@@ -264,7 +264,7 @@ fn aliasExpandedSource(
     allocator: std.mem.Allocator,
     src: source_mod.Source,
     tokens: token.Stream,
-    shell_state: state_mod.State,
+    shell_state: *const state_mod.State,
     active_alias_spans: []const ActiveAliasSpan,
     options: AliasOptions,
 ) std.mem.Allocator.Error!?AliasExpansion {
@@ -447,7 +447,7 @@ fn isAutoloadFunctionDefinitionName(
         tokens.items[index + 2].kind == .right_paren;
 }
 
-pub fn aliasesEnabled(shell_state: state_mod.State) bool {
+pub fn aliasesEnabled(shell_state: *const state_mod.State) bool {
     return shell_state.options.mode == .posix or shell_state.options.interactive or shell_state.options.expand_aliases;
 }
 
@@ -1783,7 +1783,7 @@ test "alias substitution copies here-document bodies verbatim" {
         .name = "test",
         .text = "cat <<E\nhi\nE\nhi\n",
     };
-    const lexed = try lexWithAliasesSource(allocator, src, shell_state);
+    const lexed = try lexWithAliasesSource(allocator, src, &shell_state);
 
     // The command-position `hi` after the body expands; the body line does not.
     try std.testing.expectEqualStrings("cat <<E\nhi\nE\nprintf hi\n", lexed.source.text);
@@ -1803,7 +1803,7 @@ test "self-referential alias expands only once" {
         .name = "test",
         .text = "ls\n",
     };
-    const lexed = try lexWithAliasesSource(allocator, src, shell_state);
+    const lexed = try lexWithAliasesSource(allocator, src, &shell_state);
 
     try std.testing.expectEqualStrings("ls -lhv --color --group-directories-first\n", lexed.source.text);
 }
@@ -1822,7 +1822,7 @@ test "autoload function definition name bypasses alias substitution" {
         .name = "test",
         .text = "ls() { printf hi; }\n",
     };
-    const lexed = try lexWithAliasesSourceOptions(allocator, src, shell_state, .{ .autoload_function_name = "ls" });
+    const lexed = try lexWithAliasesSourceOptions(allocator, src, &shell_state, .{ .autoload_function_name = "ls" });
 
     try std.testing.expectEqualStrings(src.text, lexed.source.text);
 }
