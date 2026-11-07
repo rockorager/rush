@@ -1359,7 +1359,7 @@
             \\cat <<EOF |
             \\body
             \\EOF
-            \\wc -c
+            \\wc -c | sed 's/^ *//'
             ,
             .stdout =
             \\5

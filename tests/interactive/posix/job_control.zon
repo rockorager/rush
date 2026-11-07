@@ -54,14 +54,14 @@
             .script =
             \\set -m
             \\sh -c 'kill -TSTP $$'
-            \\printf 'after-stop:%s\n' "$?"
+            \\printf 'after-stop:%s\n' "$(kill -l "$?")"
             \\jobs
             \\bg %1
             \\wait %1
             \\printf 'after-wait:%s\n' "$?"
             ,
             .stdout =
-            \\after-stop:148
+            \\after-stop:TSTP
             \\[1] + Stopped sh -c kill -TSTP $$
             \\[1] sh -c kill -TSTP $$
             \\after-wait:0
@@ -73,14 +73,14 @@
             .script =
             \\set -m
             \\sh -c 'kill -TSTP $$' | cat
-            \\printf 'after-stop:%s\n' "$?"
+            \\printf 'after-stop:%s\n' "$(kill -l "$?")"
             \\jobs
             \\bg %1
             \\wait %1
             \\printf 'after-wait:%s\n' "$?"
             ,
             .stdout =
-            \\after-stop:148
+            \\after-stop:TSTP
             \\[1] + Stopped sh -c kill -TSTP $$ | cat
             \\[1] sh -c kill -TSTP $$ | cat
             \\after-wait:0

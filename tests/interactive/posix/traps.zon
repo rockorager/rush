@@ -25,13 +25,15 @@
         },
         .{
             .name = "job control preserves explicit and inherited terminal signal ignores in children",
+            // The job-control shell in the middle is the shell under test;
+            // macOS /bin/sh (Bash 3.2) resets these ignores under set -m.
             .script =
             \\set -m
             \\for sig in TSTP TTIN TTOU; do
             \\  trap '' "$sig"
             \\  sh -c 'trap "echo bad" "$1"; kill -s "$1" "$$"; echo "$1:spawn"' sh "$sig"
             \\  (exec sh -c 'trap "echo bad" "$1"; kill -s "$1" "$$"; echo "$1:exec"' sh "$sig")
-            \\  sh -c 'set -m; sh -c '\''trap "echo bad" "$1"; kill -s "$1" "$$"; echo "$1:inherited"'\'' sh "$1"' sh "$sig"
+            \\  "$0" -c 'set -m; sh -c '\''trap "echo bad" "$1"; kill -s "$1" "$$"; echo "$1:inherited"'\'' sh "$1"' sh "$sig"
             \\  trap - "$sig"
             \\done
             ,

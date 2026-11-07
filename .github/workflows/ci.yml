@@ -17,7 +17,7 @@ concurrency:
 jobs:
   validate:
     name: ${{ matrix.name }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os || 'ubuntu-latest' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -34,6 +34,17 @@ jobs:
           - name: Conformance
             command: zig build conformance
           - name: Terminal
+            command: zig build terminal
+          # The host layer has macOS-specific paths (signals, posix_spawn,
+          # job control, ptys) that Linux runs do not exercise.
+          - name: macOS unit tests
+            os: macos-latest
+            command: zig build test
+          - name: macOS conformance
+            os: macos-latest
+            command: zig build conformance
+          - name: macOS terminal
+            os: macos-latest
             command: zig build terminal
 
     steps:
