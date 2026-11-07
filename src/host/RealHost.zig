@@ -1724,7 +1724,11 @@ fn libcSpawn(request: host.SpawnRequest) SpawnError!host.SpawnResult {
     var previous: std.posix.sigset_t = undefined;
     std.posix.sigprocmask(std.posix.SIG.BLOCK, &blocked, &previous);
     defer std.posix.sigprocmask(std.posix.SIG.SETMASK, &previous, null);
+    // As in forkProcess: these hosts discard a blocked signal that is ignored,
+    // so catch ignored signals the child will reset until it has reset them.
+    const caught = catchIgnoredSignals(request.default_signals);
     const fork_rc = std.c.fork();
+    if (fork_rc != 0) restoreIgnoredSignals(caught);
     switch (std.c.errno(fork_rc)) {
         .SUCCESS => {},
         .AGAIN, .NOMEM => return error.SystemResources,
