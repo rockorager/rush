@@ -1,0 +1,43 @@
+.{
+    .name = "Foreground jobs",
+    .cases = .{
+        .{
+            .name = "Ctrl-C stops a builtin loop and sets status 130",
+            .steps = .{
+                .{ .expect = "$ " },
+                .{ .send = "while :; do :; done; printf '%s%s\\n' NOT REACHED\r" },
+                .{ .sleep_ms = 300 },
+                .{ .send = "\x03" },
+                .{ .expect = "$ " },
+                .{ .send = "printf '%s%s\\n' status= $?\r" },
+                .{ .expect = "status=130" },
+                .{ .absent = "NOTREACHED" },
+            },
+        },
+        .{
+            .name = "Ctrl-C stops a loop running an external command",
+            .steps = .{
+                .{ .expect = "$ " },
+                .{ .send = "while :; do sleep 1; done\r" },
+                .{ .sleep_ms = 300 },
+                .{ .send = "\x03" },
+                .{ .expect = "$ " },
+                .{ .send = "printf '%s%s\\n' status= $?\r" },
+                .{ .expect = "status=130" },
+            },
+        },
+        .{
+            .name = "Ctrl-Z stops a foreground job",
+            .steps = .{
+                .{ .expect = "$ " },
+                .{ .send = "sleep 30\r" },
+                .{ .sleep_ms = 300 },
+                .{ .send = "\x1a" },
+                .{ .expect = "$ " },
+                .{ .send = "jobs\r" },
+                .{ .expect = "Stopped" },
+                .{ .expect = "sleep 30" },
+            },
+        },
+    },
+}

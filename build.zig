@@ -177,6 +177,9 @@ pub fn build(b: *std.Build) void {
     const conformance_step = b.step("conformance", "Run shell conformance tests");
     addConformanceTests(b, target, optimize, exe, conformance_step);
 
+    const terminal_step = b.step("terminal", "Run interactive terminal tests through a pty");
+    addTerminalTests(b, target, optimize, exe, terminal_step);
+
     const differential_step = b.step("differential", "Run generated differential shell integration tests");
     addDifferentialTests(b, target, optimize, exe, differential_step);
 
@@ -484,6 +487,30 @@ fn addCompileChecks(
         configureEmbedLibrary(check_shared, .dynamic, lto);
         compile_check_step.dependOn(&check_shared.step);
     }
+}
+
+fn addTerminalTests(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    rush: *std.Build.Step.Compile,
+    terminal_step: *std.Build.Step,
+) void {
+    const harness = b.addExecutable(.{
+        .name = "rush-terminal-harness",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/terminal.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    const run = b.addRunArtifact(harness);
+    run.addArg("--rush");
+    run.addArtifactArg(rush);
+    if (b.args) |args| run.addArgs(args);
+    run.has_side_effects = true;
+    terminal_step.dependOn(&run.step);
 }
 
 fn addConformanceTests(

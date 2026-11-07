@@ -33,6 +33,8 @@ jobs:
             command: zig build test
           - name: Conformance
             command: zig build conformance
+          - name: Terminal
+            command: zig build terminal
 
     steps:
       - name: Checkout

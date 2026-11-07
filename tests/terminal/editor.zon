@@ -1,0 +1,75 @@
+// Typed lines split words so the echoed input never matches the output text.
+.{
+    .name = "Line editor",
+    .cases = .{
+        .{
+            .name = "a typed line runs",
+            .steps = .{
+                .{ .expect = "$ " },
+                .{ .send = "printf '%s%s\\n' typed-li ne\r" },
+                .{ .expect = "typed-line" },
+            },
+        },
+        .{
+            .name = "Ctrl-C discards the line being edited",
+            .steps = .{
+                .{ .expect = "$ " },
+                .{ .send = "printf '%s%s\\n' DIS CARDED" },
+                .{ .send = "\x03" },
+                .{ .sleep_ms = 300 },
+                .{ .send = "\r" },
+                .{ .sleep_ms = 300 },
+                .{ .absent = "DISCARDED" },
+                .{ .send = "printf '%s%s\\n' NE XT\r" },
+                .{ .expect = "NEXT" },
+            },
+        },
+        .{
+            .name = "SIGINT at the prompt discards the line being edited",
+            .steps = .{
+                .{ .expect = "$ " },
+                .{ .send = "printf '%s%s\\n' DIS CARDED" },
+                .{ .sleep_ms = 200 },
+                .{ .signal = "INT" },
+                .{ .sleep_ms = 300 },
+                .{ .send = "\r" },
+                .{ .sleep_ms = 300 },
+                .{ .absent = "DISCARDED" },
+                .{ .send = "printf '%s%s\\n' NE XT\r" },
+                .{ .expect = "NEXT" },
+            },
+        },
+        .{
+            .name = "a trapped signal runs its action at the prompt",
+            .steps = .{
+                .{ .expect = "$ " },
+                .{ .send = "trap 'printf \"%s%s\\n\" got- usr1' USR1\r" },
+                .{ .expect = "$ " },
+                .{ .sleep_ms = 200 },
+                .{ .signal = "USR1" },
+                .{ .expect = "got-usr1" },
+            },
+        },
+        .{
+            .name = "stty changes persist to later commands",
+            .steps = .{
+                .{ .expect = "$ " },
+                .{ .send = "stty intr ^G\r" },
+                .{ .expect = "$ " },
+                .{ .send = "stty -a\r" },
+                .{ .expect = "intr = ^G" },
+            },
+        },
+        .{
+            .name = "a prompt async segment fills in",
+            .config =
+            \\seg() { printf '%s%s' ASYNC- OK; }
+            \\rush_prompt() { prompt text '$ '; prompt async k --ttl 100000 -- seg; }
+            \\
+            ,
+            .steps = .{
+                .{ .expect = "ASYNC-OK" },
+            },
+        },
+    },
+}

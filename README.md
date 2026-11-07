@@ -134,6 +134,7 @@ zig build compile-check
 zig build lint
 zig build test
 zig build conformance
+zig build terminal
 ```
 
 For local performance comparisons against installed `dash`, build and run the
