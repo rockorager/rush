@@ -656,20 +656,52 @@ fn runCommand(
     }
 
     const command_argv = if (stdin == null) argv else wrapper_argv.items;
-    const result = try std.process.run(allocator, io, .{
+    var child = try std.process.spawn(io, .{
         .argv = command_argv,
         .cwd = .{ .dir = cwd },
         .environ_map = environ_map,
+        // A group of its own lets a timeout kill everything the case started.
+        .pgid = 0,
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .pipe,
     });
-    errdefer allocator.free(result.stdout);
-    errdefer allocator.free(result.stderr);
+    defer child.kill(io);
 
+    var multi_reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
+    var multi_reader: std.Io.File.MultiReader = undefined;
+    multi_reader.init(allocator, io, multi_reader_buffer.toStreams(), &.{ child.stdout.?, child.stderr.? });
+    defer multi_reader.deinit();
+
+    const timeout: std.Io.Timeout = .{ .duration = .{ .raw = .fromMilliseconds(case_timeout_ms), .clock = .awake } };
+    while (multi_reader.fill(64, timeout)) |_| {} else |err| switch (err) {
+        error.EndOfStream => {},
+        error.Timeout => {
+            // ziglint-ignore: Z026 the group may already be gone; the case fails either way
+            std.posix.kill(-child.id.?, .KILL) catch {};
+            return .{
+                .stdout = try allocator.dupe(u8, ""),
+                .stderr = try std.fmt.allocPrint(allocator, "harness: timed out after {d} ms\n", .{case_timeout_ms}),
+                .status = 124,
+            };
+        },
+        else => |fill_err| return fill_err,
+    }
+    try multi_reader.checkAnyError();
+
+    const term = try child.wait(io);
+    const stdout = try multi_reader.toOwnedSlice(0);
+    errdefer allocator.free(stdout);
+    const stderr = try multi_reader.toOwnedSlice(1);
     return .{
-        .stdout = result.stdout,
-        .stderr = result.stderr,
-        .status = statusFromTerm(result.term),
+        .stdout = stdout,
+        .stderr = stderr,
+        .status = statusFromTerm(term),
     };
 }
+
+/// Bounds each case so a hung shell fails that case instead of stalling the run.
+const case_timeout_ms = 30_000;
 
 fn filterInteractiveShellStderr(allocator: std.mem.Allocator, result: RunResult) !RunResult {
     var filtered: std.ArrayList(u8) = .empty;
