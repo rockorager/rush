@@ -702,9 +702,10 @@
             .status = 0,
         },
         .{
+            // A shell stage reports the write error; uutils cat ignores it.
             .name = "external pipeline stage with closed stdout reports command failure",
             .script =
-            \\printf x | cat >&-
+            \\printf 'x\n' | sh -c 'read -r line; printf "%s\n" "$line"' >&-
             \\printf 'status:%s\n' "$?"
             ,
             .stdout =
@@ -773,8 +774,10 @@
             .status = 0,
         },
         .{
+            // Duplicating fd 0 in the child fails only if it is closed; reading
+            // it cannot tell closed from empty, and uutils cat ignores EBADF.
             .name = "input duplication can close standard input",
-            .script = "cat <&-",
+            .script = "sh -c 'exec 3<&0' <&-",
             .stdout = "",
             .stderr = "",
             .stderr_match = .nonempty,

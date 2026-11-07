@@ -237,10 +237,11 @@
             .status = 7,
         },
         .{
+            // The rightmost stage is a shell: uutils cat ignores a closed stdout.
             .name = "pipeline status observes rightmost output failure on closed stdout",
             .script =
             \\exec 3>&1 1>&-
-            \\printf hi | cat
+            \\printf 'hi\n' | sh -c 'read -r line; printf "%s\n" "$line"'
             \\status=$?
             \\exec 1>&3 3>&-
             \\if [ "$status" -ne 0 ]; then printf '<nonzero>\n'; fi
