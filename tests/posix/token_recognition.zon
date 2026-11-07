@@ -420,6 +420,45 @@
             .status = 0,
         },
         .{
+            .name = "case subjects and patterns are not alias candidates",
+            .script =
+            \\alias foo='printf bad'
+            \\case foo in (foo) printf '<paren>\n';; esac
+            \\case foo in
+            \\    bar) ;;
+            \\    foo) printf '<plain>\n' ;;
+            \\esac
+            \\case x in x) foo 2>/dev/null; printf '\n<body>\n';; esac
+            ,
+            .stdout =
+            \\<paren>
+            \\<plain>
+            \\bad
+            \\<body>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "aliases defined after an alias-opened group still apply",
+            .script =
+            \\alias begin='{'
+            \\begin
+            \\printf '<group>\n'
+            \\}
+            \\alias later='printf "<later>\n"'
+            \\later
+            ,
+            .stdout =
+            \\<group>
+            \\<later>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "digits separated from redirection operators remain command arguments",
             .script =
             \\printf '%s\n' 2 >out

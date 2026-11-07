@@ -277,119 +277,54 @@ fn aliasExpandedSource(
     errdefer rewritten_active_spans.deinit(allocator);
     var changed = false;
     var cursor: usize = 0;
-    var command_position = true;
-    var skip_redirection_target = false;
+    // One substitution per pass: the caller relexes the rewritten text, so
+    // every command position is judged on real tokens rather than guessed
+    // across replacement text.
+    var tracker: token.CommandPositionTracker = .{};
+    var previous_end: usize = 0;
 
     for (0..tokens.items.len) |index| {
         const tok = tokens.get(index);
         if (tok.kind == .eof) break;
+        defer previous_end = tok.span.end;
+        const candidate = switch (tracker.classify(tok)) {
+            .command => true,
+            .argument => tok.reserved == null and !token.isAssignmentWord(tok.text) and
+                followsBlankEndingAlias(src.text, active_alias_spans, previous_end, tok.span.start),
+            else => false,
+        };
+        if (!candidate or tok.quoted) continue;
+        if (isAutoloadFunctionDefinitionName(tokens, index, options.autoload_function_name)) continue;
+        const alias = shell_state.getAlias(tok.text) orelse continue;
+        if (aliasIsActive(active_alias_spans, tok.span.start, tok.span.end, alias.name)) continue;
         try appendAliasSourceSlice(
             allocator,
             &output,
             &rewritten_active_spans,
             src,
             active_alias_spans,
-            cursor,
+            0,
             tok.span.start,
         );
-        cursor = tok.span.end;
-
-        if (skip_redirection_target and tok.kind == .word) {
-            skip_redirection_target = false;
-            try appendAliasSourceSlice(
-                allocator,
-                &output,
-                &rewritten_active_spans,
-                src,
-                active_alias_spans,
-                tok.span.start,
-                tok.span.end,
-            );
-            continue;
-        }
-
-        if (tok.kind == .word) {
-            if (tok.reserved) |reserved| {
-                command_position = token.reservedWordStartsCommandList(reserved);
-                try appendAliasSourceSlice(
-                    allocator,
-                    &output,
-                    &rewritten_active_spans,
-                    src,
-                    active_alias_spans,
-                    tok.span.start,
-                    tok.span.end,
-                );
-                continue;
-            }
-            if (command_position and !tok.quoted and !token.isAssignmentWord(tok.text) and
-                !isAutoloadFunctionDefinitionName(tokens, index, options.autoload_function_name))
-            {
-                if (shell_state.getAlias(tok.text)) |alias| {
-                    if (!aliasIsActive(active_alias_spans, tok.span.start, tok.span.end, alias.name)) {
-                        const replacement_start = output.items.len;
-                        try output.appendSlice(allocator, alias.value);
-                        try appendReplacementActiveAliases(
-                            allocator,
-                            &rewritten_active_spans,
-                            active_alias_spans,
-                            tok.span.start,
-                            tok.span.end,
-                            replacement_start,
-                            output.items.len,
-                        );
-                        if (alias.value.len != 0) try rewritten_active_spans.append(allocator, .{
-                            .start = replacement_start,
-                            .end = output.items.len,
-                            .name = alias.name,
-                        });
-                        command_position = aliasEndsWithBlank(alias.value);
-                        changed = true;
-                        continue;
-                    }
-                }
-            }
-            if (command_position and token.isAssignmentWord(tok.text)) {
-                command_position = true;
-            } else {
-                command_position = false;
-            }
-            try appendAliasSourceSlice(
-                allocator,
-                &output,
-                &rewritten_active_spans,
-                src,
-                active_alias_spans,
-                tok.span.start,
-                tok.span.end,
-            );
-            continue;
-        }
-
-        if (token.isRedirectionOperator(tok.kind)) {
-            skip_redirection_target = true;
-            try appendAliasSourceSlice(
-                allocator,
-                &output,
-                &rewritten_active_spans,
-                src,
-                active_alias_spans,
-                tok.span.start,
-                tok.span.end,
-            );
-            continue;
-        }
-
-        command_position = token.startsCommandPosition(tok.kind);
-        try appendAliasSourceSlice(
+        const replacement_start = output.items.len;
+        try output.appendSlice(allocator, alias.value);
+        try appendReplacementActiveAliases(
             allocator,
-            &output,
             &rewritten_active_spans,
-            src,
             active_alias_spans,
             tok.span.start,
             tok.span.end,
+            replacement_start,
+            output.items.len,
         );
+        if (alias.value.len != 0) try rewritten_active_spans.append(allocator, .{
+            .start = replacement_start,
+            .end = output.items.len,
+            .name = alias.name,
+        });
+        cursor = tok.span.end;
+        changed = true;
+        break;
     }
 
     if (!changed) {
@@ -412,6 +347,22 @@ fn aliasExpandedSource(
         .text = expanded,
         .active_alias_spans = try rewritten_active_spans.toOwnedSlice(allocator),
     };
+}
+
+/// True when the word starting at `word_start` directly follows the last
+/// token of replacement text whose alias value ends in a blank, which makes
+/// that word an alias candidate as well (POSIX 2.3.1).
+fn followsBlankEndingAlias(
+    text: []const u8,
+    active_alias_spans: []const ActiveAliasSpan,
+    previous_end: usize,
+    word_start: usize,
+) bool {
+    for (active_alias_spans) |span| {
+        if (span.start < previous_end and previous_end <= span.end and span.end <= word_start and
+            aliasEndsWithBlank(text[span.start..span.end])) return true;
+    }
+    return false;
 }
 
 fn appendAliasSourceSlice(

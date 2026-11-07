@@ -167,15 +167,35 @@ fn isNameContinue(byte: u8) bool {
 }
 
 /// Walks a token stream and classifies each word by its grammatical role.
-/// This is the single shared notion of "command position" used by the
-/// interactive diagnostics and completion analysis.
+/// This is the single shared notion of "command position" used by alias
+/// substitution, interactive diagnostics, and completion analysis.
 ///
 /// Reserved words are only recognized in command position, matching the
 /// grammar rather than the lexer's lexical marking. IO numbers preserve
 /// command position because redirections may precede the command word.
+/// Case commands are followed so that a case subject and its patterns,
+/// including a pattern's optional opening parenthesis, are never mistaken
+/// for command position.
 pub const CommandPositionTracker = struct {
     command_position: bool = true,
     skip_redirection_target: bool = false,
+    /// Innermost-last states of the case commands being classified. Deeper
+    /// nesting than the capacity is classified as ordinary command text.
+    case_states: [max_case_depth]CaseState = undefined,
+    case_depth: usize = 0,
+
+    const max_case_depth = 32;
+
+    const CaseState = enum {
+        /// The word after `case`.
+        subject,
+        /// Awaiting `in` after the subject.
+        in_keyword,
+        /// Patterns of a case item, up to its closing `)`.
+        pattern,
+        /// The command list of a case item.
+        body,
+    };
 
     pub const Class = enum {
         /// Word in command position: the command name of its command.
@@ -198,9 +218,36 @@ pub const CommandPositionTracker = struct {
                 self.skip_redirection_target = false;
                 return .redirection_target;
             }
+            if (self.caseState()) |state| switch (state) {
+                .subject => {
+                    self.setCaseState(.in_keyword);
+                    return .argument;
+                },
+                .in_keyword => {
+                    if (tok.reserved != .in_kw) return .argument;
+                    self.setCaseState(.pattern);
+                    return .reserved;
+                },
+                .pattern => {
+                    if (tok.reserved == .esac_kw) {
+                        self.case_depth -= 1;
+                        self.command_position = false;
+                        return .reserved;
+                    }
+                    return .argument;
+                },
+                .body => {},
+            };
             if (!self.command_position) return .argument;
             if (tok.reserved) |reserved| {
                 self.command_position = reservedWordStartsCommandList(reserved);
+                switch (reserved) {
+                    .case_kw => self.pushCase(),
+                    .esac_kw => if (self.case_depth > max_case_depth or self.caseState() == .body) {
+                        self.case_depth -= 1;
+                    },
+                    else => {},
+                }
                 return .reserved;
             }
             if (isAssignmentWord(tok.text)) return .assignment;
@@ -212,8 +259,41 @@ pub const CommandPositionTracker = struct {
             self.skip_redirection_target = true;
             return .operator;
         }
+        if (self.caseState()) |state| switch (state) {
+            .subject, .in_keyword => return .operator,
+            .pattern => {
+                if (tok.kind == .right_paren) {
+                    self.setCaseState(.body);
+                    self.command_position = true;
+                }
+                return .operator;
+            },
+            .body => switch (tok.kind) {
+                .double_semicolon, .semicolon_ampersand, .double_semicolon_ampersand => {
+                    self.setCaseState(.pattern);
+                    self.command_position = false;
+                    return .operator;
+                },
+                else => {},
+            },
+        };
         self.command_position = startsCommandPosition(tok.kind);
         return .operator;
+    }
+
+    fn caseState(self: CommandPositionTracker) ?CaseState {
+        if (self.case_depth == 0 or self.case_depth > max_case_depth) return null;
+        return self.case_states[self.case_depth - 1];
+    }
+
+    fn setCaseState(self: *CommandPositionTracker, state: CaseState) void {
+        std.debug.assert(self.caseState() != null);
+        self.case_states[self.case_depth - 1] = state;
+    }
+
+    fn pushCase(self: *CommandPositionTracker) void {
+        if (self.case_depth < max_case_depth) self.case_states[self.case_depth] = .subject;
+        self.case_depth += 1;
     }
 };
 
@@ -447,6 +527,32 @@ test "command position tracker treats reserved words as arguments outside comman
     try std.testing.expectEqual(CommandPositionTracker.Class.command, tracker.classify(tokens.get(0)));
     try std.testing.expectEqual(CommandPositionTracker.Class.argument, tracker.classify(tokens.get(1)));
     try std.testing.expectEqual(CommandPositionTracker.Class.argument, tracker.classify(tokens.get(2)));
+}
+
+test "command position tracker follows case subjects patterns and bodies" {
+    const src = "case x in (a|b) cmd x;; c) esac\ncase y in y) case z in z) inner;; esac;; esac; after";
+    const source_file: source.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = src };
+    const tokens = try test_lexer.lex(std.testing.allocator, source_file);
+    defer tokens.deinit(std.testing.allocator);
+
+    var tracker: CommandPositionTracker = .{};
+    var words: std.ArrayList(CommandPositionTracker.Class) = .empty;
+    defer words.deinit(std.testing.allocator);
+    for (0..tokens.items.len) |index| {
+        const tok = tokens.get(index);
+        if (tok.kind == .eof) break;
+        const class = tracker.classify(tok);
+        if (tok.kind == .word) try words.append(std.testing.allocator, class);
+    }
+
+    const R = CommandPositionTracker.Class.reserved;
+    const A = CommandPositionTracker.Class.argument;
+    const C = CommandPositionTracker.Class.command;
+    const expected = [_]CommandPositionTracker.Class{
+        R, A, R, A, A, C, A, A, R, // case x in (a|b) cmd x;; c) esac
+        R, A, R, A, R, A, R, A, C, R, R, C, // nested case, then `after`
+    };
+    try std.testing.expectEqualSlices(CommandPositionTracker.Class, &expected, words.items);
 }
 
 test "reserved word lookup uses static map" {

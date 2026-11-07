@@ -235,7 +235,7 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
                 var end: usize = undefined;
                 var direct_program: ?ast.Program = null;
                 if (boundaries_failed) {
-                    end = src.text.len;
+                    end = lineEnd(src.text, start);
                 } else if (incremental.next()) |maybe_program| {
                     const program = maybe_program orelse {
                         try self.writeVerboseInput(src.text, &verbose_offset, src.text.len);
@@ -246,14 +246,16 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
                 } else |err| {
                     try self.writeVerboseInput(src.text, &verbose_offset, src.text.len);
                     // Unexpanded text may only parse after alias expansion
-                    // (an alias value can open a construct); retry the rest
-                    // of the input through the alias-aware path.
+                    // (an alias value can open a construct). Find the rest
+                    // of the command boundaries line by line through the
+                    // alias-aware path, so each command still runs before
+                    // later text is lexed with the aliases it defines.
                     if (!self.aliasesMayRewrite()) {
                         self.reportParseFailure(err, incremental.failure(), 0);
                         return err;
                     }
                     boundaries_failed = true;
-                    end = src.text.len;
+                    end = lineEnd(src.text, start);
                 }
 
                 const evaluated = if (direct_program != null and !self.aliasesMayRewrite()) evaluated: {
@@ -321,11 +323,11 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
                     error.UnclosedQuote,
                     error.UnexpectedToken,
                     => {
-                        if (end.* >= src.text.len) {
+                        if (end.* >= src.text.len or !parseStoppedAtChunkEnd(err, failure)) {
                             self.reportParseFailure(err, failure, lineOffset(src.text, start));
                             return err;
                         }
-                        end.* = nextBoundaryEnd(src, incremental, boundaries_failed);
+                        end.* = nextBoundaryEnd(src, incremental, boundaries_failed, end.*);
                         continue;
                     },
                     else => return err,
@@ -450,18 +452,40 @@ fn lineOffset(text: []const u8, offset: usize) usize {
     return std.mem.count(u8, text[0..offset], "\n");
 }
 
+/// Returns the end of the next candidate command chunk after `current_end`:
+/// the next unexpanded command boundary, or the next line end once the
+/// unexpanded text no longer parses.
 fn nextBoundaryEnd(
     src: source.Source,
     incremental: *parser.Incremental,
     boundaries_failed: *bool,
+    current_end: usize,
 ) usize {
-    if (boundaries_failed.*) return src.text.len;
+    if (boundaries_failed.*) return lineEnd(src.text, current_end);
     const maybe_program = incremental.next() catch {
         boundaries_failed.* = true;
-        return src.text.len;
+        return lineEnd(src.text, current_end);
     };
     if (maybe_program == null) return src.text.len;
     return incremental.nextOffset();
+}
+
+/// Offset just past the newline that ends the line containing `start`, or the
+/// end of `text`.
+fn lineEnd(text: []const u8, start: usize) usize {
+    std.debug.assert(start <= text.len);
+    const newline = std.mem.findScalarPos(u8, text, start, '\n') orelse return text.len;
+    return newline + 1;
+}
+
+/// True when a chunk failed only because it ends inside a command, so a
+/// longer chunk may parse. A chunk that ends early can only leave a construct
+/// open at its end; an error anywhere else is a genuine syntax error.
+fn parseStoppedAtChunkEnd(err: anyerror, failure: ?parser.Failure) bool {
+    return switch (err) {
+        error.IncompleteHereDoc, error.UnclosedCommandSubstitution, error.UnclosedQuote => true,
+        else => if (failure) |value| value.near == null else false,
+    };
 }
 
 test "Shell caches exec environment pointer array" {
