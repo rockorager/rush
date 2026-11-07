@@ -31,6 +31,10 @@ pub const History = struct {
     /// so concurrent sessions do not interleave into each other mid-session.
     session_start_id: i64 = 0,
     active_command: ?CommandHandle = null,
+    /// SQLite's description of the most recent `load` failure; see
+    /// `loadErrorMessage`.
+    load_error: [256]u8 = undefined,
+    load_error_len: usize = 0,
 
     pub const CommandHandle = i64;
 
@@ -46,7 +50,7 @@ pub const History = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator) !History {
-        const db = try openHistoryDb(allocator, ":memory:");
+        const db = try openHistoryDb(allocator, ":memory:", null);
         errdefer _ = sqlite.sqlite3_close(db);
         return .{
             .allocator = allocator,
@@ -194,15 +198,34 @@ pub const History = struct {
         );
     }
 
+    /// Switches to the persistent database at `path`, creating it private to
+    /// the user if needed. On failure the current database stays in use and
+    /// `loadErrorMessage` describes SQLite's error, if there was one.
     pub fn load(self: *History, io: std.Io, path: []const u8) !void {
         std.debug.assert(self.active_command == null);
+        self.load_error_len = 0;
         if (std.fs.path.dirname(path)) |parent| try std.Io.Dir.cwd().createDirPath(io, parent);
-        const db = try openHistoryDb(self.allocator, path);
+        try createPrivateFileIfMissing(io, path);
+        const db = try openHistoryDb(self.allocator, path, self);
         errdefer _ = sqlite.sqlite3_close(db);
         const session_start_id = try queryMaxHistoryId(db);
         _ = sqlite.sqlite3_close(self.db);
         self.db = db;
         self.session_start_id = session_start_id;
+    }
+
+    /// Returns SQLite's message for the last failed `load`, or null when the
+    /// failure did not come from SQLite. Valid until the next `load`.
+    pub fn loadErrorMessage(self: *const History) ?[]const u8 {
+        if (self.load_error_len == 0) return null;
+        return self.load_error[0..self.load_error_len];
+    }
+
+    fn captureLoadError(self: *History, db: *sqlite.sqlite3) void {
+        if (sqlite.sqlite3_errcode(db) == sqlite.SQLITE_OK) return;
+        const message = std.mem.span(sqlite.sqlite3_errmsg(db));
+        self.load_error_len = @min(message.len, self.load_error.len);
+        @memcpy(self.load_error[0..self.load_error_len], message[0..self.load_error_len]);
     }
 
     pub fn previousEntry(
@@ -1355,7 +1378,7 @@ fn queryHistorySearchEntries(
     // FTS can only express word-prefix matches, so queries with punctuation
     // (flags, paths, operators) switch to a literal substring match instead
     // of silently dropping the bytes FTS cannot tokenize.
-    if (historySearchNeedsSubstring(query)) {
+    if (historySearchNeedsSubstring(query) or (!historyFtsAvailable() and !historySearchIsBlank(query))) {
         return queryHistorySubstringSearchEntries(
             allocator,
             db,
@@ -1438,6 +1461,10 @@ fn queryHistorySearchEntries(
     try sqliteCheck(sqlite.sqlite3_bind_text(stmt, 7, session_id.ptr, @intCast(session_id.len), null), db);
     try sqliteCheck(sqlite.sqlite3_bind_int64(stmt, 8, @intCast(limit)), db);
     return collectHistorySearchEntries(allocator, db, stmt.?, offset);
+}
+
+fn historySearchIsBlank(query: []const u8) bool {
+    return std.mem.trim(u8, query, " \t").len == 0;
 }
 
 fn historySearchNeedsSubstring(query: []const u8) bool {
@@ -1642,19 +1669,37 @@ fn appendHistoryFtsQueryToken(allocator: std.mem.Allocator, output: *std.ArrayLi
     try output.appendSlice(allocator, "\"*");
 }
 
-fn openHistoryDb(allocator: std.mem.Allocator, path: []const u8) !*sqlite.sqlite3 {
+/// SQLite creates a missing database with mode 0644 (less the umask) and gives
+/// its WAL and shared-memory files the database's mode, so create the file
+/// first to keep history readable only by its owner.
+fn createPrivateFileIfMissing(io: std.Io, path: []const u8) !void {
+    const file = std.Io.Dir.cwd().createFile(io, path, .{
+        .exclusive = true,
+        .permissions = .fromMode(0o600),
+    }) catch |err| switch (err) {
+        error.PathAlreadyExists => return,
+        else => return err,
+    };
+    file.close(io);
+}
+
+/// Opens and migrates a history database. `error_owner`, when given, records
+/// SQLite's error message if opening fails.
+fn openHistoryDb(allocator: std.mem.Allocator, path: []const u8, error_owner: ?*History) !*sqlite.sqlite3 {
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
     var db: ?*sqlite.sqlite3 = null;
+    // SQLite allocates a handle even when opening fails; it must be closed.
+    errdefer if (db) |handle| {
+        if (error_owner) |owner| owner.captureLoadError(handle);
+        _ = sqlite.sqlite3_close(handle);
+    };
     try sqliteCheck(sqlite.sqlite3_open_v2(
         path_z.ptr,
         &db,
         sqlite.SQLITE_OPEN_READWRITE | sqlite.SQLITE_OPEN_CREATE | sqlite.SQLITE_OPEN_NOMUTEX,
         null,
     ), db);
-    errdefer if (db) |handle| {
-        _ = sqlite.sqlite3_close(handle);
-    };
     const handle = db.?;
     try configureHistoryDb(handle);
     try initHistorySchema(handle);
@@ -1672,8 +1717,13 @@ fn configureHistoryDb(db: *sqlite.sqlite3) !void {
     );
 }
 
+/// Word search uses FTS5 when SQLite has it; without it, searches fall back
+/// to substring matching so history still works with a minimal system SQLite.
+fn historyFtsAvailable() bool {
+    return sqlite.sqlite3_compileoption_used("ENABLE_FTS5") != 0;
+}
+
 fn initHistorySchema(db: *sqlite.sqlite3) !void {
-    if (sqlite.sqlite3_compileoption_used("ENABLE_FTS5") == 0) return error.SqliteFts5Unavailable;
     try sqliteExec(db,
         \\create table if not exists history (
         \\  id integer primary key,
@@ -1687,6 +1737,8 @@ fn initHistorySchema(db: *sqlite.sqlite3) !void {
         \\  hostname text not null default '',
         \\  session_id text not null default ''
         \\);
+    );
+    if (historyFtsAvailable()) try sqliteExec(db,
         \\create virtual table if not exists history_fts using fts5(
         \\  command,
         \\  content='history',
@@ -2047,6 +2099,8 @@ test "history writes commands through to sqlite fts" {
     defer history.deinit();
     try history.load(std.testing.io, path);
     try history.addCommand(std.testing.io, "git checkout feature", 130, 1234, 55);
+    const stat = try std.Io.Dir.cwd().statFile(std.testing.io, path, .{});
+    try std.testing.expectEqual(@as(std.posix.mode_t, 0o600), stat.permissions.toMode() & 0o777);
 
     var reloaded = try History.init(std.testing.allocator);
     defer reloaded.deinit();

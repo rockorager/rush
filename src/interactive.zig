@@ -70,11 +70,12 @@ pub fn run(
     if (try startup.historyPath(allocator, env)) |path| {
         defer allocator.free(path);
         command_history.load(io, path) catch |err| {
-            const message = try std.fmt.allocPrint(
-                sh.scratchAllocator(),
+            var message_buffer: [512]u8 = undefined;
+            const message = std.fmt.bufPrint(
+                &message_buffer,
                 "rush: persistent history unavailable ({s}); using memory\n",
-                .{@errorName(err)},
-            );
+                .{command_history.loadErrorMessage() orelse @errorName(err)},
+            ) catch "rush: persistent history unavailable; using memory\n";
             try sh.host.writeAll(.stderr, message);
         };
     }
