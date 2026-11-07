@@ -2073,7 +2073,7 @@ fn evalZBuiltin(shell: anytype, args: []const []const u8) EvalError!result.EvalR
 
     const allocator = shell.scratchAllocator();
     const current_dir = try currentLogicalDir(shell);
-    const now = std.Io.Clock.real.now(command_history.io).toSeconds();
+    const now: i64 = @intCast(@divFloor(currentWallTimeNs(shell), std.time.ns_per_s));
     const target = try jump(command_history.context, allocator, args[index..], current_dir, now) orelse {
         try writeZNoMatchDiagnostic(shell, args[index..]);
         return .{ .status = 1 };
@@ -8365,7 +8365,9 @@ fn dynamicParameterValue(shell: anytype, name: []const u8) ?[]const u8 {
     return null;
 }
 
-fn currentWallTimeNs(shell: anytype) i128 {
+/// Wall-clock time from the shell's Host, or the shell's start time when the
+/// Host has no clock.
+pub fn currentWallTimeNs(shell: anytype) i128 {
     const HostType = switch (@typeInfo(@TypeOf(shell.host))) {
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
@@ -9421,7 +9423,6 @@ test "z builtin jumps through directory history" {
     defer shell.state.deinit();
     shell.command_history = .{
         .context = &jump_context,
-        .io = std.testing.io,
         .list = JumpContext.list,
         .jump = JumpContext.jump,
     };

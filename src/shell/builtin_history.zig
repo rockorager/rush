@@ -5,6 +5,7 @@
 
 const std = @import("std");
 
+const eval = @import("eval.zig");
 const host = @import("../host.zig");
 const history_mod = @import("command_history.zig");
 const result = @import("result.zig");
@@ -271,17 +272,19 @@ fn evalFcCommand(shell: anytype, command_history: *history_mod.CommandHistory, c
 
     if (command_history.suppress_next_append) |suppress| suppress(command_history.context);
 
-    const started_at = std.Io.Clock.real.now(command_history.io).toSeconds();
+    const started_ns = eval.currentWallTimeNs(shell);
     const evaluated = try shell.evalSourceNested(.{
         .id = 0,
         .kind = .interactive,
         .name = "fc",
         .text = command,
     });
-    const duration_ms = @max(std.Io.Clock.real.now(command_history.io).toSeconds() - started_at, 0) * 1000;
+    const started_at: i64 = @intCast(@divFloor(started_ns, std.time.ns_per_s));
+    const elapsed_ns = @max(eval.currentWallTimeNs(shell) - started_ns, 0);
+    const duration_ms: i64 = @intCast(@divFloor(elapsed_ns, std.time.ns_per_ms));
     if (command_history.append) |append| {
-        // ziglint-ignore: Z024 Z026 preserve existing readable expression shape; lint-only cleanup; intentional best-effort cleanup; preserve behavior
-        append(command_history.context, command_history.io, command, evaluated.status, started_at, duration_ms) catch {};
+        // ziglint-ignore: Z026 re-executed commands stay best effort in history; the command already ran
+        append(command_history.context, command, evaluated.status, started_at, duration_ms) catch {};
     }
     return evaluated;
 }

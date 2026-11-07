@@ -376,6 +376,8 @@ pub const History = struct {
 pub const InteractiveHistoryService = struct {
     history: *History,
     suppress_next_append: bool = false,
+    /// Bound by `commandHistory` for callbacks the shell core invokes.
+    io: ?std.Io = null,
 
     pub fn init(history: *History) InteractiveHistoryService {
         return .{ .history = history };
@@ -396,10 +398,12 @@ pub const InteractiveHistoryService = struct {
         };
     }
 
+    /// Returns the shell's callback interface, binding `io` for the callbacks
+    /// that need it; the shell core itself never receives `io`.
     pub fn commandHistory(self: *InteractiveHistoryService, io: std.Io) CommandHistory {
+        self.io = io;
         return .{
             .context = self,
-            .io = io,
             .list = listFcEntries,
             .append = appendFcCommand,
             .jump = jumpDirectory,
@@ -517,15 +521,13 @@ pub const InteractiveHistoryService = struct {
 
     fn appendFcCommand(
         context: *anyopaque,
-        // ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
-        io: std.Io,
         line: []const u8,
         status: ExitStatus,
         started_at: i64,
         duration_ms: i64,
     ) !void {
         const history_service: *InteractiveHistoryService = @ptrCast(@alignCast(context));
-        try history_service.history.appendCommand(io, line, status, started_at, duration_ms);
+        try history_service.history.appendCommand(history_service.io.?, line, status, started_at, duration_ms);
     }
 
     fn jumpDirectory(

@@ -1309,7 +1309,7 @@ fn rushCompleteHistoryDirectories(
     if (context.prefix.len != 0) try terms.append(context.allocator, context.prefix);
 
     const exclude = shellValue(sh, "PWD") orelse "";
-    const now = std.Io.Clock.real.now(command_history.io).toSeconds();
+    const now: i64 = @intCast(@divFloor(shell.eval.currentWallTimeNs(sh), std.time.ns_per_s));
     var directories = list_directories(
         command_history.context,
         context.allocator,

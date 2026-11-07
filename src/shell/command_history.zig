@@ -31,12 +31,13 @@ pub const DirectoryHistory = struct {
 
 /// Shell history callback interface. `list` and `search` return deeply owned
 /// entry slices; `jump` returns an owned path; `directories` returns a deeply
-/// owned result. Each uses the allocator passed to that callback.
+/// owned result. Each uses the allocator passed to that callback. Times are
+/// supplied by the shell from its Host: Unix seconds and durations in
+/// milliseconds.
 pub const CommandHistory = struct {
     context: *anyopaque,
-    io: std.Io,
     list: *const fn (*anyopaque, std.mem.Allocator) anyerror![]HistoryEntry,
-    append: ?*const fn (*anyopaque, std.Io, []const u8, ExitStatus, i64, i64) anyerror!void = null,
+    append: ?*const fn (*anyopaque, []const u8, ExitStatus, i64, i64) anyerror!void = null,
     jump: ?*const fn (*anyopaque, std.mem.Allocator, []const []const u8, []const u8, i64) anyerror!?[]const u8 = null,
     directories: ?*const fn (
         *anyopaque,

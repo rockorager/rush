@@ -2595,8 +2595,6 @@ test "fc lists and re-executes attached command history" {
 
         fn append(
             context: *anyopaque,
-            // ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
-            _: std.Io,
             line: []const u8,
             _: u8,
             _: i64,
@@ -2650,7 +2648,6 @@ test "fc lists and re-executes attached command history" {
     defer shell.deinit();
     shell.command_history = .{
         .context = &context,
-        .io = std.testing.io,
         .list = TestContext.list,
         .append = TestContext.append,
         .suppress_next_append = TestContext.suppress,
@@ -2825,7 +2822,6 @@ test "history builtin lists searches deletes and clears attached history" {
     defer shell.deinit();
     shell.command_history = .{
         .context = &context,
-        .io = std.testing.io,
         .list = TestContext.list,
         .search = TestContext.search,
         .delete_id = TestContext.delete,
