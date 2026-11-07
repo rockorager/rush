@@ -4,6 +4,7 @@ const ziglint = @import("ziglint");
 const compile_check_targets = [_][]const u8{
     "x86_64-linux-gnu",
     "aarch64-linux-gnu",
+    "x86_64-linux-musl",
     "x86_64-macos",
     "aarch64-macos",
     "x86_64-freebsd",
