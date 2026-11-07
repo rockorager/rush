@@ -7,6 +7,7 @@ const manifest = @import("completion/manifest.zig");
 const completion_path = @import("completion_path.zig");
 const editor_completion = @import("editor/completion.zig");
 const extensions = @import("extensions.zig");
+const file_util = @import("file_util.zig");
 const history = @import("history.zig");
 const host = @import("host.zig");
 const shell = @import("shell.zig");
@@ -749,85 +750,6 @@ fn appendStaticValues(allocator: std.mem.Allocator, builder: *Builder, analyzed:
     }
 }
 
-const CandidateChannel = struct {
-    fd: host.Fd,
-
-    fn init(allocator: std.mem.Allocator, io: std.Io, real_host: *host.RealHost) !CandidateChannel {
-        var attempts: usize = 0;
-        while (attempts < 8) : (attempts += 1) {
-            var random: u64 = undefined;
-            io.random(std.mem.asBytes(&random));
-            const path = try std.fmt.allocPrintSentinel(
-                allocator,
-                "/tmp/rush-completion-{x}.jsonl",
-                .{random},
-                0,
-            );
-            const opened_fd = real_host.openZ(path, .{
-                .access = .read_write,
-                .create = true,
-                .append = true,
-                .exclusive = true,
-                .mode = 0o600,
-            }) catch |err| switch (err) {
-                error.PathAlreadyExists => {
-                    allocator.free(path);
-                    continue;
-                },
-                else => {
-                    allocator.free(path);
-                    return err;
-                },
-            };
-            const fd = real_host.duplicateAtLeast(opened_fd, 3) catch |err| {
-                // ziglint-ignore: Z026 best-effort cleanup while returning the primary error
-                real_host.close(opened_fd) catch {};
-                // ziglint-ignore: Z026 best-effort cleanup while returning the primary error
-                real_host.deleteFileZ(path) catch {};
-                allocator.free(path);
-                return err;
-            };
-            real_host.close(opened_fd) catch {
-                // ziglint-ignore: Z026 best-effort cleanup while returning the close error
-                real_host.close(fd) catch {};
-                // ziglint-ignore: Z026 best-effort cleanup while returning the close error
-                real_host.deleteFileZ(path) catch {};
-                allocator.free(path);
-                return error.Unexpected;
-            };
-            real_host.deleteFileZ(path) catch {
-                // ziglint-ignore: Z026 best-effort cleanup while returning the unlink error
-                real_host.close(fd) catch {};
-                allocator.free(path);
-                return error.Unexpected;
-            };
-            allocator.free(path);
-            return .{ .fd = fd };
-        }
-        return error.PathAlreadyExists;
-    }
-
-    fn deinit(self: *CandidateChannel, real_host: *host.RealHost) void {
-        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve primary completion result
-        real_host.close(self.fd) catch {};
-        self.* = undefined;
-    }
-};
-
-test "candidate channel never occupies a standard descriptor" {
-    var real_host: host.RealHost = .{};
-    const saved_stdin = try real_host.duplicate(.stdin);
-    defer {
-        real_host.duplicateTo(saved_stdin, .stdin) catch unreachable;
-        real_host.close(saved_stdin) catch unreachable;
-    }
-    try real_host.close(.stdin);
-
-    var channel = try CandidateChannel.init(std.testing.allocator, std.testing.io, &real_host);
-    defer channel.deinit(&real_host);
-    try std.testing.expect(channel.fd.raw() >= 3);
-}
-
 fn appendFunctionProvider(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -862,7 +784,7 @@ fn appendFunctionProvider(
         operands,
     );
     defer provider_context.deinit();
-    var candidate_channel = try CandidateChannel.init(allocator, io, &sh.host);
+    var candidate_channel = try file_util.AnonymousFile.init(allocator, io, &sh.host, "rush-completion");
     defer candidate_channel.deinit(&sh.host);
     provider_context.candidate_fd = candidate_channel.fd;
 

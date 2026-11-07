@@ -3,13 +3,13 @@
 const std = @import("std");
 
 const editor = @import("../editor.zig");
+const file_util = @import("../file_util.zig");
 const host = @import("../host.zig");
 const shell = @import("../shell.zig");
 
 pub fn Dispatcher(comptime ShellType: type) type {
     return struct {
         sh: *ShellType,
-        temp_counter: usize = 0,
 
         const Self = @This();
 
@@ -136,11 +136,10 @@ pub fn Dispatcher(comptime ShellType: type) type {
             args: []const []const u8,
             output: *std.ArrayList(u8),
         ) !shell.result.EvalResult {
-            const temp_path = try self.nextCapturePath(allocator);
-            defer allocator.free(temp_path);
-            defer std.Io.Dir.deleteFileAbsolute(io, temp_path) catch {};
+            var capture = try file_util.AnonymousFile.init(allocator, io, &self.sh.host, "rush-event");
+            defer capture.deinit(&self.sh.host);
 
-            const command = try eventCommand(allocator, event_name, call, args, temp_path);
+            const command = try eventCommand(allocator, event_name, call, args, capture.fd);
             defer allocator.free(command);
 
             const src: shell.source.Source = .{
@@ -159,17 +158,8 @@ pub fn Dispatcher(comptime ShellType: type) type {
                 => @as(shell.result.EvalResult, .{ .status = 2 }),
                 else => return err,
             };
-            try appendCapturedOutput(allocator, io, temp_path, output);
+            try capture.readAll(allocator, &self.sh.host, output);
             return evaluated;
-        }
-
-        fn nextCapturePath(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
-            self.temp_counter +%= 1;
-            return std.fmt.allocPrint(
-                allocator,
-                "/tmp/rush-event-{d}-{d}.out",
-                .{ std.c.getpid(), self.temp_counter },
-            );
         }
     };
 }
@@ -220,7 +210,7 @@ fn eventCommand(
     event_name: []const u8,
     call: HookCall,
     args: []const []const u8,
-    capture_path: []const u8,
+    capture_fd: host.Fd,
 ) ![]const u8 {
     var command: std.ArrayList(u8) = .empty;
     errdefer command.deinit(allocator);
@@ -235,9 +225,7 @@ fn eventCommand(
         try command.append(allocator, ' ');
         try appendShellSingleQuoted(allocator, &command, arg);
     }
-    try command.appendSlice(allocator, " >");
-    try appendShellSingleQuoted(allocator, &command, capture_path);
-    try command.appendSlice(allocator, " 2>&1");
+    try command.print(allocator, " >&{d} 2>&1", .{capture_fd.raw()});
     return command.toOwnedSlice(allocator);
 }
 
@@ -253,28 +241,6 @@ fn appendShellSingleQuoted(allocator: std.mem.Allocator, out: *std.ArrayList(u8)
     try out.append(allocator, '\'');
 }
 
-fn appendCapturedOutput(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    path: []const u8,
-    output: *std.ArrayList(u8),
-) !void {
-    const file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch |err| switch (err) {
-        error.FileNotFound => return,
-        else => return err,
-    };
-    defer file.close(io);
-
-    var reader_buffer: [4096]u8 = undefined;
-    var reader = file.reader(io, &reader_buffer);
-    var buffer: [4096]u8 = undefined;
-    while (true) {
-        const read_len = try reader.interface.readSliceShort(&buffer);
-        if (read_len == 0) break;
-        try output.appendSlice(allocator, buffer[0..read_len]);
-    }
-}
-
 fn monotonicMillis(io: std.Io) u64 {
     return @intCast(std.Io.Clock.Timestamp.now(io, .awake).raw.toMilliseconds());
 }
@@ -285,12 +251,12 @@ test "event commands quote context and capture redirections" {
         "timer.tick",
         .{ .name = "tick'one", .action = "on_tick", .priority = 0 },
         &.{"arg value"},
-        "/tmp/rush event",
+        @enumFromInt(9),
     );
     defer std.testing.allocator.free(command);
 
     try std.testing.expectEqualStrings(
-        "RUSH_EVENT='timer.tick' RUSH_EVENT_HOOK='tick'\\''one' on_tick 'arg value' >'/tmp/rush event' 2>&1",
+        "RUSH_EVENT='timer.tick' RUSH_EVENT_HOOK='tick'\\''one' on_tick 'arg value' >&9 2>&1",
         command,
     );
 }
