@@ -5,7 +5,7 @@
 
 const std = @import("std");
 
-const parse_scan = @import("parse_scan.zig");
+const parser = @import("parser.zig");
 const source_mod = @import("source.zig");
 const state_mod = @import("state.zig");
 const token = @import("token.zig");
@@ -79,6 +79,101 @@ pub fn lexWithTrivia(
         .trivia = trivia,
     };
     return lexer.lex();
+}
+
+/// Returns the index of the `)` that closes the command or process
+/// substitution whose `(` is at `open_index`, searching only `text[0..end]`,
+/// or null when nothing closes it. Scratch storage comes from `allocator` and
+/// is released before returning.
+pub fn commandSubstitutionEnd(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    open_index: usize,
+    end: usize,
+) std.mem.Allocator.Error!?usize {
+    std.debug.assert(open_index < end);
+    std.debug.assert(end <= text.len);
+    std.debug.assert(text[open_index] == '(');
+    var position: source_mod.Position = .{};
+    position.byte_offset = open_index + 1;
+    return findCommandSubstitutionEnd(allocator, false, text[0..end], position, null);
+}
+
+/// POSIX requires the body of `$(...)` to be parsed to find its end, so the
+/// body is tokenized from `start`: a `)` inside quotes, a comment, a
+/// here-document body, or a nested substitution is never a `)` token. Once a
+/// `case` word appears, each unmatched `)` token is offered to the parser and
+/// the first one that ends a complete command list closes the substitution,
+/// so case patterns do not end it. When no prefix parses, the first unmatched
+/// `)` is chosen so that parsing the body reports its syntax error. Trivia for
+/// the chosen body is appended to `trivia`.
+///
+/// Scratch storage is released before returning. Nested substitutions are
+/// scanned while their enclosing body is lexed; they allocate directly from
+/// the enclosing scan's arena (`allocator_is_scratch`), because an arena per
+/// nesting level would grow geometrically with the depth.
+fn findCommandSubstitutionEnd(
+    allocator: std.mem.Allocator,
+    allocator_is_scratch: bool,
+    text: []const u8,
+    start: source_mod.Position,
+    trivia: ?*std.ArrayList(Trivia),
+) std.mem.Allocator.Error!?usize {
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = if (allocator_is_scratch) allocator else arena_state.allocator();
+
+    const source_id: source_mod.SourceId = 1;
+    var body_trivia: std.ArrayList(Trivia) = .empty;
+    var position = start;
+    position.source_id = source_id;
+    var body_lexer: Lexer = .{
+        .allocator = arena,
+        .token_allocator = arena,
+        .source = .{ .id = source_id, .kind = .command_string, .name = "$()", .text = text },
+        .position = position,
+        .trivia = if (trivia != null) &body_trivia else null,
+        .scratch = true,
+    };
+    var tokens: token.Stream.Builder = .{ .src = body_lexer.source };
+    var paren_depth: usize = 0;
+    var first_unmatched: ?usize = null;
+    var saw_case = false;
+    const close = scan: while (!body_lexer.atEnd()) {
+        const count_before = tokens.items.items.len;
+        try body_lexer.lexOne(&tokens);
+        try body_lexer.trackHereDocs(&tokens, count_before);
+        for (tokens.items.items[count_before..], count_before..) |stored, index| switch (stored.kind) {
+            .word => saw_case = saw_case or stored.reserved == .case_kw,
+            .left_paren => paren_depth += 1,
+            .right_paren => if (paren_depth != 0) {
+                paren_depth -= 1;
+            } else {
+                // Every other `)` in the grammar closes a `(` token, so only a
+                // case pattern can leave one unmatched without ending the body.
+                if (!saw_case) break :scan stored.start;
+                if (first_unmatched == null) first_unmatched = stored.start;
+                const body = try tokens.prefixStream(arena, index, stored.start);
+                if (try bodyParses(arena, body_lexer.source, body)) break :scan stored.start;
+            },
+            else => {},
+        };
+    } else first_unmatched;
+
+    if (trivia) |list| for (body_trivia.items) |item| {
+        if (close == null or item.end <= close.?) try list.append(allocator, item);
+    };
+    return close;
+}
+
+fn bodyParses(arena: std.mem.Allocator, src: source_mod.Source, tokens: token.Stream) std.mem.Allocator.Error!bool {
+    // Grammar-only parse: the Rush dialect accepts every POSIX body, and the
+    // real parse of the chosen body applies the shell's mode and aliases.
+    parser.checkGrammar(arena, src, tokens) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return false,
+    };
+    return true;
 }
 
 /// Alias-expanded source and its token stream. The returned values may borrow
@@ -494,6 +589,9 @@ const Lexer = struct {
     here_doc_delimiter_expected: ?bool = null,
     trivia: ?*std.ArrayList(Trivia) = null,
     bare_expansion_end: usize = 0,
+    /// The allocators are a substitution scan's arena; see
+    /// `findCommandSubstitutionEnd`.
+    scratch: bool = false,
 
     const PendingHereDoc = struct {
         delimiter: []const u8,
@@ -993,7 +1091,7 @@ const Lexer = struct {
                     }
                 }
                 if (delimiter == '"' and byte == '$' and index + 1 < raw_text.len and raw_text[index + 1] == '(') {
-                    const close_index = scanCommandSubstitutionText(raw_text, index + 1) orelse raw_text.len - 1;
+                    const close_index = try self.scanCommandSubstitutionText(raw_text, index + 1);
                     try output.appendSlice(self.allocator, raw_text[index .. close_index + 1]);
                     index = close_index + 1;
                     continue;
@@ -1022,7 +1120,7 @@ const Lexer = struct {
                 continue;
             }
             if (byte == '$' and index + 1 < raw_text.len and raw_text[index + 1] == '(') {
-                const close_index = scanCommandSubstitutionText(raw_text, index + 1) orelse raw_text.len - 1;
+                const close_index = try self.scanCommandSubstitutionText(raw_text, index + 1);
                 try output.appendSlice(self.allocator, raw_text[index .. close_index + 1]);
                 index = close_index + 1;
                 continue;
@@ -1033,8 +1131,10 @@ const Lexer = struct {
         return output.toOwnedSlice(self.allocator);
     }
 
-    fn scanCommandSubstitutionText(text: []const u8, open_index: usize) ?usize {
-        return parse_scan.scanCommandSubstitution(text, open_index, text.len) catch null;
+    fn scanCommandSubstitutionText(self: Lexer, text: []const u8, open_index: usize) std.mem.Allocator.Error!usize {
+        var position: source_mod.Position = .{};
+        position.byte_offset = open_index + 1;
+        return try findCommandSubstitutionEnd(self.allocator, self.scratch, text, position, null) orelse text.len - 1;
     }
 
     fn doubleQuoteEscapes(byte: u8) bool {
@@ -1119,108 +1219,18 @@ const Lexer = struct {
         }
     }
 
+    /// Advances past the `)` that closes the substitution whose body starts at
+    /// the current position, or to the end of input when nothing closes it.
     fn skipCommandSubstitution(self: *Lexer) std.mem.Allocator.Error!void {
-        const start = self.position.byte_offset;
-        var depth: usize = 1;
-        while (!self.atEnd() and depth != 0) {
-            if (parse_scan.startsReservedWordAt(self.source.text, self.position.byte_offset, "case") and
-                parse_scan.startsCommandAt(self.source.text, start, self.position.byte_offset))
-            {
-                try self.skipCaseCommandText();
-                continue;
-            }
-            const byte = self.peek();
-            if (byte == '#' and self.commentStartsAtCurrentOffset()) {
-                try self.skipComment();
-                continue;
-            }
-            if (byte == '\\') {
-                self.advanceOne();
-                if (!self.atEnd()) self.advanceOne();
-                continue;
-            }
-            if (byte == '\'' or byte == '"') {
-                try self.skipQuotedText();
-                continue;
-            }
-            if (byte == '$' and self.peekNextIs('(')) {
-                depth += 1;
-                self.advanceOne();
-                self.advanceOne();
-                continue;
-            }
-            if (byte == '(') depth += 1;
-            if (byte == ')') depth -= 1;
-            self.advanceOne();
-        }
-    }
-
-    fn skipQuotedText(self: *Lexer) std.mem.Allocator.Error!void {
-        const quote = self.peek();
-        std.debug.assert(quote == '\'' or quote == '"');
-        const start = self.position.byte_offset;
-        self.advanceOne();
-        if (quote == '"') {
-            const end = parse_scan.scanDoubleQuoteEnd(
-                self.source.text,
-                self.position.byte_offset,
-                self.source.text.len,
-            ) catch {
-                self.advanceBytes(self.source.text.len - self.position.byte_offset);
-                try self.emitTrivia(.pending_quote, start, self.position.byte_offset);
-                return;
-            };
-            self.advanceBytes(end - self.position.byte_offset);
-        } else {
-            while (!self.atEnd() and self.peek() != quote) self.advanceOne();
-        }
-        if (!self.atEnd()) {
-            self.advanceOne();
-            try self.emitTrivia(.quote, start, self.position.byte_offset);
-        } else {
-            try self.emitTrivia(.pending_quote, start, self.position.byte_offset);
-        }
-    }
-
-    fn commentStartsAtCurrentOffset(self: Lexer) bool {
-        const offset = self.position.byte_offset;
-        if (offset == 0) return true;
-        return switch (self.source.text[offset - 1]) {
-            ' ', '\t', '\n', '\r', ';', '&', '|', '(', ')' => true,
-            else => false,
-        };
-    }
-
-    fn skipCaseCommandText(self: *Lexer) std.mem.Allocator.Error!void {
-        self.advanceBytes("case".len);
-        while (!self.atEnd()) {
-            if (parse_scan.startsReservedWordAt(self.source.text, self.position.byte_offset, "esac")) {
-                self.advanceBytes("esac".len);
-                return;
-            }
-
-            const byte = self.peek();
-            if (byte == '#' and self.commentStartsAtCurrentOffset()) {
-                try self.skipComment();
-                continue;
-            }
-            if (byte == '\\') {
-                self.advanceOne();
-                if (!self.atEnd()) self.advanceOne();
-                continue;
-            }
-            if (byte == '\'' or byte == '"') {
-                try self.skipQuotedText();
-                continue;
-            }
-            if (byte == '$' and self.peekNextIs('(')) {
-                self.advanceOne();
-                self.advanceOne();
-                try self.skipCommandSubstitution();
-                continue;
-            }
-            self.advanceOne();
-        }
+        const close = try findCommandSubstitutionEnd(
+            self.allocator,
+            self.scratch,
+            self.source.text,
+            self.position,
+            self.trivia,
+        );
+        const stop = if (close) |index| index + 1 else self.source.text.len;
+        self.advanceBytes(stop - self.position.byte_offset);
     }
 
     fn advanceBytes(self: *Lexer, count: usize) void {

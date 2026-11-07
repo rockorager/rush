@@ -36,6 +36,23 @@ pub fn parse(
     return parseWithAliasState(allocator, src, tokens, null);
 }
 
+/// Succeeds when the token stream is a complete program. Words, including any
+/// nested substitutions, are not split into parts, so the cost is linear in
+/// the token count; this lets the lexer delimit `$(...)` by parsing its body.
+// ziglint-ignore: Z015 existing public API error set exposure; preserve API
+pub fn checkGrammar(allocator: std.mem.Allocator, src: source_mod.Source, tokens: token.Stream) ParserError!void {
+    src.validate();
+    assertStreamSource(src, tokens);
+    var parser: Parser = .{
+        .allocator = allocator,
+        .source = src,
+        .tokens = tokens,
+        .alias_state = null,
+        .grammar_only = true,
+    };
+    _ = try parser.parseProgram();
+}
+
 /// Parses a complete token stream with alias-aware nested parsing. Ownership
 /// and input lifetimes match `parse`.
 // ziglint-ignore: Z015 existing public API error set exposure; preserve API
@@ -155,11 +172,11 @@ pub fn parseParameterExpansionText(
             continue;
         }
         if (text[name_start] == '(') {
-            index = try parse_scan.scanCommandSubstitution(text, name_start, text.len) + 1;
+            index = try parse_scan.scanCommandSubstitution(allocator, text, name_start, text.len) + 1;
             continue;
         }
         if (text[name_start] == '{') {
-            const expansion_end = parse_scan.scanBracedParameterEnd(text, name_start, text.len) orelse {
+            const expansion_end = try parse_scan.scanBracedParameterEnd(allocator, text, name_start, text.len) orelse {
                 index += 1;
                 continue;
             };
@@ -399,6 +416,8 @@ const Parser = struct {
     tokens: token.Stream,
     alias_state: ?state_mod.State,
     require_complete_here_docs: bool = false,
+    /// Keeps words and here-document bodies unsplit; see `checkGrammar`.
+    grammar_only: bool = false,
     index: usize = 0,
     split_ampersand_redirection: bool = false,
     pending_here_docs: std.ArrayList(PendingHereDoc) = .empty,
@@ -1182,7 +1201,7 @@ const Parser = struct {
         text: []const u8,
         span: source_mod.Span,
     ) ParserError!ast.Word {
-        if (std.mem.indexOfAny(u8, text, "'\"$\\`<>") == null) {
+        if (self.grammar_only or std.mem.indexOfAny(u8, text, "'\"$\\`<>") == null) {
             const word: ast.Word = .{ .data = .{ .literal = text }, .span = span };
             word.validate();
             return word;
@@ -1248,7 +1267,7 @@ const Parser = struct {
                     // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                     if (literal_start < index) try parts.append(self.allocator, .{ .literal = text[literal_start..index] });
                     const quote_start = index + 1;
-                    index = try parse_scan.scanDoubleQuoteEnd(text, quote_start, end);
+                    index = try parse_scan.scanDoubleQuoteEnd(self.allocator, text, quote_start, end);
 
                     var quoted_parts: std.ArrayList(ast.WordPart) = .empty;
                     errdefer quoted_parts.deinit(self.allocator);
@@ -1304,7 +1323,8 @@ const Parser = struct {
                     if (self.mode() == .posix) return error.UnexpectedToken;
                     // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                     if (literal_start < index) try parts.append(self.allocator, .{ .literal = text[literal_start..index] });
-                    const substitution_end = try parse_scan.scanCommandSubstitution(text, index + 1, end);
+                    const substitution_end =
+                        try parse_scan.scanCommandSubstitution(self.allocator, text, index + 1, end);
                     const source_text = text[index + 2 .. substitution_end];
                     const line_offset = self.commandSubstitutionLineOffset(span, text, index + 2);
                     const parsed = try self.parseCommandSubstitution(source_text, line_offset);
@@ -1346,7 +1366,8 @@ const Parser = struct {
                     if (name_start < end and text[name_start] == '(') {
                         // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                         if (literal_start < index) try parts.append(self.allocator, .{ .literal = text[literal_start..index] });
-                        const substitution_end = try parse_scan.scanCommandSubstitution(text, name_start, end);
+                        const substitution_end =
+                            try parse_scan.scanCommandSubstitution(self.allocator, text, name_start, end);
                         const source_text = text[name_start + 1 .. substitution_end];
                         const line_offset = self.commandSubstitutionLineOffset(span, text, name_start + 1);
                         const parsed = try self.parseCommandSubstitution(source_text, line_offset);
@@ -1359,10 +1380,11 @@ const Parser = struct {
                         continue;
                     }
                     if (name_start < end and text[name_start] == '{') {
-                        const expansion_end = parse_scan.scanBracedParameterEnd(text, name_start, end) orelse {
-                            index += 1;
-                            continue;
-                        };
+                        const expansion_end =
+                            try parse_scan.scanBracedParameterEnd(self.allocator, text, name_start, end) orelse {
+                                index += 1;
+                                continue;
+                            };
                         const expansion_span = spanFromRelativeOffsets(span, text, index, expansion_end + 1);
                         // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                         if (try self.parseBracedParameter(
@@ -1582,7 +1604,7 @@ const Parser = struct {
         if (rest.len >= 2 and isParameterOperator(rest[1])) return null;
 
         const offset_text = rest[1..];
-        const length_start = parse_scan.topLevelParameterColon(offset_text) orelse {
+        const length_start = try parse_scan.topLevelParameterColon(self.allocator, offset_text) orelse {
             return .{
                 .parameter = parameter,
                 .op = .substring,
@@ -1625,7 +1647,7 @@ const Parser = struct {
             else => {},
         };
 
-        const replacement_start = parse_scan.topLevelParameterSlash(rest, pattern_start);
+        const replacement_start = try parse_scan.topLevelParameterSlash(self.allocator, rest, pattern_start);
         const pattern_text = if (replacement_start) |index| rest[pattern_start..index] else rest[pattern_start..];
         const replacement_text = if (replacement_start) |index| rest[index + 1 ..] else "";
         return .{
@@ -1950,7 +1972,7 @@ const Parser = struct {
             pending.redirection.here_doc = .{
                 .body = body_token.text,
                 .delimiter_quoted = body_token.quoted,
-                .parts = if (body_token.quoted) &.{} else try self.parseHereDocParts(body_token),
+                .parts = if (body_token.quoted or self.grammar_only) &.{} else try self.parseHereDocParts(body_token),
             };
         }
         self.pending_here_docs.clearRetainingCapacity();

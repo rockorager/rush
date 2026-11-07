@@ -1948,7 +1948,7 @@ fn expandXtracePrefix(shell: anytype) EvalError![]const u8 {
     var index: usize = 0;
     while (index < raw.len) {
         if (index + 1 < raw.len and raw[index] == '$' and raw[index + 1] == '(') {
-            if (commandSubstitutionEnd(raw, index + 2)) |end| {
+            if (try lexer.commandSubstitutionEnd(allocator, raw, index + 1, raw.len)) |end| {
                 const substitution: ast.CommandSubstitution = .{ .source_text = raw[index + 2 .. end] };
                 try output.appendSlice(allocator, try expandCommandSubstitution(shell, substitution, null));
                 index = end + 1;
@@ -1959,39 +1959,6 @@ fn expandXtracePrefix(shell: anytype) EvalError![]const u8 {
         index += 1;
     }
     return output.toOwnedSlice(allocator);
-}
-
-fn commandSubstitutionEnd(text: []const u8, start: usize) ?usize {
-    var index = start;
-    var depth: usize = 1;
-    var single_quoted = false;
-    var double_quoted = false;
-    while (index < text.len) : (index += 1) {
-        const byte = text[index];
-        if (byte == '\\') {
-            if (index + 1 < text.len) index += 1;
-            continue;
-        }
-        if (!double_quoted and byte == '\'') {
-            single_quoted = !single_quoted;
-            continue;
-        }
-        if (!single_quoted and byte == '"') {
-            double_quoted = !double_quoted;
-            continue;
-        }
-        if (single_quoted) continue;
-        if (index + 1 < text.len and byte == '$' and text[index + 1] == '(') {
-            depth += 1;
-            index += 1;
-            continue;
-        }
-        if (byte == ')') {
-            depth -= 1;
-            if (depth == 0) return index;
-        }
-    }
-    return null;
 }
 
 fn simpleRedirectionFailureIsFatal(shell: anytype, command: ast.SimpleCommand) bool {
@@ -6918,11 +6885,12 @@ fn expandArithmeticBracedParameter(
     status: ?*?result.ExitStatus,
 ) ![]const u8 {
     const content_start = index.* + 2;
-    const content_end = parse_scan.scanBracedParameterEnd(text, index.* + 1, text.len) orelse
+    const allocator = shell.scratchAllocator();
+    const content_end = try parse_scan.scanBracedParameterEnd(allocator, text, index.* + 1, text.len) orelse
         return error.InvalidArithmetic;
     const content = text[content_start..content_end];
     const parameter = (parser.parseBracedParameterExpansion(
-        shell.scratchAllocator(),
+        allocator,
         content,
         .{},
     ) catch |err| switch (err) {

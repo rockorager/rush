@@ -368,6 +368,26 @@ pub const Stream = struct {
             try self.items.append(allocator, stored);
         }
 
+        /// Returns a stream of the first `count` tokens followed by an end of
+        /// input at byte offset `eof`, leaving the builder unchanged. Only the token
+        /// slice is allocated; line and text metadata are borrowed from the
+        /// builder and are invalidated by its next append.
+        // ziglint-ignore: Z023 nested builder method receiver precedes allocator
+        pub fn prefixStream(self: *const Builder, allocator: std.mem.Allocator, count: usize, eof: usize) !Stream {
+            std.debug.assert(count <= self.items.items.len);
+            std.debug.assert(self.lines.items.len != 0);
+            const items = try allocator.alloc(StoredToken, count + 1);
+            @memcpy(items[0..count], self.items.items[0..count]);
+            items[count] = .{ .start = eof, .end = eof, .kind = .eof, .reserved = null, .quoted = false };
+            return .{
+                .source_id = self.src.id,
+                .source_text = self.src.text,
+                .items = items,
+                .lines = self.lines.items,
+                .text_overrides = self.text_overrides.items,
+            };
+        }
+
         /// Transfers storage to the caller, leaving the builder empty. Line
         /// locations come from the lexer's raw spans, never normalized text.
         // ziglint-ignore: Z023 nested builder method receiver precedes allocator

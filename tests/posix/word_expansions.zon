@@ -757,6 +757,29 @@
             .status = 0,
         },
         .{
+            .name = "command substitution bodies are parsed to find the closing parenthesis",
+            .script =
+            \\x=$(cat <<EOF
+            \\a)b
+            \\EOF
+            \\)
+            \\printf '<%s>\n' "$x"
+            \\printf '<%s>\n' "$(case a in a) case b in b) echo nested;; esac;; c) echo c;; esac)"
+            \\printf '<%s>\n' "$(echo ${unset-)})"
+            \\printf '<%s>\n' "$(echo a # )
+            \\)"
+            ,
+            .stdout =
+            \\<a)b>
+            \\<nested>
+            \\<)>
+            \\<a>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "deep nested command substitutions preserve inner output",
             .script =
             \\s='echo ok'
