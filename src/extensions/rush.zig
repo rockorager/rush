@@ -291,6 +291,15 @@ pub const State = struct {
         try self.prompt_buffer.appendSlice(self.allocator, bytes);
     }
 
+    /// Forgets the parent's prompt async wiring in a forked child. The event
+    /// loop fd and redraw pipe are shared across fork, so a child that started
+    /// refreshes would register its pipes with the parent's event loop.
+    pub fn enterChildProcess(self: *State) void {
+        self.prompt_async_io = null;
+        self.prompt_async_redraw_fd = null;
+        self.prompt_async_registry = null;
+    }
+
     pub fn configurePromptAsync(
         self: *State,
         io: std.Io,
@@ -1022,12 +1031,6 @@ fn startPromptAsyncRefresh(sh: anytype, entry: *PromptAsyncEntry, command_args: 
             // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
             sh.host.close(pipe_desc.write) catch {};
             write_open = false;
-            // The child must never start nested refreshes: its inherited
-            // registry would mutate the parent's event loop (the epoll/kqueue
-            // fd is shared across fork).
-            sh.extensions.prompt_async_io = null;
-            sh.extensions.prompt_async_redraw_fd = null;
-            sh.extensions.prompt_async_registry = null;
             if (sh.host.openZ("/dev/null", .{ .access = .write_only })) |null_fd| {
                 // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
                 sh.host.duplicateTo(null_fd, .stderr) catch {};

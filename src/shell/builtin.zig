@@ -142,6 +142,9 @@ pub const core_definitions: DefinitionMap = .initComptime(.{
 
 pub const Registry = struct {
     extensions: []const Definition = &.{},
+    /// Extension state owned by each shell. Besides `init`, `deinit`, and
+    /// `eval`, it provides `enterChildProcess`, which a forked child that
+    /// keeps evaluating calls to drop state tied to the parent process.
     ExtensionState: type = EmptyExtensionState,
 
     pub fn lookup(comptime self: Registry, name: []const u8) ?Definition {
@@ -166,6 +169,8 @@ pub const EmptyExtensionState = struct {
 
     // ziglint-ignore: Z030 deinit intentionally leaves reusable/test-local state shape
     pub fn deinit(_: *EmptyExtensionState) void {}
+
+    pub fn enterChildProcess(_: *EmptyExtensionState) void {}
 
     pub fn eval(
         _: *EmptyExtensionState,

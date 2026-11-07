@@ -141,6 +141,7 @@ fn evalBackgroundAndOr(shell: anytype, and_or: ast.AndOr) EvalError!result.EvalR
     })) {
         .parent => |child_pid| child_pid,
         .child => {
+            shell.extensions.enterChildProcess();
             const scratch = shell.beginScratchScope() catch shell.host.exit(2);
             defer scratch.end();
             if (shell.state.jobControlEnabled()) setChildProcessGroup(shell, 0) catch shell.host.exit(2);
@@ -216,6 +217,7 @@ pub fn forkDetachedShell(shell: anytype, extra_default_signals: []const u8) !hos
             return .{ .parent = pid };
         },
         .child => {
+            shell.extensions.enterChildProcess();
             setChildProcessGroup(shell, 0) catch shell.host.exit(127);
             redirectStdinFromNull(shell) catch shell.host.exit(127);
             resetCaughtSignalTrapsForChild(shell);
@@ -549,6 +551,7 @@ fn forkPipelineStage(
             return pid;
         },
         .child => {
+            shell.extensions.enterChildProcess();
             if (process_group) |pgid| setChildProcessGroup(shell, pgid) catch shell.host.exit(2);
             resetCaughtSignalTrapsForChild(shell);
             shell.state.job_control_suppressed = true;
@@ -898,6 +901,7 @@ fn evalSubshell(shell: anytype, body: ast.List, redirections: []const ast.Redire
     defer scratch.end();
     const pid = switch (try shell.host.forkProcess(.{ .default_signals = try childDefaultSignals(shell) })) {
         .child => {
+            shell.extensions.enterChildProcess();
             if (shell.state.jobControlEnabled()) setChildProcessGroup(shell, 0) catch shell.host.exit(2);
             const evaluated = evalSubshellInCurrentProcess(shell, body, redirections) catch shell.host.exit(2);
             const status = runExitTrap(shell, evaluated.status) catch shell.host.exit(2);
@@ -6803,6 +6807,7 @@ fn expandProcessSubstitution(shell: anytype, substitution: ast.ProcessSubstituti
 
     const pid = switch (try shell.host.forkProcess(.{ .default_signals = try childDefaultSignals(shell) })) {
         .child => {
+            shell.extensions.enterChildProcess();
             closeInheritedProcessSubstitutionFds(shell);
             resetCaughtSignalTrapsForChild(shell);
             shell.state.job_control_suppressed = true;
@@ -7483,6 +7488,7 @@ fn evalCommandSubstitutionInChild(
 
     const pid = switch (try shell.host.forkProcess(.{ .default_signals = try childDefaultSignals(shell) })) {
         .child => {
+            shell.extensions.enterChildProcess();
             shell.host.close(pipe_desc.read) catch shell.host.exit(127);
             shell.host.duplicateTo(pipe_desc.write, .stdout) catch shell.host.exit(127);
             shell.host.close(pipe_desc.write) catch shell.host.exit(127);
