@@ -404,9 +404,10 @@ fn evalExternalPipeline(shell: anytype, pipeline: ast.Pipeline) EvalError!result
         notifyForegroundCommand(shell, try pipelineCommandText(shell, pipeline));
     }
     defer notifyForegroundCommand(shell, null);
+    const foreground_restore_group = builtin.terminalForegroundGroup(shell) catch return .{ .status = 1 };
     const pids = try spawnPipelineStages(shell, stages, false, shell.state.jobControlEnabled());
     defer shell.allocator.free(pids);
-    const foreground_restore_group = builtin.giveTerminalToJob(shell, pids[0]) catch {
+    if (foreground_restore_group != null) builtin.giveTerminalToJob(shell, pids[0]) catch {
         const scratch = try shell.beginScratchScope();
         defer scratch.end();
         _ = waitPids(shell, pids) catch {};
@@ -574,7 +575,10 @@ fn forkPipelineStage(
         },
         .child => {
             shell.extensions.enterChildProcess();
-            if (process_group) |pgid| setChildProcessGroup(shell, pgid) catch shell.host.exit(2);
+            if (process_group) |pgid| {
+                setChildProcessGroup(shell, pgid) catch shell.host.exit(2);
+                if (!asynchronous) claimTerminalInChild(shell, pgid);
+            }
             resetCaughtSignalTrapsForChild(shell);
             shell.state.job_control_suppressed = true;
             applyPipelineChildFdActions(shell, fd_actions) catch shell.host.exit(127);
@@ -633,6 +637,23 @@ fn setChildProcessGroup(shell: anytype, process_group: host_mod.Pid) !void {
     };
     if (!host_mod.has(HostType, .setProcessGroup)) return;
     try shell.host.setProcessGroup(0, process_group);
+}
+
+/// A foreground job's child claims the terminal for its process group, where
+/// 0 means its own pid, as well as the parent. Otherwise a command that
+/// changes terminal modes at once, such as `stty`, can run before the
+/// parent's handoff and be stopped by SIGTTOU. Failure leaves the handoff to
+/// the parent.
+fn claimTerminalInChild(shell: anytype, process_group: host_mod.Pid) void {
+    const HostType = switch (@typeInfo(@TypeOf(shell.host))) {
+        .pointer => |pointer| pointer.child,
+        else => @TypeOf(shell.host),
+    };
+    if (comptime !host_mod.has(HostType, .setTerminalProcessGroup) or
+        !host_mod.has(HostType, .currentProcessId)) return;
+    const tty = shell.state.controlling_tty orelse return;
+    const group = if (process_group == 0) shell.host.currentProcessId() else process_group;
+    shell.host.setTerminalProcessGroup(tty, group) catch {};
 }
 
 fn staticExternalPipelineStageRequest(
@@ -933,10 +954,14 @@ fn evalSubshell(shell: anytype, body: ast.List, redirections: []const ast.Redire
     _ = parentProcessId(shell);
     const scratch = try shell.beginScratchScope();
     defer scratch.end();
+    const foreground_restore_group = builtin.terminalForegroundGroup(shell) catch return .{ .status = 1 };
     const pid = switch (try shell.host.forkProcess(.{ .default_signals = try childDefaultSignals(shell) })) {
         .child => {
             shell.extensions.enterChildProcess();
-            if (shell.state.jobControlEnabled()) setChildProcessGroup(shell, 0) catch shell.host.exit(2);
+            if (shell.state.jobControlEnabled()) {
+                setChildProcessGroup(shell, 0) catch shell.host.exit(2);
+                claimTerminalInChild(shell, 0);
+            }
             const evaluated = evalSubshellInCurrentProcess(shell, body, redirections) catch shell.host.exit(2);
             const status = runExitTrap(shell, evaluated.status) catch shell.host.exit(2);
             shell.host.exit(status);
@@ -944,7 +969,7 @@ fn evalSubshell(shell: anytype, body: ast.List, redirections: []const ast.Redire
         .parent => |child_pid| child_pid,
     };
     if (shell.state.jobControlEnabled()) try setParentProcessGroup(shell, pid, pid);
-    const foreground_restore_group = builtin.giveTerminalToJob(shell, pid) catch {
+    if (foreground_restore_group != null) builtin.giveTerminalToJob(shell, pid) catch {
         // Reap best effort after terminal handoff has already failed.
         _ = shell.host.wait(pid) catch {};
         return .{ .status = 1 };
@@ -8483,9 +8508,15 @@ fn evalExternalWithSearchPath(
     };
     const status = if (host_mod.has(HostType, .spawn) and host_mod.has(HostType, .wait) and shell.state.jobControlEnabled()) status: {
         request.process_group = 0;
+        request.foreground_tty = shell.state.controlling_tty;
+        const foreground_restore_group = builtin.terminalForegroundGroup(shell) catch {
+            restoreVariables(shell, saved);
+            restored_assignments = true;
+            return .{ .status = 1 };
+        };
         const pid = (try shell.host.spawn(request)).pid;
         try setParentProcessGroup(shell, pid, pid);
-        const foreground_restore_group = builtin.giveTerminalToJob(shell, pid) catch {
+        if (foreground_restore_group != null) builtin.giveTerminalToJob(shell, pid) catch {
             _ = shell.host.wait(pid) catch {};
             restoreVariables(shell, saved);
             restored_assignments = true;

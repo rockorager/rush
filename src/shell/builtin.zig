@@ -976,7 +976,8 @@ fn foregroundJob(shell: anytype, job: state_mod.BackgroundJob) !result.EvalResul
     try shell.host.writeAll(.stdout, text);
     notifyForegroundCommand(shell, job.command);
     defer notifyForegroundCommand(shell, null);
-    const foreground_restore_group = giveTerminalToJob(shell, job.process_group) catch return .{ .status = 1 };
+    const foreground_restore_group = terminalForegroundGroup(shell) catch return .{ .status = 1 };
+    if (foreground_restore_group != null) giveTerminalToJob(shell, job.process_group) catch return .{ .status = 1 };
     defer if (foreground_restore_group) |process_group| restoreTerminalToShell(shell, process_group);
     sendContinueToJob(shell, job) catch return .{ .status = 1 };
     _ = shell.state.setBackgroundJobStatus(job.id, .running);
@@ -1090,9 +1091,12 @@ test "interrupted job wait retains stopped children and resume discards the cach
     }
 }
 
-/// Gives the controlling terminal to a job, returning the previous group to
-/// restore. Null means job control is disabled or there is no controlling tty.
-pub fn giveTerminalToJob(shell: anytype, process_group: host.Pid) !?host.Pid {
+/// Returns the controlling terminal's foreground group, which the shell restores
+/// after a foreground job. Capture it before starting the job: the job's
+/// processes claim the terminal themselves, so afterwards the foreground group
+/// may already be the job's. Null means job control is disabled or there is no
+/// controlling tty, so no handoff happens.
+pub fn terminalForegroundGroup(shell: anytype) !?host.Pid {
     if (!shell.state.jobControlEnabled()) return null;
     const HostType = switch (@typeInfo(@TypeOf(shell.host))) {
         .pointer => |pointer| pointer.child,
@@ -1104,15 +1108,29 @@ pub fn giveTerminalToJob(shell: anytype, process_group: host.Pid) !?host.Pid {
     const tty_fd = shell.state.controlling_tty orelse
         (shell.host.openZ("/dev/tty", .{ .access = .read_write }) catch return null);
     defer if (shell.state.controlling_tty == null) shell.host.close(tty_fd) catch {};
-    const shell_process_group = shell.host.terminalProcessGroup(tty_fd) catch |err| switch (err) {
-        error.NotATerminal => return null,
-        else => return err,
+    return shell.host.terminalProcessGroup(tty_fd) catch |err| switch (err) {
+        error.NotATerminal => null,
+        else => err,
     };
+}
+
+/// Gives the controlling terminal to a job. Call only after
+/// `terminalForegroundGroup` returned a group to restore.
+pub fn giveTerminalToJob(shell: anytype, process_group: host.Pid) !void {
+    const HostType = switch (@typeInfo(@TypeOf(shell.host))) {
+        .pointer => |pointer| pointer.child,
+        else => @TypeOf(shell.host),
+    };
+    if (comptime !host.has(HostType, .terminalProcessGroup) or
+        !host.has(HostType, .setTerminalProcessGroup)) return;
+    const tty_fd = shell.state.controlling_tty orelse try shell.host.openZ("/dev/tty", .{ .access = .read_write });
+    defer if (shell.state.controlling_tty == null) shell.host.close(tty_fd) catch {};
     shell.host.setTerminalProcessGroup(tty_fd, process_group) catch |err| switch (err) {
-        error.NotATerminal => return null,
+        // The terminal went away after the foreground group was read; there is
+        // nothing to hand off.
+        error.NotATerminal => {},
         else => return err,
     };
-    return shell_process_group;
 }
 
 pub fn restoreTerminalToShell(shell: anytype, process_group: host.Pid) void {
@@ -1163,13 +1181,14 @@ test "terminal handoff uses the controlling tty independently of redirected stdi
     shell.state.options.monitor = true;
     for ([_]?host.Fd{ null, @fromBackingInt(7) }) |borrowed_tty| {
         shell.state.controlling_tty = borrowed_tty;
-        const previous = (try giveTerminalToJob(&shell, 20)).?;
+        const previous = (try terminalForegroundGroup(&shell)).?;
         try std.testing.expectEqual(@as(host.Pid, 10), previous);
+        try giveTerminalToJob(&shell, 20);
         try std.testing.expectEqual(@as(host.Pid, 20), test_host.foreground);
         restoreTerminalToShell(&shell, previous);
         try std.testing.expectEqual(@as(host.Pid, 10), test_host.foreground);
         // Only the unborrowed descriptor is opened/closed, once per operation.
-        try std.testing.expectEqual(@as(usize, 2), test_host.opened);
+        try std.testing.expectEqual(@as(usize, 3), test_host.opened);
         try std.testing.expectEqual(test_host.opened, test_host.closed);
     }
 }

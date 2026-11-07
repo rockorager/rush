@@ -1596,6 +1596,7 @@ fn linuxSpawn(request: host.SpawnRequest) SpawnError!host.SpawnResult {
     const pid: i32 = @intCast(fork_rc);
     if (pid == 0) {
         if (request.process_group) |process_group| linuxSetProcessGroup(0, process_group) catch linux.exit(127);
+        claimForegroundInChild(request.foreground_tty);
         applyDefaultSignals(request.default_signals) catch linux.exit(127);
         applyIgnoredSignals(request.ignored_signals) catch linux.exit(127);
         std.posix.sigprocmask(std.posix.SIG.SETMASK, &previous, null);
@@ -1733,6 +1734,7 @@ fn libcSpawn(request: host.SpawnRequest) SpawnError!host.SpawnResult {
     const pid: i32 = @intCast(fork_rc);
     if (pid == 0) {
         if (request.process_group) |process_group| libcSetProcessGroup(0, process_group) catch std.c._exit(127);
+        claimForegroundInChild(request.foreground_tty);
         applyDefaultSignals(request.default_signals) catch std.c._exit(127);
         applyIgnoredSignals(request.ignored_signals) catch std.c._exit(127);
         std.posix.sigprocmask(std.posix.SIG.SETMASK, &previous, null);
@@ -1745,6 +1747,14 @@ fn libcSpawn(request: host.SpawnRequest) SpawnError!host.SpawnResult {
     }
 
     return .{ .pid = pid };
+}
+
+/// Runs in a forked child with every signal blocked, so tcsetpgrp from a
+/// background group proceeds without SIGTTOU. Failure leaves the handoff to
+/// the parent.
+fn claimForegroundInChild(tty: ?host.Fd) void {
+    const fd = tty orelse return;
+    _ = tcsetpgrp(fd.raw(), getpgrp());
 }
 
 fn libcExec(request: host.SpawnRequest) ExecError {

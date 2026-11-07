@@ -298,8 +298,15 @@ pub const SpawnRequest = struct {
     default_signals: []const u8 = &.{},
     ignored_signals: []const u8 = &.{},
     process_group: ?Pid = null,
+    /// Terminal whose foreground process group the child sets to its own,
+    /// after joining `process_group` and before exec. The parent hands the
+    /// terminal over too; claiming it in the child as well keeps a program
+    /// that changes terminal modes at once, such as `stty`, from being
+    /// stopped by SIGTTOU before the parent's handoff.
+    foreground_tty: ?Fd = null,
 
     pub fn validate(self: SpawnRequest) void {
+        std.debug.assert(self.foreground_tty == null or self.process_group != null);
         std.debug.assert(self.path.len != 0);
         std.debug.assert(self.argv.len != 0);
         std.debug.assert(self.argv[0] != null);
