@@ -662,10 +662,39 @@ fn evalCommand(shell: anytype, command: *const ast.Command, process: CommandProc
         reapProcessSubstitutions(shell);
     }
 
-    return switch (command.*) {
+    const evaluated = switch (command.*) {
         .simple => |simple| evalSimple(shell, simple, process),
         .compound => |*compound| evalCompound(shell, compound),
         .function_definition => |definition| evalFunctionDefinition(shell, definition),
+    };
+    return evaluated catch |err| commandErrorResult(shell, err);
+}
+
+/// Converts errors caused by the script or its environment into the command's
+/// status, so they never escape as an internal shell error. Expansion and
+/// assignment errors are fatal to a non-interactive shell (POSIX 2.8.1).
+fn commandErrorResult(shell: anytype, err: anyerror) EvalError!result.EvalResult {
+    return switch (err) {
+        error.AssignmentError => .{ .status = 1, .flow = .{ .fatal = 1 } },
+        error.ExpansionError => .{ .status = 1, .flow = .{ .fatal = 1 } },
+        error.FatalExpansionError => {
+            const status = bashFatalExpansionStatus(shell);
+            try shell.host.writeAll(.stderr, "expansion error\n");
+            // An interactive shell abandons the command line but keeps running.
+            if (shell.state.options.interactive) return .{ .status = status, .flow = .{ .fatal = status } };
+            return .{ .status = status, .flow = .{ .exit = status } };
+        },
+        error.InvalidArithmetic => {
+            try shell.host.writeAll(.stderr, "arithmetic expansion error\n");
+            return .{ .status = 1, .flow = .{ .fatal = 1 } };
+        },
+        // Built-ins that can name the variable diagnose it themselves.
+        error.ReadonlyVariable => {
+            try shell.host.writeAll(.stderr, "readonly variable\n");
+            return .{ .status = 1 };
+        },
+        error.BadFd, error.BrokenPipe, error.InputOutput, error.WouldBlock => .{ .status = 1 },
+        else => err,
     };
 }
 
@@ -1734,21 +1763,7 @@ fn evalSimple(shell: anytype, command: ast.SimpleCommand, process: CommandProces
     const scratch = try shell.beginScratchScope();
     defer scratch.end();
 
-    return evalSimpleScoped(shell, command, process) catch |err| switch (err) {
-        error.AssignmentError => .{ .status = 1, .flow = .{ .fatal = 1 } },
-        error.ExpansionError => .{ .status = 1, .flow = .{ .fatal = 1 } },
-        error.FatalExpansionError => {
-            const status = bashFatalExpansionStatus(shell);
-            try shell.host.writeAll(.stderr, "expansion error\n");
-            return .{ .status = status, .flow = .{ .exit = status } };
-        },
-        error.InvalidArithmetic => {
-            try shell.host.writeAll(.stderr, "arithmetic expansion error\n");
-            return .{ .status = 1, .flow = .{ .fatal = 1 } };
-        },
-        error.BadFd, error.BrokenPipe, error.InputOutput, error.WouldBlock => .{ .status = 1 },
-        else => return err,
-    };
+    return evalSimpleScoped(shell, command, process);
 }
 
 fn bashFatalExpansionStatus(shell: anytype) result.ExitStatus {
@@ -3149,7 +3164,10 @@ fn evalReadBuiltin(shell: anytype, args: []const []const u8, assignments: []cons
             try readArrayFieldValues(shell, line_result.line, ifs);
         restoreVariables(shell, saved);
         restored_assignments = true;
-        try shell.state.putArray(name, values);
+        shell.state.putArray(name, values) catch |err| switch (err) {
+            error.ReadonlyVariable => return readReadonlyFailure(shell, name),
+            else => return err,
+        };
         if (line_result.timed_out) return .{ .status = 142 };
         return .{ .status = if (line_result.found_delimiter) 0 else 1 };
     }
@@ -3161,14 +3179,22 @@ fn evalReadBuiltin(shell: anytype, args: []const []const u8, assignments: []cons
     restored_assignments = true;
 
     for (names, 0..) |name, name_index| {
-        try shell.state.putVariable(.{
+        shell.state.putVariable(.{
             .name = name,
             .value = values[name_index],
             .exported = assignmentExported(shell, name),
-        });
+        }) catch |err| switch (err) {
+            error.ReadonlyVariable => return readReadonlyFailure(shell, name),
+            else => return err,
+        };
     }
     if (line_result.timed_out) return .{ .status = 142 };
     return .{ .status = if (line_result.found_delimiter) 0 else 1 };
+}
+
+fn readReadonlyFailure(shell: anytype, name: []const u8) EvalError!result.EvalResult {
+    try writeReadonlyDiagnostic(shell, name);
+    return .{ .status = 1 };
 }
 
 const ReadOptions = struct {

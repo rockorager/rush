@@ -932,7 +932,10 @@
             \\printf 'after\n'
             ,
             .stdout = "",
-            .stderr_match = .nonempty,
+            .stderr =
+            \\2: expansion error: missing: need it
+            \\
+            ,
             .status_match = .nonzero,
         },
         .{

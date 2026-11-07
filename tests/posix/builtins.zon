@@ -253,6 +253,24 @@
             .status = 0,
         },
         .{
+            .name = "read into a readonly variable fails without exiting the shell",
+            .script =
+            \\readonly x=old
+            \\read x <<EOF 2>/dev/null
+            \\new
+            \\EOF
+            \\[ "$?" -ne 0 ] && printf 'failed\n'
+            \\printf '<%s>\n' "$x"
+            ,
+            .stdout =
+            \\failed
+            \\<old>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "read with -r preserves backslash characters",
             .script =
             \\printf 'a b\\c\n' | { read -r first rest; printf '<%s>:<%s>\n' "$first" "$rest"; }
