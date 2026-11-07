@@ -134,8 +134,8 @@ pub fn themeForEnvironment(
 
     // Linux virtual consoles do not render underlines reliably and can treat
     // unsupported SGR 58 payloads as independent, stateful SGR attributes.
-    inline for (std.meta.fields(editor_render.UiTheme)) |field| {
-        const style = &@field(ui_theme, field.name);
+    inline for (@typeInfo(editor_render.UiTheme).@"struct".field_names) |field_name| {
+        const style = &@field(ui_theme, field_name);
         if (style.ul_color) |color| {
             if (style.fg == null) style.fg = color;
             style.ul_color = null;

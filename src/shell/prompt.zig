@@ -205,7 +205,7 @@ fn workingDirectory(shell: anytype, basename_only: bool) ![]const u8 {
         if (std.mem.eql(u8, pwd, path))
             "~"
         else if (path.len != 0 and std.mem.startsWith(u8, pwd, path) and pwd.len > path.len and pwd[path.len] == '/')
-            try std.fmt.allocPrint(allocator, "~{s}", .{pwd[path.len..]})
+            try allocator.print("~{s}", .{pwd[path.len..]})
         else
             pwd
     else
@@ -226,7 +226,7 @@ fn trimWorkingDirectory(allocator: std.mem.Allocator, path: []const u8, retain: 
         const prefix = path[0..index];
         if (prefix.len == 0 or std.mem.eql(u8, prefix, "~")) return path;
         const home_prefix = if (std.mem.startsWith(u8, path, "~/")) "~/" else "";
-        return std.fmt.allocPrint(allocator, "{s}.../{s}", .{ home_prefix, path[index + 1 ..] });
+        return allocator.print("{s}.../{s}", .{ home_prefix, path[index + 1 ..] });
     }
     return path;
 }
@@ -281,7 +281,7 @@ test "decode expands Bash prompt escapes" {
         }
 
         pub fn formatLocalTime(_: Self, allocator: std.mem.Allocator, _: i64, format: []const u8) ![]const u8 {
-            return std.fmt.allocPrint(allocator, "<{s}>", .{format});
+            return allocator.print("<{s}>", .{format});
         }
 
         pub fn effectiveUserId(_: Self) u32 {
@@ -389,7 +389,7 @@ test "decode expands Bash prompt time and control escapes" {
         const Self = @This();
 
         pub fn formatLocalTime(_: Self, allocator: std.mem.Allocator, _: i64, format: []const u8) ![]const u8 {
-            return std.fmt.allocPrint(allocator, "<{s}>", .{format});
+            return allocator.print("<{s}>", .{format});
         }
     };
     const TestShell = struct {

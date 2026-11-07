@@ -142,7 +142,7 @@ pub fn completionReplacement(
         const quoted = try shellQuoteMatch(allocator, match, style);
         if (std.mem.endsWith(u8, match, "/")) return quoted;
         defer allocator.free(quoted);
-        return std.fmt.allocPrint(allocator, "{s} ", .{quoted});
+        return allocator.print("{s} ", .{quoted});
     }
 
     const quoted_matches = try quoteMatches(allocator, matches, style);

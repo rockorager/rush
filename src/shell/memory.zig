@@ -345,14 +345,14 @@ test "scratch chunks allocate once and preserve retained storage on allocation f
     try std.testing.expectError(error.OutOfMemory, allocator.alloc(u8, 8192));
     try std.testing.expect(first_chunk.next == null);
     try std.testing.expectEqual(first_chunk, scratch.active.?);
-    try std.testing.expectEqualStrings("a" ** 32, first);
+    try std.testing.expectEqualStrings(&@as([32]u8, @splat('a')), first);
 
     parent.fail_index = std.math.maxInt(usize);
     const second = try allocator.alignedAlloc(u8, .fromByteUnits(4096), 8192);
     @memset(second, 'b');
     try std.testing.expectEqual(@as(usize, 2), parent.allocations);
     try std.testing.expectEqual(@as(usize, 0), @intFromPtr(second.ptr) % 4096);
-    try std.testing.expectEqualStrings("a" ** 32, first);
+    try std.testing.expectEqualStrings(&@as([32]u8, @splat('a')), first);
 
     parent.fail_index = parent.alloc_index;
     scratch.resetRetainingCapacity();
@@ -380,6 +380,6 @@ test "scratch chunk headers survive frees and resizes across multiple chunks" {
     allocator.free(second);
     const reused = try allocator.alloc(u8, 8192);
     try std.testing.expectEqual(second.ptr, reused.ptr);
-    try std.testing.expectEqualStrings("a" ** 16, first);
+    try std.testing.expectEqualStrings(&@as([16]u8, @splat('a')), first);
     try std.testing.expectEqual(@as(usize, 8192), reused.len);
 }

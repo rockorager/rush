@@ -44,8 +44,7 @@ fn createTempFile(
 
     var attempts: usize = 0;
     while (attempts < 64) : (attempts += 1) {
-        const sub_path = try std.fmt.allocPrint(
-            allocator,
+        const sub_path = try allocator.print(
             "rush-edit-{d}-{d}-{d}.sh",
             .{ std.c.getpid(), nowMs(io), attempts },
         );
@@ -53,7 +52,7 @@ fn createTempFile(
         var file = dir.createFile(io, sub_path, .{
             .read = true,
             .exclusive = true,
-            .permissions = @enumFromInt(0o600),
+            .permissions = @fromBackingInt(@intCast(0o600)),
         }) catch |err| switch (err) {
             error.PathAlreadyExists => {
                 allocator.free(sub_path);
@@ -76,7 +75,7 @@ fn runCommand(
     editor_command: []const u8,
     path: []const u8,
 ) !void {
-    const command = try std.fmt.allocPrint(allocator, "exec {s} \"$1\"", .{editor_command});
+    const command = try allocator.print("exec {s} \"$1\"", .{editor_command});
     defer allocator.free(command);
     const argv = [_][]const u8{ "/bin/sh", "-c", command, "rush-editor", path };
     var child = try std.process.spawn(io, .{ .argv = &argv });

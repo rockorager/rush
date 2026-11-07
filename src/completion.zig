@@ -276,7 +276,7 @@ fn substitutionInteriorStart(allocator: std.mem.Allocator, text: []const u8) !?u
             else => {},
         }
     }
-    const deepest = open_interiors.getLastOrNull();
+    const deepest = open_interiors.last();
     if (deepest != null and backquote != null) return @max(deepest.?, backquote.?);
     return deepest orelse backquote;
 }
@@ -583,12 +583,12 @@ fn appendOptionCandidate(
     const description = jsonStringField(option, "description");
     const priority = jsonI8Field(option, "priority") orelse 0;
     if (jsonStringField(option, "long")) |long| {
-        const value = try std.fmt.allocPrint(allocator, "--{s}", .{long});
+        const value = try allocator.print("--{s}", .{long});
         defer allocator.free(value);
         try builder.append(allocator, .{ .value = value, .description = description, .kind = .option, .priority = priority, .replace_start = replace_start, .replace_end = replace_end });
     }
     if (jsonStringField(option, "short")) |short| {
-        const value = try std.fmt.allocPrint(allocator, "-{s}", .{short});
+        const value = try allocator.print("-{s}", .{short});
         defer allocator.free(value);
         try builder.append(allocator, .{ .value = value, .description = description, .kind = .option, .priority = priority, .replace_start = replace_start, .replace_end = replace_end });
     }
@@ -782,7 +782,7 @@ fn appendFunctionProvider(
     sh.extensions.completion_context = &provider_context;
     defer sh.extensions.completion_context = previous_context;
 
-    const argument_index = try std.fmt.allocPrint(allocator, "{d}", .{semantic.operand_index});
+    const argument_index = try allocator.print("{d}", .{semantic.operand_index});
     defer allocator.free(argument_index);
     sh.state.removeVariable("rush_completion_prefix");
     sh.state.removeVariable("rush_completion_argument_index");
@@ -996,7 +996,7 @@ fn providerValue(providers: ?std.json.Value, ref: std.json.Value) ?std.json.Valu
 }
 
 fn findCompletionFile(allocator: std.mem.Allocator, sh: anytype, root: []const u8, extension: []const u8) !?[]const u8 {
-    const file_name = try std.fmt.allocPrint(allocator, "{s}{s}", .{ root, extension });
+    const file_name = try allocator.print("{s}{s}", .{ root, extension });
     defer allocator.free(file_name);
     if (shellValue(sh, "XDG_CONFIG_HOME")) |xdg_config_home| {
         if (xdg_config_home.len != 0) {
@@ -1048,7 +1048,7 @@ fn findCompletionFileUnder(
 }
 
 fn fileExists(sh: anytype, path: []const u8) !bool {
-    const path_z = try sh.allocator.dupeZ(u8, path);
+    const path_z = try sh.allocator.dupeSentinel(u8, path, 0);
     defer sh.allocator.free(path_z);
     return sh.host.existsZ(path_z);
 }
@@ -1163,7 +1163,7 @@ fn appendFunctionCandidates(allocator: std.mem.Allocator, builder: *Builder, sh:
 
 fn appendJobCandidates(allocator: std.mem.Allocator, builder: *Builder, sh: anytype, replace_start: usize, replace_end: usize) !void {
     for (sh.state.background_jobs.items) |job| {
-        const value = try std.fmt.allocPrint(allocator, "%{d}", .{job.id});
+        const value = try allocator.print("%{d}", .{job.id});
         defer allocator.free(value);
         try builder.append(allocator, .{ .value = value, .kind = .plain, .description = "job", .replace_start = replace_start, .replace_end = replace_end });
     }
@@ -1181,7 +1181,7 @@ fn appendPathExecutableCandidates(allocator: std.mem.Allocator, builder: *Builde
             if (entry.kind == .directory) continue;
             const full_path = try std.fs.path.join(allocator, &.{ dir, entry.name });
             defer allocator.free(full_path);
-            const full_path_z = try allocator.dupeZ(u8, full_path);
+            const full_path_z = try allocator.dupeSentinel(u8, full_path, 0);
             defer allocator.free(full_path_z);
             if (!sh.host.fileAccessZ(full_path_z, .execute)) continue;
             const insert = try shell.word_quoting.escapeIfNeeded(allocator, entry.name, .{});
@@ -1226,9 +1226,9 @@ fn appendPathCandidates(
         );
         if (directories_only and !is_directory) continue;
         const value = if (is_directory)
-            try std.fmt.allocPrint(allocator, "{s}{s}/", .{ dir_prefix, entry.name })
+            try allocator.print("{s}{s}/", .{ dir_prefix, entry.name })
         else
-            try std.fmt.allocPrint(allocator, "{s}{s}", .{ dir_prefix, entry.name });
+            try allocator.print("{s}{s}", .{ dir_prefix, entry.name });
         defer allocator.free(value);
         try builder.append(allocator, .{ .value = value, .display = entry.name, .kind = if (is_directory) .directory else .file, .replace_start = replace_start, .replace_end = replace_end, .append_space = !is_directory });
     }
@@ -1461,7 +1461,7 @@ test "redirection targets bypass manifest argument completion" {
 test "completion offers inherited options within nested subcommands" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const root = try std.fmt.allocPrint(allocator, "rush-test-inherited-options-{d}", .{std.c.getpid()});
+    const root = try allocator.print("rush-test-inherited-options-{d}", .{std.c.getpid()});
     defer allocator.free(root);
     std.Io.Dir.cwd().deleteTree(io, root) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
@@ -1523,7 +1523,7 @@ test "completion offers inherited options within nested subcommands" {
 test "completion loads dynamic subcommands from manifest providers" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const root = try std.fmt.allocPrint(allocator, "rush-test-completion-{d}", .{std.c.getpid()});
+    const root = try allocator.print("rush-test-completion-{d}", .{std.c.getpid()});
     defer allocator.free(root);
     std.Io.Dir.cwd().deleteTree(io, root) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
@@ -1575,7 +1575,7 @@ test "completion loads dynamic subcommands from manifest providers" {
 test "completion companion assignments do not mutate shell variables" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const root = try std.fmt.allocPrint(allocator, "rush-test-companion-state-{d}", .{std.c.getpid()});
+    const root = try allocator.print("rush-test-companion-state-{d}", .{std.c.getpid()});
     defer allocator.free(root);
     std.Io.Dir.cwd().deleteTree(io, root) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, root) catch {};

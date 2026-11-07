@@ -322,9 +322,9 @@ fn createFcTempFile(shell: anytype, contents: []const u8) ![]const u8 {
     const pid = fcTempPid(shell);
     var attempt: usize = 0;
     while (attempt < 100) : (attempt += 1) {
-        const path = try std.fmt.allocPrint(allocator, "/tmp/rush-fc-{}-{}", .{ pid, attempt });
+        const path = try allocator.print("/tmp/rush-fc-{}-{}", .{ pid, attempt });
         errdefer allocator.free(path);
-        const path_z = try allocator.dupeZ(u8, path);
+        const path_z = try allocator.dupeSentinel(u8, path, 0);
         defer allocator.free(path_z);
 
         const fd = shell.host.openZ(path_z, .{
@@ -365,14 +365,14 @@ fn deleteFcTempFile(shell: anytype, path: []const u8) void {
         else => @TypeOf(shell.host),
     };
     if (!host.has(HostType, .deleteFileZ)) return;
-    const path_z = shell.scratchAllocator().dupeZ(u8, path) catch return;
+    const path_z = shell.scratchAllocator().dupeSentinel(u8, path, 0) catch return;
     defer shell.scratchAllocator().free(path_z);
     shell.host.deleteFileZ(path_z) catch {};
 }
 
 fn readFcTempFile(shell: anytype, path: []const u8) ![]const u8 {
     const allocator = shell.scratchAllocator();
-    const path_z = try allocator.dupeZ(u8, path);
+    const path_z = try allocator.dupeSentinel(u8, path, 0);
     defer allocator.free(path_z);
     const fd = try shell.host.openZ(path_z, .{ .access = .read_only });
     defer shell.host.close(fd) catch {};
@@ -391,9 +391,9 @@ fn runFcEditor(shell: anytype, editor: []const u8, path: []const u8) !result.Exi
     const allocator = shell.scratchAllocator();
     const editor_path_z = (try fcResolveEditorPathZ(shell, editor)) orelse return error.FileNotFound;
     defer allocator.free(editor_path_z);
-    const editor_arg_z = try allocator.dupeZ(u8, editor);
+    const editor_arg_z = try allocator.dupeSentinel(u8, editor, 0);
     defer allocator.free(editor_arg_z);
-    const path_z = try allocator.dupeZ(u8, path);
+    const path_z = try allocator.dupeSentinel(u8, path, 0);
     defer allocator.free(path_z);
     const argv = try allocator.allocSentinel(?[*:0]const u8, 2, null);
     defer allocator.free(argv);
@@ -427,7 +427,7 @@ fn fcEditorEnvp(shell: anytype) ![:null]const ?[*:0]const u8 {
 fn fcResolveEditorPathZ(shell: anytype, editor: []const u8) !?[:0]u8 {
     const allocator = shell.scratchAllocator();
     if (std.mem.indexOfScalar(u8, editor, '/') != null) {
-        const editor_z = try allocator.dupeZ(u8, editor);
+        const editor_z = try allocator.dupeSentinel(u8, editor, 0);
         errdefer allocator.free(editor_z);
         if (shell.host.isExecutableZ(editor_z)) return editor_z;
         allocator.free(editor_z);
@@ -439,11 +439,11 @@ fn fcResolveEditorPathZ(shell: anytype, editor: []const u8) !?[:0]u8 {
     while (iterator.next()) |directory| {
         const prefix = if (directory.len == 0) "." else directory;
         const candidate_text = if (std.mem.endsWith(u8, prefix, "/"))
-            try std.fmt.allocPrint(allocator, "{s}{s}", .{ prefix, editor })
+            try allocator.print("{s}{s}", .{ prefix, editor })
         else
-            try std.fmt.allocPrint(allocator, "{s}/{s}", .{ prefix, editor });
+            try allocator.print("{s}/{s}", .{ prefix, editor });
         defer allocator.free(candidate_text);
-        const candidate = try allocator.dupeZ(u8, candidate_text);
+        const candidate = try allocator.dupeSentinel(u8, candidate_text, 0);
         errdefer allocator.free(candidate);
         if (shell.host.isExecutableZ(candidate)) return candidate;
         allocator.free(candidate);
@@ -478,7 +478,7 @@ fn writeFcEntry(shell: anytype, entry: history_mod.HistoryEntry, no_numbers: boo
     var first = true;
     while (lines.next()) |line| {
         if (first and !no_numbers) {
-            try shell.host.writeAll(.stdout, try std.fmt.allocPrint(shell.scratchAllocator(), "{}\t", .{entry.number}));
+            try shell.host.writeAll(.stdout, try shell.scratchAllocator().print("{}\t", .{entry.number}));
         } else {
             try shell.host.writeAll(.stdout, "\t");
         }
@@ -613,8 +613,7 @@ fn evalHistoryDelete(
         const id = std.fmt.parseInt(i64, value, 10) catch return historyUsageError(shell);
         const deleted = delete_id(command_history.context, id) catch return historyError(shell);
         if (!deleted) {
-            const message = try std.fmt.allocPrint(
-                shell.scratchAllocator(),
+            const message = try shell.scratchAllocator().print(
                 "history: no entry with id {d}\n",
                 .{id},
             );

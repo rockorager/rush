@@ -32,16 +32,8 @@ pub fn build(b: *std.Build) void {
         return;
     }
 
-    build_config.addOption([]const u8, "sysconfdir", b.option(
-        []const u8,
-        "sysconfdir",
-        "Directory for system-wide configuration (default: <prefix>/etc)",
-    ) orelse b.getInstallPath(.prefix, "etc"));
-    build_config.addOption([]const u8, "datadir", b.option(
-        []const u8,
-        "datadir",
-        "Directory for read-only data files (default: <prefix>/share)",
-    ) orelse b.getInstallPath(.prefix, "share"));
+    addInstallDirOption(b, build_config, "sysconfdir", "Directory for system-wide configuration", "etc");
+    addInstallDirOption(b, build_config, "datadir", "Directory for read-only data files", "share");
 
     const uucode = sharedUucodeModule(b, target, optimize);
     const vaxis = sharedVaxisModule(b, target, optimize, uucode);
@@ -99,8 +91,10 @@ pub fn build(b: *std.Build) void {
         \\fi
         ,
         "sh",
-        b.getInstallPath(.bin, "rush"),
     });
+    // The deployed path excludes DESTDIR, matching the path a login would use.
+    // A directory argument avoids tracking a file that may only exist under DESTDIR.
+    register_shell.addDirectoryArg2(b.graph.path(.deployed_bin, ""), .{ .suffix = "/rush", .make_absolute = true });
     register_shell.setName("register rush in /etc/shells");
     register_shell.step.dependOn(&install_exe.step);
     if (register_as_login_shell) b.getInstallStep().dependOn(&register_shell.step);
@@ -127,9 +121,7 @@ pub fn build(b: *std.Build) void {
     b.installFile(default_config_path, default_config_path);
 
     const run_cmd = b.addRunArtifact(exe);
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
 
     const run_step = b.step("run", "Run the application");
     run_step.dependOn(&run_cmd.step);
@@ -138,7 +130,7 @@ pub fn build(b: *std.Build) void {
     benchmark_cmd.addArg("--rush");
     benchmark_cmd.addArtifactArg(exe);
     benchmark_cmd.addArgs(&.{ "--optimize", @tagName(optimize), "--lto", @tagName(lto) });
-    if (b.args) |args| benchmark_cmd.addArgs(args);
+    benchmark_cmd.addPassthruArgs();
     const benchmark_step = b.step("benchmark", "Benchmark Rush against an installed POSIX shell");
     benchmark_step.dependOn(&benchmark_cmd.step);
 
@@ -195,7 +187,7 @@ const RushRootModuleOptions = struct {
 fn addWasmArtifact(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     build_config: *std.Build.Step.Options,
     lto: std.zig.LtoMode,
 ) void {
@@ -207,7 +199,7 @@ fn addWasmArtifact(
 fn addWasmCompileCheck(
     b: *std.Build,
     compile_check_step: *std.Build.Step,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     build_config: *std.Build.Step.Options,
     lto: std.zig.LtoMode,
 ) void {
@@ -222,7 +214,7 @@ fn addWasmCompileCheck(
 fn createEmbedModule(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     build_config: *std.Build.Step.Options,
 ) *std.Build.Module {
     const uucode = sharedUucodeModule(b, target, optimize);
@@ -242,7 +234,7 @@ fn createEmbedModule(
 fn createWasmExecutable(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     build_config: *std.Build.Step.Options,
     lto: std.zig.LtoMode,
 ) *std.Build.Step.Compile {
@@ -265,7 +257,7 @@ const NativeLibraries = struct {
 fn addNativeLibraries(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     build_config: *std.Build.Step.Options,
     version: std.SemanticVersion,
     lto: std.zig.LtoMode,
@@ -307,7 +299,7 @@ fn addNativeLibraries(
 
 fn configureEmbedLibrary(
     lib: *std.Build.Step.Compile,
-    linkage: std.builtin.LinkMode,
+    linkage: std.lang.LinkMode,
     lto: std.zig.LtoMode,
 ) void {
     switch (linkage) {
@@ -343,11 +335,9 @@ fn pkgConfigFiles(
     version: std.SemanticVersion,
     os_tag: std.Target.Os.Tag,
 ) PkgConfigFiles {
-    const wf = b.addWriteFiles();
     const static_name = if (os_tag == .windows) "rush-static.lib" else "librush.a";
     return .{
-        .shared = wf.add("librush.pc", b.fmt(
-            \\prefix={s}
+        .shared = pkgConfigFile(b, "librush.pc", b.fmt(
             \\includedir=${{prefix}}/include
             \\libdir=${{prefix}}/lib
             \\
@@ -359,9 +349,8 @@ fn pkgConfigFiles(
             \\Libs: -L${{libdir}} -lrush
             \\Libs.private: -lc
             \\
-        , .{ b.install_prefix, version })),
-        .static = wf.add("librush-static.pc", b.fmt(
-            \\prefix={s}
+        , .{version})),
+        .static = pkgConfigFile(b, "librush-static.pc", b.fmt(
             \\includedir=${{prefix}}/include
             \\libdir=${{prefix}}/lib
             \\
@@ -373,14 +362,25 @@ fn pkgConfigFiles(
             \\Libs: ${{libdir}}/{s}
             \\Libs.private: -lc
             \\
-        , .{ b.install_prefix, version, static_name })),
+        , .{ version, static_name })),
     };
+}
+
+/// Prepends `prefix=<deployed prefix>` to `body`. The deployed prefix is only
+/// known when the build runs, so a run step writes the file.
+fn pkgConfigFile(b: *std.Build, basename: []const u8, body: []const u8) std.Build.LazyPath {
+    const body_file = b.addWriteFiles().add(b.fmt("{s}.in", .{basename}), body);
+    const run = b.addSystemCommand(&.{ "sh", "-c", "printf 'prefix=%s\\n' \"$1\" && cat \"$2\"", "sh" });
+    run.setName(b.fmt("generate {s}", .{basename}));
+    run.addDirectoryArg2(b.graph.path(.deployed_prefix, ""), .{ .make_absolute = true });
+    run.addFileArg2(body_file, .{});
+    return run.captureStdOut(.{ .basename = basename });
 }
 
 fn addLibAbiTests(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     libs: NativeLibraries,
     test_step: *std.Build.Step,
     test_no_run: bool,
@@ -392,24 +392,27 @@ fn addLibAbiTests(
 fn addLibAbiTest(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     lib: *std.Build.Step.Compile,
-    linkage: std.builtin.LinkMode,
+    linkage: std.lang.LinkMode,
     test_step: *std.Build.Step,
     test_no_run: bool,
 ) void {
-    const build_options = b.addOptions();
-    build_options.addOption(bool, "static_linkage", linkage == .static);
-    const abi_tests = b.addTest(.{
+    const abi_tests = b.addExecutable(.{
         .name = b.fmt("librush-{s}-abi", .{@tagName(linkage)}),
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/lib/abi.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
         }),
     });
-    abi_tests.root_module.addOptions("build_options", build_options);
+    abi_tests.root_module.addCSourceFile(.{
+        .file = b.path("tests/lib/abi.c"),
+        .flags = switch (linkage) {
+            .static => &.{ "-std=c99", "-Wall", "-Wextra", "-Werror", "-DRUSH_STATIC" },
+            .dynamic => &.{ "-std=c99", "-Wall", "-Wextra", "-Werror" },
+        },
+    });
     abi_tests.root_module.addIncludePath(b.path("include"));
     abi_tests.root_module.linkLibrary(lib);
     if (test_no_run) {
@@ -422,7 +425,7 @@ fn addLibAbiTest(
 fn addCompileChecks(
     b: *std.Build,
     compile_check_step: *std.Build.Step,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     build_config: *std.Build.Step.Options,
     use_system_sqlite: bool,
     version: std.SemanticVersion,
@@ -482,7 +485,7 @@ fn addCompileChecks(
 fn addTerminalTests(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     rush: *std.Build.Step.Compile,
     terminal_step: *std.Build.Step,
 ) void {
@@ -498,7 +501,7 @@ fn addTerminalTests(
     const run = b.addRunArtifact(harness);
     run.addArg("--rush");
     run.addArtifactArg(rush);
-    if (b.args) |args| run.addArgs(args);
+    run.addPassthruArgs();
     run.has_side_effects = true;
     terminal_step.dependOn(&run.step);
 }
@@ -506,7 +509,7 @@ fn addTerminalTests(
 fn addConformanceTests(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     rush: *std.Build.Step.Compile,
     conformance_step: *std.Build.Step,
 ) void {
@@ -520,111 +523,21 @@ fn addConformanceTests(
         }),
     });
 
-    if (b.args) |args| {
-        if (usesCustomConformanceRunner(args)) {
-            const run_posix = b.addRunArtifact(harness);
-            run_posix.addArgs(args);
-            conformance_step.dependOn(&run_posix.step);
-
-            if (!conformanceArgsSelectInteractive(args) and
-                !conformanceArgsHaveSuiteFiles(args))
-            {
-                const run_interactive = b.addRunArtifact(harness);
-                run_interactive.addArgs(args);
-                run_interactive.addArg("--interactive");
-                conformance_step.dependOn(&run_interactive.step);
-            }
-        } else {
-            const run_posix = b.addRunArtifact(harness);
-            run_posix.addArg("--rush");
-            run_posix.addArtifactArg(rush);
-            run_posix.addArg("--mode");
-            run_posix.addArg("posix");
-            run_posix.addArgs(args);
-            conformance_step.dependOn(&run_posix.step);
-
-            if (!conformanceArgsSelectInteractive(args) and !conformanceArgsHaveSuiteFiles(args)) {
-                const run_interactive = b.addRunArtifact(harness);
-                run_interactive.addArg("--rush");
-                run_interactive.addArtifactArg(rush);
-                run_interactive.addArg("--mode");
-                run_interactive.addArg("posix");
-                run_interactive.addArgs(args);
-                run_interactive.addArg("--interactive");
-                conformance_step.dependOn(&run_interactive.step);
-            }
-        }
-    } else {
-        const run_posix = b.addRunArtifact(harness);
-        run_posix.addArg("--rush");
-        run_posix.addArtifactArg(rush);
-        run_posix.addArg("--mode");
-        run_posix.addArg("posix");
-        conformance_step.dependOn(&run_posix.step);
-
-        const run_interactive = b.addRunArtifact(harness);
-        run_interactive.addArg("--rush");
-        run_interactive.addArtifactArg(rush);
-        run_interactive.addArg("--mode");
-        run_interactive.addArg("posix");
-        run_interactive.addArg("--interactive");
-        conformance_step.dependOn(&run_interactive.step);
-
-        const run_bash = b.addRunArtifact(harness);
-        run_bash.addArg("--rush");
-        run_bash.addArtifactArg(rush);
-        run_bash.addArg("--mode");
-        run_bash.addArg("bash");
-        conformance_step.dependOn(&run_bash.step);
-
-        const run_bash_interactive = b.addRunArtifact(harness);
-        run_bash_interactive.addArg("--rush");
-        run_bash_interactive.addArtifactArg(rush);
-        run_bash_interactive.addArg("--mode");
-        run_bash_interactive.addArg("bash");
-        run_bash_interactive.addArg("--interactive");
-        conformance_step.dependOn(&run_bash_interactive.step);
+    // Passthru args are only known at make time, so the harness decides which
+    // of these variants apply to them; see `selectBuildVariant` in the harness.
+    for ([_][]const u8{ "posix", "posix-interactive", "bash", "bash-interactive" }) |variant| {
+        const run = b.addRunArtifact(harness);
+        run.addArgs(&.{ "--build-variant", variant });
+        run.addArtifactArg(rush);
+        run.addPassthruArgs();
+        conformance_step.dependOn(&run.step);
     }
-}
-
-fn usesCustomConformanceRunner(args: []const []const u8) bool {
-    for (args) |arg| {
-        if (std.mem.eql(u8, arg, "--rush") or std.mem.eql(u8, arg, "--shell")) return true;
-    }
-    return false;
-}
-
-fn conformanceArgsSelectInteractive(args: []const []const u8) bool {
-    for (args) |arg| {
-        if (std.mem.eql(u8, arg, "--interactive")) return true;
-    }
-    return false;
-}
-
-fn conformanceArgsHaveSuiteFiles(args: []const []const u8) bool {
-    var index: usize = 0;
-    while (index < args.len) : (index += 1) {
-        const arg = args[index];
-        if (std.mem.eql(u8, arg, "--rush") or
-            std.mem.eql(u8, arg, "--shell") or
-            std.mem.eql(u8, arg, "--shell-arg") or
-            std.mem.eql(u8, arg, "--mode") or
-            std.mem.eql(u8, arg, "--case"))
-        {
-            index += 1;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--diff") or std.mem.eql(u8, arg, "--interactive")) continue;
-        if (std.mem.startsWith(u8, arg, "--")) continue;
-        return true;
-    }
-    return false;
 }
 
 fn addDifferentialTests(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     rush: *std.Build.Step.Compile,
     differential_step: *std.Build.Step,
 ) void {
@@ -640,14 +553,14 @@ fn addDifferentialTests(
     const run = b.addRunArtifact(harness);
     run.addArg("--rush");
     run.addArtifactArg(rush);
-    if (b.args) |args| run.addArgs(args);
+    run.addPassthruArgs();
     differential_step.dependOn(&run.step);
 }
 
 fn createRushRootModule(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     vaxis: *std.Build.Module,
     uucode: *std.Build.Module,
     zeit: *std.Build.Module,
@@ -678,6 +591,21 @@ fn createRushRootModule(
     return module;
 }
 
+fn addInstallDirOption(
+    b: *std.Build,
+    build_config: *std.Build.Step.Options,
+    name: []const u8,
+    description: []const u8,
+    prefix_sub_path: []const u8,
+) void {
+    const option_description = b.fmt("{s} (default: <prefix>/{s})", .{ description, prefix_sub_path });
+    if (b.option([]const u8, name, option_description)) |dir| {
+        build_config.addOption([]const u8, name, dir);
+    } else {
+        build_config.addOptionPathUntracked(name, b.graph.path(.deployed_prefix, prefix_sub_path));
+    }
+}
+
 fn generatedDefaultConfig(b: *std.Build) std.Build.LazyPath {
     return b.path(default_config_path);
 }
@@ -685,7 +613,7 @@ fn generatedDefaultConfig(b: *std.Build) std.Build.LazyPath {
 fn sharedVaxisModule(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     uucode: *std.Build.Module,
 ) *std.Build.Module {
     const vaxis = b.dependency("vaxis", .{
@@ -700,7 +628,7 @@ fn sharedVaxisModule(
 fn sharedUucodeModule(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
 ) *std.Build.Module {
     return b.dependency("uucode", .{
         .target = target,
@@ -760,11 +688,15 @@ fn linkSqlite(
 
 fn versionString(b: *std.Build) []const u8 {
     const release = b.fmt("{f}", .{release_version});
+    // Commits and worktree edits change the version without changing any file the
+    // configure cache can track, so the configuration must not be reused.
+    b.graph.poisonCache();
+    const root = b.root.toString(b.allocator) catch @panic("OOM");
     var code: u8 = undefined;
     const raw = b.runAllowFail(&.{
         "git",
         "-C",
-        b.build_root.path orelse ".",
+        root,
         "describe",
         "--tags",
         "--long",
@@ -782,7 +714,7 @@ fn versionString(b: *std.Build) []const u8 {
         const count_raw = b.runAllowFail(&.{
             "git",
             "-C",
-            b.build_root.path orelse ".",
+            root,
             "rev-list",
             "--count",
             "HEAD",

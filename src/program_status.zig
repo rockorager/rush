@@ -222,12 +222,15 @@ test "program status validation enforces the protocol grammar and limits" {
     try std.testing.expect(!isValidId("a//b"));
     try std.testing.expect(!isValidId("a/"));
     try std.testing.expect(!isValidId("a:b"));
-    try std.testing.expect(!isValidId("a" ** 33));
-    try std.testing.expect(isValidId("a/" ** 7 ++ "a"));
-    try std.testing.expect(!isValidId("a/" ** 8 ++ "a"));
+    try std.testing.expect(!isValidId(&@as([33]u8, @splat('a'))));
+    try std.testing.expect(isValidId("a/a/a/a/a/a/a/a"));
+    try std.testing.expect(!isValidId("a/a/a/a/a/a/a/a/a"));
 
-    try validateText("é" ** (max_title_len / 2), max_title_len);
-    try std.testing.expectError(error.TooLong, validateText("x" ** (max_title_len + 1), max_title_len));
+    try validateText(comptime text: {
+        const chars: [max_title_len / 2][2]u8 = @splat("é".*);
+        break :text @ptrCast(&chars);
+    }, max_title_len);
+    try std.testing.expectError(error.TooLong, validateText(&@as([max_title_len + 1]u8, @splat('x')), max_title_len));
     try std.testing.expectError(error.InvalidUtf8, validateText("\xff", max_title_len));
     try std.testing.expectError(error.ControlCharacter, validateText("\x7f", max_title_len));
 }

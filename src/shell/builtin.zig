@@ -614,7 +614,7 @@ fn findHashPath(shell: anytype, utility: []const u8) !?[]const u8 {
 
     const allocator = shell.scratchAllocator();
     if (std.mem.indexOfScalar(u8, utility, '/') != null) {
-        const utility_z = try allocator.dupeZ(u8, utility);
+        const utility_z = try allocator.dupeSentinel(u8, utility, 0);
         return if (shell.host.isExecutableZ(utility_z)) utility else null;
     }
 
@@ -747,7 +747,7 @@ fn getoptsOptind(shell: anytype) usize {
 }
 
 fn putGetoptsOptind(shell: anytype, optind: usize) !void {
-    const value = try std.fmt.allocPrint(shell.scratchAllocator(), "{}", .{optind});
+    const value = try shell.scratchAllocator().print("{}", .{optind});
     const char_index = shell.state.getopts_char_index;
     defer shell.state.getopts_char_index = char_index;
     try shell.state.putVariable(.{ .name = "OPTIND", .value = value });
@@ -907,18 +907,15 @@ fn writeJob(shell: anytype, job: state_mod.BackgroundJob, format: JobFormat) !vo
     const status_text = jobStatusText(job.status);
     const marker = shell.state.backgroundJobMarker(job.id);
     const text = switch (format) {
-        .default => try std.fmt.allocPrint(
-            shell.scratchAllocator(),
+        .default => try shell.scratchAllocator().print(
             "[{}] {c} {s} {s}\n",
             .{ job.id, marker, status_text, job.command },
         ),
-        .long => try std.fmt.allocPrint(
-            shell.scratchAllocator(),
+        .long => try shell.scratchAllocator().print(
             "[{}] {c} {} {s} {s}\n",
             .{ job.id, marker, job.pid, status_text, job.command },
         ),
-        .pid => try std.fmt.allocPrint(
-            shell.scratchAllocator(),
+        .pid => try shell.scratchAllocator().print(
             "{}\n",
             .{if (job.job_control) job.process_group else job.pid},
         ),
@@ -948,14 +945,14 @@ fn jobOperandOrCurrent(shell: anytype, arg: ?[]const u8) ?state_mod.BackgroundJo
 fn writeNoSuchJob(shell: anytype, builtin_name: []const u8) !void {
     try shell.host.writeAll(
         .stderr,
-        try std.fmt.allocPrint(shell.scratchAllocator(), "{s}: no such job\n", .{builtin_name}),
+        try shell.scratchAllocator().print("{s}: no such job\n", .{builtin_name}),
     );
 }
 
 fn writeNoCurrentJob(shell: anytype, builtin_name: []const u8) !void {
     try shell.host.writeAll(
         .stderr,
-        try std.fmt.allocPrint(shell.scratchAllocator(), "{s}: no current job\n", .{builtin_name}),
+        try shell.scratchAllocator().print("{s}: no current job\n", .{builtin_name}),
     );
 }
 
@@ -967,14 +964,14 @@ fn resumeBackgroundJob(shell: anytype, job: state_mod.BackgroundJob) !result.Eva
             try shell.state.addBackgroundPid(pid);
     }
     shell.state.last_background_pid = job.pid;
-    const text = try std.fmt.allocPrint(shell.scratchAllocator(), "[{}] {s}\n", .{ job.id, job.command });
+    const text = try shell.scratchAllocator().print("[{}] {s}\n", .{ job.id, job.command });
     defer shell.scratchAllocator().free(text);
     try shell.host.writeAll(.stdout, text);
     return .{};
 }
 
 fn foregroundJob(shell: anytype, job: state_mod.BackgroundJob) !result.EvalResult {
-    const text = try std.fmt.allocPrint(shell.scratchAllocator(), "{s}\n", .{job.command});
+    const text = try shell.scratchAllocator().print("{s}\n", .{job.command});
     defer shell.scratchAllocator().free(text);
     try shell.host.writeAll(.stdout, text);
     notifyForegroundCommand(shell, job.command);
@@ -1142,7 +1139,7 @@ test "terminal handoff uses the controlling tty independently of redirected stdi
             try std.testing.expectEqualStrings("/dev/tty", path);
             try std.testing.expectEqual(host.OpenAccess.read_write, options.access);
             self.opened += 1;
-            return @enumFromInt(7);
+            return @fromBackingInt(7);
         }
 
         pub fn close(self: *Self, fd: host.Fd) !void {
@@ -1164,7 +1161,7 @@ test "terminal handoff uses the controlling tty independently of redirected stdi
     var shell = .{ .host = &test_host, .state = state_mod.State.init(std.testing.allocator, .{}) };
     defer shell.state.deinit();
     shell.state.options.monitor = true;
-    for ([_]?host.Fd{ null, @enumFromInt(7) }) |borrowed_tty| {
+    for ([_]?host.Fd{ null, @fromBackingInt(7) }) |borrowed_tty| {
         shell.state.controlling_tty = borrowed_tty;
         const previous = (try giveTerminalToJob(&shell, 20)).?;
         try std.testing.expectEqual(@as(host.Pid, 10), previous);
@@ -1358,7 +1355,7 @@ fn printAllResourceLimits(shell: anytype, selection: UlimitSelection) !result.Ev
         const limit = shell.host.getResourceLimit(resource.kind) catch return ulimitResourceError(shell);
         try shell.host.writeAll(.stdout, resource.label);
         try shell.host.writeAll(.stdout, " ");
-        try shell.host.writeAll(.stdout, try std.fmt.allocPrint(shell.scratchAllocator(), "(-{c}) ", .{resource.option}));
+        try shell.host.writeAll(.stdout, try shell.scratchAllocator().print("(-{c}) ", .{resource.option}));
         try writeUlimitValue(shell, selectedLimitValue(limit, selection), resource.units);
     }
     return .{};
@@ -1385,7 +1382,7 @@ fn selectedLimitValue(limit: host.ResourceLimit, selection: UlimitSelection) ?u6
 
 fn writeUlimitValue(shell: anytype, value: ?u64, units: u64) !void {
     if (value) |native_value| {
-        try shell.host.writeAll(.stdout, try std.fmt.allocPrint(shell.scratchAllocator(), "{}\n", .{native_value / units}));
+        try shell.host.writeAll(.stdout, try shell.scratchAllocator().print("{}\n", .{native_value / units}));
     } else {
         try shell.host.writeAll(.stdout, "unlimited\n");
     }
@@ -1405,7 +1402,7 @@ fn evalUmask(shell: anytype, args: []const []const u8) !result.EvalResult {
     if (args.len > 2) return .{ .status = 2 };
     const current = currentUmask(shell);
     if (args.len == 1) {
-        try shell.host.writeAll(.stdout, try std.fmt.allocPrint(shell.scratchAllocator(), "{o:0>4}\n", .{current}));
+        try shell.host.writeAll(.stdout, try shell.scratchAllocator().print("{o:0>4}\n", .{current}));
         return .{};
     }
     if (std.mem.eql(u8, args[1], "-S")) {
@@ -1437,8 +1434,7 @@ fn parseOctalUmask(text: []const u8) ?u32 {
 
 fn symbolicUmask(shell: anytype, mask: u32) ![]const u8 {
     const allowed = (~mask) & 0o777;
-    return std.fmt.allocPrint(
-        shell.scratchAllocator(),
+    return shell.scratchAllocator().print(
         "u={s}{s}{s},g={s}{s}{s},o={s}{s}{s}\n",
         .{
             if ((allowed & 0o400) != 0) "r" else "",
@@ -1795,7 +1791,7 @@ fn evalLocal(shell: anytype, args: []const []const u8) !result.EvalResult {
         if (!isAssignmentName(name)) {
             try shell.host.writeAll(
                 .stderr,
-                try std.fmt.allocPrint(shell.scratchAllocator(), "local: `{s}': not a valid identifier\n", .{arg}),
+                try shell.scratchAllocator().print("local: `{s}': not a valid identifier\n", .{arg}),
             );
             status = 1;
             continue;
@@ -1810,7 +1806,7 @@ fn evalLocal(shell: anytype, args: []const []const u8) !result.EvalResult {
             error.ReadonlyVariable => {
                 try shell.host.writeAll(
                     .stderr,
-                    try std.fmt.allocPrint(shell.scratchAllocator(), "{s}: readonly variable\n", .{name}),
+                    try shell.scratchAllocator().print("{s}: readonly variable\n", .{name}),
                 );
                 status = 1;
             },
@@ -1884,8 +1880,7 @@ fn listSetVariables(shell: anytype) !result.EvalResult {
 
     std.mem.sort(state_mod.Variable, variables.items, {}, variableLessThan);
     for (variables.items) |variable| {
-        try shell.host.writeAll(.stdout, try std.fmt.allocPrint(
-            allocator,
+        try shell.host.writeAll(.stdout, try allocator.print(
             "{s}={s}\n",
             .{ variable.name, variable.value },
         ));
@@ -2001,14 +1996,12 @@ fn listSetOptions(shell: anytype, table: bool) !result.EvalResult {
         const name = setOptionName(option);
         const enabled = setOptionEnabled(shell, option);
         const text = if (table)
-            try std.fmt.allocPrint(
-                shell.scratchAllocator(),
+            try shell.scratchAllocator().print(
                 "{s}\t{s}\n",
                 .{ name, if (enabled) "on" else "off" },
             )
         else
-            try std.fmt.allocPrint(
-                shell.scratchAllocator(),
+            try shell.scratchAllocator().print(
                 "set {s}o {s}\n",
                 .{ if (enabled) "-" else "+", name },
             );
@@ -2115,7 +2108,8 @@ fn evalUnset(shell: anytype, args: []const []const u8) !result.EvalResult {
         } else if (array_target) |target| {
             if (shell.state.getArray(name)) |array| {
                 if (array.readonly) {
-                    try shell.host.writeAll(.stderr, try std.fmt.allocPrint(shell.scratchAllocator(), "{s}: readonly variable\n", .{name}));
+                    const message = try shell.scratchAllocator().print("{s}: readonly variable\n", .{name});
+                    try shell.host.writeAll(.stderr, message);
                     status = 1;
                 } else {
                     status = try unsetArrayTarget(shell, target, status);
@@ -2125,21 +2119,24 @@ fn evalUnset(shell: anytype, args: []const []const u8) !result.EvalResult {
             }
         } else if (shell.state.getVariable(name)) |variable| {
             if (variable.readonly) {
-                try shell.host.writeAll(.stderr, try std.fmt.allocPrint(shell.scratchAllocator(), "{s}: readonly variable\n", .{name}));
+                const message = try shell.scratchAllocator().print("{s}: readonly variable\n", .{name});
+                try shell.host.writeAll(.stderr, message);
                 status = 1;
             } else {
                 try shell.state.unsetVariable(name);
             }
         } else if (shell.state.getVariableAttributes(name)) |attributes| {
             if (attributes.readonly) {
-                try shell.host.writeAll(.stderr, try std.fmt.allocPrint(shell.scratchAllocator(), "{s}: readonly variable\n", .{name}));
+                const message = try shell.scratchAllocator().print("{s}: readonly variable\n", .{name});
+                try shell.host.writeAll(.stderr, message);
                 status = 1;
             } else {
                 try shell.state.unsetVariable(name);
             }
         } else if (shell.state.getArray(name)) |array| {
             if (array.readonly) {
-                try shell.host.writeAll(.stderr, try std.fmt.allocPrint(shell.scratchAllocator(), "{s}: readonly variable\n", .{name}));
+                const message = try shell.scratchAllocator().print("{s}: readonly variable\n", .{name});
+                try shell.host.writeAll(.stderr, message);
                 status = 1;
             } else {
                 try shell.state.unsetVariable(name);
@@ -2173,8 +2170,7 @@ fn unsetArrayTarget(shell: anytype, target: UnsetArrayTarget, current_status: re
     const array = shell.state.getArray(target.name) orelse return current_status;
     const index = unsetArrayIndex(target.subscript, array) catch |err| switch (err) {
         error.BadArraySubscript => {
-            try shell.host.writeAll(.stderr, try std.fmt.allocPrint(
-                shell.scratchAllocator(),
+            try shell.host.writeAll(.stderr, try shell.scratchAllocator().print(
                 "unset: [{s}]: bad array subscript\n",
                 .{target.subscript},
             ));
@@ -2306,8 +2302,7 @@ fn evalTrap(shell: anytype, args: []const []const u8) !result.EvalResult {
 }
 
 fn writeInvalidTrapSignal(shell: anytype, name: []const u8) !void {
-    try shell.host.writeAll(.stderr, try std.fmt.allocPrint(
-        shell.scratchAllocator(),
+    try shell.host.writeAll(.stderr, try shell.scratchAllocator().print(
         "trap: {s}: invalid signal\n",
         .{name},
     ));
@@ -2333,8 +2328,7 @@ fn listTrap(shell: anytype, signal: TrapSignal, defaults: bool) !void {
         .exit => "EXIT",
         .other => |name| name,
     };
-    try shell.host.writeAll(.stdout, try std.fmt.allocPrint(
-        shell.scratchAllocator(),
+    try shell.host.writeAll(.stdout, try shell.scratchAllocator().print(
         "trap -- {s} {s}\n",
         .{ quoted, name },
     ));
@@ -2378,7 +2372,7 @@ fn signalName(signal: []const u8) ?[]const u8 {
 }
 
 pub fn signalNumber(signal: []const u8) ?u8 {
-    if (comptime zig_builtin.cpu.arch.isWasm()) {
+    if (comptime zig_builtin.target.cpu.arch.isWasm()) {
         inline for (linux_signal_numbers) |entry| {
             if (std.mem.eql(u8, signal, entry.name)) return entry.number;
         }
@@ -2386,7 +2380,7 @@ pub fn signalNumber(signal: []const u8) ?u8 {
     }
     inline for (trap_signal_names) |name| {
         if (std.mem.eql(u8, signal, name) and @hasField(std.c.SIG, name)) {
-            return @intCast(@intFromEnum(@field(std.c.SIG, name)));
+            return @intCast(@backingInt(@field(std.c.SIG, name)));
         }
     }
     return null;
@@ -2510,7 +2504,7 @@ test "fc lists and re-executes attached command history" {
                 self.file.clearRetainingCapacity();
             }
             self.read_offset = 0;
-            return @enumFromInt(100);
+            return @fromBackingInt(100);
         }
 
         pub fn close(_: *@This(), _: host.Fd) !void {}

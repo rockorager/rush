@@ -209,14 +209,14 @@ fn appendKittyKeyboardSetSequence(
     output: *std.ArrayList(u8),
     flags: u5,
 ) !void {
-    const sequence = try std.fmt.allocPrint(allocator, kitty_keyboard_set, .{flags});
+    const sequence = try allocator.print(kitty_keyboard_set, .{flags});
     defer allocator.free(sequence);
     try output.appendSlice(allocator, sequence);
 }
 
 pub const Parser = struct {
     allocator: std.mem.Allocator,
-    parser: vaxis.Parser = undefined,
+    parser: vaxis.Parser = .{},
     pending: std.ArrayList(u8) = .empty,
     event_text_arena: std.heap.ArenaAllocator,
     saw_invalid_utf8: bool = false,
@@ -315,7 +315,9 @@ pub const Parser = struct {
             } },
             .color_report => |report| .{ .color_report = report },
             .mouse => |mouse| .{ .mouse = mouse },
-            .mouse_leave => null,
+            // Replies to queries Rush does not send. Cursor reports need
+            // `cursor_position_requests`; Rush parses its own reports in `feed`.
+            .mouse_leave, .cursor_position, .terminal_version, .cap_program_status => null,
         };
     }
 
@@ -472,8 +474,7 @@ test "terminal capability application plans writes only on state changes" {
     var output: std.ArrayList(u8) = .empty;
     defer output.deinit(std.testing.allocator);
 
-    const editor_sequence = try std.fmt.allocPrint(
-        std.testing.allocator,
+    const editor_sequence = try std.testing.allocator.print(
         kitty_keyboard_set,
         .{editor_kitty_keyboard_flags},
     );
@@ -553,8 +554,7 @@ test "terminal capability suspend restores default keyboard during command hando
 
     output.clearRetainingCapacity();
     try capabilities.appendResumeSequences(std.testing.allocator, &output);
-    const editor_sequence = try std.fmt.allocPrint(
-        std.testing.allocator,
+    const editor_sequence = try std.testing.allocator.print(
         kitty_keyboard_set,
         .{editor_kitty_keyboard_flags},
     );

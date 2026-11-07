@@ -88,7 +88,7 @@ try map.put(allocator, "key", 42);
 **stdout/stderr writer:**
 ```zig
 var buf: [4096]u8 = undefined;
-var writer = std.fs.File.stdout().writer(&buf);
+var writer = std.Io.File.stdout().writer(io, &buf);
 defer writer.interface.flush() catch {};
 try writer.interface.print("hello {s}\n", .{"world"});
 ```
@@ -108,7 +108,7 @@ b.addExecutable(.{
 **JSON writing:**
 ```zig
 var buf: [4096]u8 = undefined;
-var writer = std.fs.File.stdout().writer(&buf);
+var writer = std.Io.File.stdout().writer(io, &buf);
 defer writer.interface.flush() catch {};
 
 var jw: std.json.Stringify = .{
@@ -201,7 +201,7 @@ const output = try writer.toOwnedSlice();
 - Make ownership and mutation boundaries explicit. Many bugs are state commits
   to the wrong owner, lifetime, process, or abstraction layer; in shell execution,
   this especially means making current-shell vs child/subshell mutation explicit.
-- Main owns the root allocator: DebugAllocator in Debug and `std.heap.smp_allocator`
+- Main owns the root allocator: SafeAllocator in Debug and `std.heap.smp_allocator`
   otherwise. All shell allocators must derive from that root allocator.
 - Use arena allocators heavily for parser/evaluator lifetimes. Persistent shell
   state owns its strings through the shell state's allocator; AST and per-command

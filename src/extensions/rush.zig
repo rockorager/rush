@@ -307,7 +307,7 @@ pub const State = struct {
         fd_registry: PromptAsyncFdRegistry,
     ) void {
         self.prompt_async_io = io;
-        self.prompt_async_redraw_fd = @enumFromInt(redraw_fd);
+        self.prompt_async_redraw_fd = @fromBackingInt(@intCast(redraw_fd));
         self.prompt_async_registry = fd_registry;
     }
 
@@ -637,9 +637,9 @@ fn listEventsText(sh: anytype, handlers: []const EventHandler) !void {
         }
         try sh.host.writeAll(.stdout, "  ");
         try sh.host.writeAll(.stdout, handler.name);
-        try sh.host.writeAll(.stdout, try std.fmt.allocPrint(sh.scratchAllocator(), " priority={d}", .{handler.priority}));
+        try sh.host.writeAll(.stdout, try sh.scratchAllocator().print(" priority={d}", .{handler.priority}));
         if (handler.every_ms) |every_ms| {
-            try sh.host.writeAll(.stdout, try std.fmt.allocPrint(sh.scratchAllocator(), " every={d}ms", .{every_ms}));
+            try sh.host.writeAll(.stdout, try sh.scratchAllocator().print(" every={d}ms", .{every_ms}));
         }
         try sh.host.writeAll(.stdout, " ");
         try sh.host.writeAll(.stdout, handler.action);
@@ -657,9 +657,9 @@ fn listEventsJson(sh: anytype, handlers: []const EventHandler) !result.EvalResul
         try writeJsonString(sh, handler.name);
         try sh.host.writeAll(.stdout, ",\"function\":");
         try writeJsonString(sh, handler.action);
-        try sh.host.writeAll(.stdout, try std.fmt.allocPrint(sh.scratchAllocator(), ",\"priority\":{d}", .{handler.priority}));
+        try sh.host.writeAll(.stdout, try sh.scratchAllocator().print(",\"priority\":{d}", .{handler.priority}));
         if (handler.every_ms) |every_ms| {
-            try sh.host.writeAll(.stdout, try std.fmt.allocPrint(sh.scratchAllocator(), ",\"every_ms\":{d}", .{every_ms}));
+            try sh.host.writeAll(.stdout, try sh.scratchAllocator().print(",\"every_ms\":{d}", .{every_ms}));
         }
         try sh.host.writeAll(.stdout, "}");
     }
@@ -678,10 +678,10 @@ fn writeJsonString(sh: anytype, value: []const u8) !void {
         else => if (byte < 0x20)
             try sh.host.writeAll(
                 .stdout,
-                try std.fmt.allocPrint(sh.scratchAllocator(), "\\u{x:0>4}", .{byte}),
+                try sh.scratchAllocator().print("\\u{x:0>4}", .{byte}),
             )
         else
-            try sh.host.writeAll(.stdout, try std.fmt.allocPrint(sh.scratchAllocator(), "{c}", .{byte})),
+            try sh.host.writeAll(.stdout, try sh.scratchAllocator().print("{c}", .{byte})),
     };
     try sh.host.writeAll(.stdout, "\"");
 }
@@ -1235,7 +1235,7 @@ fn evalColor(sh: anytype, args: []const []const u8) !result.EvalResult {
 fn evalPromptDuration(state: *State, sh: anytype, args: []const []const u8) !result.EvalResult {
     if (args.len != 1) return .{ .status = 2 };
     const duration_ms = state.previous_duration_ms orelse return .{ .status = 1 };
-    try sh.host.writeAll(.stdout, try std.fmt.allocPrint(sh.scratchAllocator(), "{d}ms\n", .{duration_ms}));
+    try sh.host.writeAll(.stdout, try sh.scratchAllocator().print("{d}ms\n", .{duration_ms}));
     return .{};
 }
 
@@ -1385,7 +1385,7 @@ fn rushCompleteFunctions(context: *CompletionContext, sh: anytype) !result.EvalR
 
 fn rushCompleteJobs(context: *CompletionContext, sh: anytype) !result.EvalResult {
     for (sh.state.background_jobs.items) |job| {
-        const value = try std.fmt.allocPrint(context.allocator, "%{d}", .{job.id});
+        const value = try context.allocator.print("%{d}", .{job.id});
         defer context.allocator.free(value);
         try appendCompletionCandidate(context, value, .plain, "job", 0);
     }
@@ -1519,9 +1519,9 @@ fn appendPathCompletionCandidates(context: *CompletionContext, sh: anytype, dire
         );
         if (directories_only and !is_directory) continue;
         const value = if (is_directory)
-            try std.fmt.allocPrint(context.allocator, "{s}{s}/", .{ dir_prefix, entry.name })
+            try context.allocator.print("{s}{s}/", .{ dir_prefix, entry.name })
         else
-            try std.fmt.allocPrint(context.allocator, "{s}{s}", .{ dir_prefix, entry.name });
+            try context.allocator.print("{s}{s}", .{ dir_prefix, entry.name });
         defer context.allocator.free(value);
         try appendCompletionCandidate(context, value, if (is_directory) .directory else .file, if (is_directory) "directory" else "file", 0);
     }
@@ -1793,10 +1793,7 @@ fn emitCompletionCandidate(context: *CompletionContext, sh: anytype, candidate: 
 }
 
 fn parseCompletionKind(value: []const u8) ?completion.Kind {
-    inline for (std.meta.fields(completion.Kind)) |field| {
-        if (std.mem.eql(u8, value, field.name)) return @enumFromInt(field.value);
-    }
-    return null;
+    return std.meta.stringToEnum(completion.Kind, value);
 }
 
 fn freeCompletionCandidateFields(allocator: std.mem.Allocator, candidate: completion.Candidate) void {
@@ -1883,8 +1880,7 @@ fn isShellVariableName(name: []const u8) bool {
 }
 
 fn writeRgb(sh: anytype, rgb: [3]u8) !void {
-    try sh.host.writeAll(.stdout, try std.fmt.allocPrint(
-        sh.scratchAllocator(),
+    try sh.host.writeAll(.stdout, try sh.scratchAllocator().print(
         "#{x:0>2}{x:0>2}{x:0>2}\n",
         .{ rgb[0], rgb[1], rgb[2] },
     ));
@@ -2011,7 +2007,7 @@ fn appendColorCode(state: *State, background: bool, color: []const u8) !void {
 }
 
 fn appendPromptPrint(state: *State, comptime fmt: []const u8, args: anytype) !void {
-    const bytes = try std.fmt.allocPrint(state.allocator, fmt, args);
+    const bytes = try state.allocator.print(fmt, args);
     defer state.allocator.free(bytes);
     try state.appendPrompt(bytes);
 }

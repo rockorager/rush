@@ -47,7 +47,7 @@ fn findFunctionSource(sh: anytype, name: []const u8) !?FunctionSource {
     var dirs = try functionSearchDirs(sh.allocator, sh);
     defer dirs.deinit();
 
-    const file_name = try std.fmt.allocPrint(sh.allocator, "{s}.rush", .{name});
+    const file_name = try sh.allocator.print("{s}.rush", .{name});
     defer sh.allocator.free(file_name);
 
     for (dirs.paths) |dir| {
@@ -154,7 +154,7 @@ fn shellValue(sh: anytype, name: []const u8) ?[]const u8 {
 }
 
 fn readFileAlloc(sh: anytype, path: []const u8) ![]const u8 {
-    const path_z = try sh.allocator.dupeZ(u8, path);
+    const path_z = try sh.allocator.dupeSentinel(u8, path, 0);
     defer sh.allocator.free(path_z);
     const fd = try sh.host.openZ(path_z, .{ .access = .read_only });
     defer sh.host.close(fd) catch {};
@@ -236,7 +236,7 @@ test "function search dirs follow config before data order" {
 test "autoload sources dotted function into current shell and hides load output" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const root = try std.fmt.allocPrint(allocator, "rush-test-autoload-{d}", .{std.c.getpid()});
+    const root = try allocator.print("rush-test-autoload-{d}", .{std.c.getpid()});
     defer allocator.free(root);
     std.Io.Dir.cwd().deleteTree(io, root) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
@@ -262,7 +262,7 @@ test "autoload sources dotted function into current shell and hides load output"
 
     const out_path = try std.fs.path.join(allocator, &.{ root, "out.txt" });
     defer allocator.free(out_path);
-    const command = try std.fmt.allocPrint(allocator, "zig_0.16.0 world > {s}", .{out_path});
+    const command = try allocator.print("zig_0.16.0 world > {s}", .{out_path});
     defer allocator.free(command);
     const src: shell.source.Source = .{ .id = 1, .kind = .command_string, .name = "test", .text = command };
     const evaluated = try sh.evalSource(src);
@@ -275,8 +275,7 @@ test "autoload sources dotted function into current shell and hides load output"
 
     const suppressed_path = try std.fs.path.join(allocator, &.{ root, "suppressed.txt" });
     defer allocator.free(suppressed_path);
-    const suppressed_command = try std.fmt.allocPrint(
-        allocator,
+    const suppressed_command = try allocator.print(
         "unset -f zig_0.16.0; zig_0.16.0 > {s} 2>&1",
         .{suppressed_path},
     );
@@ -293,8 +292,7 @@ test "autoload sources dotted function into current shell and hides load output"
 
     const redefined_path = try std.fs.path.join(allocator, &.{ root, "redefined.txt" });
     defer allocator.free(redefined_path);
-    const redefined_command = try std.fmt.allocPrint(
-        allocator,
+    const redefined_command = try allocator.print(
         "zig_0.16.0(){{ printf redefined; }}; zig_0.16.0 > {s}",
         .{redefined_path},
     );
@@ -315,7 +313,7 @@ test "autoload sources dotted function into current shell and hides load output"
 test "autoload protects function definition from same-name alias" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const root = try std.fmt.allocPrint(allocator, "rush-test-autoload-alias-{d}", .{std.c.getpid()});
+    const root = try allocator.print("rush-test-autoload-alias-{d}", .{std.c.getpid()});
     defer allocator.free(root);
     std.Io.Dir.cwd().deleteTree(io, root) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
@@ -340,7 +338,7 @@ test "autoload protects function definition from same-name alias" {
 
     const out_path = try std.fs.path.join(allocator, &.{ root, "out.txt" });
     defer allocator.free(out_path);
-    const command = try std.fmt.allocPrint(allocator, "{s} > {s}", .{ name, out_path });
+    const command = try allocator.print("{s} > {s}", .{ name, out_path });
     defer allocator.free(command);
     const evaluated = try sh.evalSource(.{
         .id = 1,
@@ -360,7 +358,7 @@ test "autoload protects function definition from same-name alias" {
 test "autoload caches misses until function is explicitly defined" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const root = try std.fmt.allocPrint(allocator, "rush-test-autoload-miss-{d}", .{std.c.getpid()});
+    const root = try allocator.print("rush-test-autoload-miss-{d}", .{std.c.getpid()});
     defer allocator.free(root);
     std.Io.Dir.cwd().deleteTree(io, root) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
@@ -404,8 +402,7 @@ test "autoload caches misses until function is explicitly defined" {
 
     const out_path = try std.fs.path.join(allocator, &.{ root, "explicit.txt" });
     defer allocator.free(out_path);
-    const explicit_command = try std.fmt.allocPrint(
-        allocator,
+    const explicit_command = try allocator.print(
         "{s}(){{ printf explicit; }}; {s} > {s}",
         .{ name, name, out_path },
     );
@@ -422,7 +419,7 @@ test "autoload caches misses until function is explicitly defined" {
 test "autoload clears cached misses when search path variables change" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const root = try std.fmt.allocPrint(allocator, "rush-test-autoload-path-{d}", .{std.c.getpid()});
+    const root = try allocator.print("rush-test-autoload-path-{d}", .{std.c.getpid()});
     defer allocator.free(root);
     std.Io.Dir.cwd().deleteTree(io, root) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
@@ -457,7 +454,7 @@ test "autoload clears cached misses when search path variables change" {
 
     const out_path = try std.fs.path.join(allocator, &.{ root, "out.txt" });
     defer allocator.free(out_path);
-    const command = try std.fmt.allocPrint(allocator, "{s} > {s}", .{ name, out_path });
+    const command = try allocator.print("{s} > {s}", .{ name, out_path });
     defer allocator.free(command);
     const evaluated = try sh.evalSource(.{ .id = 2, .kind = .command_string, .name = "test", .text = command });
     try std.testing.expectEqual(@as(shell.result.ExitStatus, 0), evaluated.status);

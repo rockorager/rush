@@ -5,16 +5,16 @@ const builtin = @import("builtin");
 
 const app = @import("app.zig");
 
-const use_debug_allocator = builtin.mode == .Debug;
-const AppDebugAllocator = if (use_debug_allocator) std.heap.DebugAllocator(.{}) else void;
+const use_safe_allocator = builtin.mode == .debug;
+const AppSafeAllocator = if (use_safe_allocator) std.heap.SafeAllocator else void;
 
 pub fn main(init: std.process.Init.Minimal) !u8 {
-    var debug_allocator: AppDebugAllocator = if (use_debug_allocator) .init else {};
-    defer if (use_debug_allocator) {
-        _ = debug_allocator.deinit();
+    var safe_allocator: AppSafeAllocator = if (use_safe_allocator) .init(std.heap.page_allocator, .{}) else {};
+    defer if (use_safe_allocator) {
+        _ = safe_allocator.deinit();
     };
 
-    const root_allocator = if (use_debug_allocator) debug_allocator.allocator() else std.heap.smp_allocator;
+    const root_allocator = if (use_safe_allocator) safe_allocator.allocator() else std.heap.smp_allocator;
 
     var process_arena = std.heap.ArenaAllocator.init(root_allocator);
     defer process_arena.deinit();

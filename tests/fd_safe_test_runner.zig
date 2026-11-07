@@ -54,7 +54,11 @@ fn runTests(init: std.process.Init.Minimal) void {
     var fuzz_count: usize = 0;
 
     for (test_fns, 0..) |test_fn, test_index| {
-        std.testing.allocator_instance = .{};
+        // Match Zig's default test runner configuration.
+        std.testing.allocator_instance = .init(std.heap.page_allocator, .{
+            .canary = 0xc3a701ba,
+            .check_write_after_free = true,
+        });
         std.testing.io_instance = .init(std.testing.allocator, .{
             .argv0 = .init(init.args),
             .environ = init.environ,
@@ -67,8 +71,7 @@ fn runTests(init: std.process.Init.Minimal) void {
         std.debug.print("{d}/{d} {s}...", .{ test_index + 1, test_fns.len, test_fn.name });
         const result = test_fn.func();
         std.testing.io_instance.deinit();
-        const leaked = std.testing.allocator_instance.detectLeaks();
-        std.testing.allocator_instance.deinitWithoutLeakChecks();
+        const leaked = std.testing.allocator_instance.deinit();
 
         if (leaked != 0) leak_count += leaked;
         fuzz_count += @intFromBool(is_fuzz_test);
@@ -110,8 +113,8 @@ pub fn log(
     args: anytype,
 ) void {
     @disableInstrumentation();
-    if (@intFromEnum(message_level) <= @intFromEnum(std.log.Level.err)) log_err_count +|= 1;
-    if (@intFromEnum(message_level) <= @intFromEnum(std.testing.log_level)) {
+    if (@backingInt(message_level) <= @backingInt(std.log.Level.err)) log_err_count +|= 1;
+    if (@backingInt(message_level) <= @backingInt(std.testing.log_level)) {
         std.debug.print(
             "[" ++ @tagName(scope) ++ "] (" ++ @tagName(message_level) ++ "): " ++ format ++ "\n",
             args,

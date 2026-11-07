@@ -71,10 +71,10 @@ jobs:
       - name: Install Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
-          version: 0.16.0
+          version: 0.17.1
           cache-key: release-${{ matrix.arch }}
 
-      # Zig 0.16.0 cannot fetch ZIP dependencies when a fresh cache lacks tmp/.
+      # Zig 0.17.1 cannot fetch ZIP dependencies when a fresh cache lacks tmp/.
       - name: Prepare Zig package cache
         run: mkdir -p "$ZIG_GLOBAL_CACHE_DIR/tmp"
 

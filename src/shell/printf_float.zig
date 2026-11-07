@@ -203,7 +203,7 @@ fn normalizeScientific(allocator: std.mem.Allocator, rendered: []const u8, alter
         try output.append(allocator, '+');
     }
     if (exponent < 10) try output.append(allocator, '0');
-    const exponent_text = try std.fmt.allocPrint(allocator, "{d}", .{exponent});
+    const exponent_text = try allocator.print("{d}", .{exponent});
     defer allocator.free(exponent_text);
     try output.appendSlice(allocator, exponent_text);
     return output.toOwnedSlice(allocator);
@@ -324,7 +324,7 @@ fn formatHex(allocator: std.mem.Allocator, value: f64, precision: ?usize, altern
     } else {
         try output.append(allocator, '+');
     }
-    const exponent_text = try std.fmt.allocPrint(allocator, "{d}", .{exponent});
+    const exponent_text = try allocator.print("{d}", .{exponent});
     defer allocator.free(exponent_text);
     try output.appendSlice(allocator, exponent_text);
     return output.toOwnedSlice(allocator);

@@ -29,7 +29,7 @@ const cd_suggestion_confirm_timeout_ms = 5 * 1000;
 const interactive_signal_names = [_][]const u8{ "INT", "QUIT", "TERM", "TSTP", "TTIN", "TTOU" };
 
 fn validateAst(value: anytype) void {
-    if (zig_builtin.mode != .ReleaseFast and zig_builtin.mode != .ReleaseSmall) value.validate();
+    if (zig_builtin.mode.runtimeSafety()) value.validate();
 }
 
 pub fn evalProgram(comptime Host: type, shell: anytype, program: ast.Program) EvalError!result.EvalResult {
@@ -987,7 +987,7 @@ fn evalFor(shell: anytype, command: ast.ForCommand) EvalError!result.EvalResult 
     if (!isAssignmentName(command.name)) {
         try shell.host.writeAll(
             .stderr,
-            try std.fmt.allocPrint(shell.scratchAllocator(), "`{s}': not a valid identifier\n", .{command.name}),
+            try shell.scratchAllocator().print("`{s}': not a valid identifier\n", .{command.name}),
         );
         return .{ .status = 1 };
     }
@@ -1166,8 +1166,7 @@ fn conditionalArrayParameterIsSet(shell: anytype, parameter: ast.ArrayParameter)
         .index => |word| scalar: {
             const index = try expandArrayIndexValue(shell, word);
             if (index < 0) {
-                const diagnostic = try std.fmt.allocPrint(
-                    shell.scratchAllocator(),
+                const diagnostic = try shell.scratchAllocator().print(
                     "{s}: bad array subscript\n",
                     .{parameter.name},
                 );
@@ -1487,10 +1486,10 @@ fn appendQuotedArrayAtPartsFields(
                 try appendTextToLastField(
                     shell,
                     fields,
-                    try std.fmt.allocPrint(allocator, "{}", .{elements[0].index}),
+                    try allocator.print("{}", .{elements[0].index}),
                 );
                 for (elements[1..]) |element| {
-                    try fields.append(allocator, try std.fmt.allocPrint(allocator, "{}", .{element.index}));
+                    try fields.append(allocator, try allocator.print("{}", .{element.index}));
                 }
             } else if (prompt_values) |values| {
                 try appendTextToLastField(
@@ -1520,7 +1519,7 @@ fn appendQuotedArrayAtPartsFields(
 fn appendTextToLastField(shell: anytype, fields: *std.ArrayList([]const u8), text: []const u8) !void {
     if (text.len == 0) return;
     const last = &fields.items[fields.items.len - 1];
-    last.* = try std.fmt.allocPrint(shell.scratchAllocator(), "{s}{s}", .{ last.*, text });
+    last.* = try shell.scratchAllocator().print("{s}{s}", .{ last.*, text });
 }
 
 fn wordPartsContainAtParameter(parts: []const ast.WordPart) bool {
@@ -1649,8 +1648,7 @@ fn appendUnquotedArrayIndexFields(shell: anytype, fields: *std.ArrayList([]const
     }
     const array = shell.state.getArray(array_parameter.name) orelse return true;
     for (array.elements) |element| {
-        try fields.append(shell.scratchAllocator(), try std.fmt.allocPrint(
-            shell.scratchAllocator(),
+        try fields.append(shell.scratchAllocator(), try shell.scratchAllocator().print(
             "{}",
             .{element.index},
         ));
@@ -1855,7 +1853,8 @@ fn redirectionFailure(shell: anytype, fatal: bool) result.EvalResult {
 }
 
 fn writeReadonlyDiagnostic(shell: anytype, name: []const u8) !void {
-    try shell.host.writeAll(.stderr, try std.fmt.allocPrint(shell.scratchAllocator(), "{s}: readonly variable\n", .{name}));
+    const message = try shell.scratchAllocator().print("{s}: readonly variable\n", .{name});
+    try shell.host.writeAll(.stderr, message);
 }
 
 fn evalSimpleScoped(shell: anytype, command: ast.SimpleCommand, process: CommandProcess) EvalError!result.EvalResult {
@@ -2199,7 +2198,7 @@ fn changeDirectoryBuiltin(
     };
     if (comptime @hasDecl(@TypeOf(shell.*), "notifyDirectoryChange")) shell.notifyDirectoryChange(old_pwd, new_pwd);
 
-    if (print_new_dir) try shell.host.writeAll(.stdout, try std.fmt.allocPrint(allocator, "{s}\n", .{new_pwd}));
+    if (print_new_dir) try shell.host.writeAll(.stdout, try allocator.print("{s}\n", .{new_pwd}));
     return .{};
 }
 
@@ -2326,7 +2325,7 @@ fn evalPwdBuiltin(shell: anytype, args: []const []const u8) EvalError!result.Eva
     }
 
     const cwd = if (physical) try shell.host.currentDir(shell.scratchAllocator()) else try currentLogicalDir(shell);
-    try shell.host.writeAll(.stdout, try std.fmt.allocPrint(shell.scratchAllocator(), "{s}\n", .{cwd}));
+    try shell.host.writeAll(.stdout, try shell.scratchAllocator().print("{s}\n", .{cwd}));
     return .{};
 }
 
@@ -2335,11 +2334,11 @@ fn evalDotBuiltin(shell: anytype, args: []const []const u8) EvalError!result.Eva
     if (args.len == 1) return .{ .status = 2 };
 
     const path = try resolveDotPath(shell, args[1]) orelse {
-        try shell.host.writeAll(.stderr, try std.fmt.allocPrint(shell.scratchAllocator(), ".: {s}: not found\n", .{args[1]}));
+        try shell.host.writeAll(.stderr, try shell.scratchAllocator().print(".: {s}: not found\n", .{args[1]}));
         return .{ .status = 2, .flow = .{ .fatal = 2 } };
     };
     const script = readDotScript(shell, path) catch {
-        try shell.host.writeAll(.stderr, try std.fmt.allocPrint(shell.scratchAllocator(), ".: {s}: cannot open\n", .{path}));
+        try shell.host.writeAll(.stderr, try shell.scratchAllocator().print(".: {s}: cannot open\n", .{path}));
         return .{ .status = 1, .flow = .{ .fatal = 1 } };
     };
     defer shell.allocator.free(script);
@@ -2379,7 +2378,7 @@ fn evalDotBuiltin(shell: anytype, args: []const []const u8) EvalError!result.Eva
 
 fn readDotScript(shell: anytype, path: []const u8) ![]const u8 {
     const allocator = shell.allocator;
-    const path_z = try allocator.dupeZ(u8, path);
+    const path_z = try allocator.dupeSentinel(u8, path, 0);
     defer allocator.free(path_z);
 
     const fd = try shell.host.openZ(path_z, .{ .access = .read_only });
@@ -2792,18 +2791,18 @@ fn evalFileBinaryTest(shell: anytype, left: []const u8, operator: []const u8, ri
 
 fn evalTerminalTest(shell: anytype, operand: []const u8) bool {
     const fd = std.fmt.parseInt(i32, operand, 10) catch return false;
-    return shell.host.isTerminalFd(@enumFromInt(fd));
+    return shell.host.isTerminalFd(@fromBackingInt(@intCast(fd)));
 }
 
 fn fileStatus(shell: anytype, path: []const u8, follow_symlinks: bool) !?host_mod.FileStatus {
     if (path.len == 0) return null;
-    const path_z = try shell.scratchAllocator().dupeZ(u8, path);
+    const path_z = try shell.scratchAllocator().dupeSentinel(u8, path, 0);
     return shell.host.fileTestStatusZ(path_z, follow_symlinks);
 }
 
 fn fileAccess(shell: anytype, path: []const u8, access: host_mod.FileAccess) !bool {
     if (path.len == 0) return false;
-    const path_z = try shell.scratchAllocator().dupeZ(u8, path);
+    const path_z = try shell.scratchAllocator().dupeSentinel(u8, path, 0);
     return shell.host.fileAccessZ(path_z, access);
 }
 
@@ -2840,21 +2839,21 @@ fn commandLookupText(shell: anytype, name: []const u8, mode: CommandLookupMode, 
     const allocator = shell.scratchAllocator();
     if (shell.state.getAlias(name)) |alias| {
         return if (mode == .verbose)
-            try std.fmt.allocPrint(allocator, "{s} is an alias for {s}", .{ name, alias.value })
+            try allocator.print("{s} is an alias for {s}", .{ name, alias.value })
         else
-            try std.fmt.allocPrint(allocator, "alias {s}='{s}'", .{ name, alias.value });
+            try allocator.print("alias {s}='{s}'", .{ name, alias.value });
     }
     if (shell.state.getFunction(name) != null) {
-        return if (mode == .verbose) try std.fmt.allocPrint(allocator, "{s} is a shell function", .{name}) else name;
+        return if (mode == .verbose) try allocator.print("{s} is a shell function", .{name}) else name;
     }
     if (isCommandLookupReservedWord(name)) {
-        return if (mode == .verbose) try std.fmt.allocPrint(allocator, "{s} is a shell reserved word", .{name}) else name;
+        return if (mode == .verbose) try allocator.print("{s} is a shell reserved word", .{name}) else name;
     }
     if (lookupBuiltin(shell, name) != null) {
-        return if (mode == .verbose) try std.fmt.allocPrint(allocator, "{s} is a shell builtin", .{name}) else name;
+        return if (mode == .verbose) try allocator.print("{s} is a shell builtin", .{name}) else name;
     }
     if (try findCommandPath(shell, name, search_path)) |path| {
-        return if (mode == .verbose) try std.fmt.allocPrint(allocator, "{s} is {s}", .{ name, path }) else path;
+        return if (mode == .verbose) try allocator.print("{s} is {s}", .{ name, path }) else path;
     }
     return null;
 }
@@ -2957,7 +2956,7 @@ fn typeLookup(shell: anytype, name: []const u8, options: TypeOptions) !bool {
             try shell.host.writeAll(.stdout, path);
             try shell.host.writeAll(.stdout, "\n");
         } else {
-            try shell.host.writeAll(.stdout, try std.fmt.allocPrint(shell.scratchAllocator(), "{s} is {s}\n", .{ name, path }));
+            try shell.host.writeAll(.stdout, try shell.scratchAllocator().print("{s} is {s}\n", .{ name, path }));
         }
         found = true;
     }
@@ -2971,7 +2970,7 @@ fn writeTypeAlias(shell: anytype, name: []const u8, value: []const u8, kind_only
     }
     try shell.host.writeAll(
         .stdout,
-        try std.fmt.allocPrint(shell.scratchAllocator(), "{s} is aliased to `{s}'\n", .{ name, value }),
+        try shell.scratchAllocator().print("{s} is aliased to `{s}'\n", .{ name, value }),
     );
 }
 
@@ -2983,7 +2982,7 @@ fn writeTypeMatch(shell: anytype, name: []const u8, kind: []const u8, verbose_ki
     }
     try shell.host.writeAll(
         .stdout,
-        try std.fmt.allocPrint(shell.scratchAllocator(), "{s} is a {s}\n", .{ name, verbose_kind }),
+        try shell.scratchAllocator().print("{s} is a {s}\n", .{ name, verbose_kind }),
     );
 }
 
@@ -3577,7 +3576,7 @@ fn cdPathTarget(shell: anytype, operand: []const u8, print_new_dir: *bool) !?[]c
         const candidate = if (prefix.len == 0)
             operand
         else
-            try std.fmt.allocPrint(shell.scratchAllocator(), "{s}/{s}", .{ prefix, operand });
+            try shell.scratchAllocator().print("{s}/{s}", .{ prefix, operand });
         if (try pathIsDirectory(shell, candidate, .other)) {
             print_new_dir.* = prefix.len != 0;
             return candidate;
@@ -3673,7 +3672,7 @@ fn logicalPath(shell: anytype, old_pwd: []const u8, target: []const u8) ![]const
     const allocator = shell.scratchAllocator();
     var combined: []const u8 = target;
     if (target.len == 0 or target[0] != '/') {
-        combined = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ old_pwd, target });
+        combined = try allocator.print("{s}/{s}", .{ old_pwd, target });
     }
     return normalizeAbsolutePath(shell, combined);
 }
@@ -3980,7 +3979,7 @@ fn parseDeclarationOptions(shell: anytype, id: builtin.Id, words: []const ast.Wo
 fn declarationUsageError(shell: anytype, id: builtin.Id) !DeclarationOptions {
     try shell.host.writeAll(
         .stderr,
-        try std.fmt.allocPrint(shell.scratchAllocator(), "{s}: invalid option\n", .{declarationName(id)}),
+        try shell.scratchAllocator().print("{s}: invalid option\n", .{declarationName(id)}),
     );
     return error.DeclarationUsage;
 }
@@ -4298,7 +4297,7 @@ fn applyDeclaredArrayName(
 fn writeInvalidIdentifierDiagnostic(shell: anytype, id: builtin.Id, name: []const u8) !void {
     try shell.host.writeAll(
         .stderr,
-        try std.fmt.allocPrint(shell.scratchAllocator(), "{s}: `{s}': not a valid identifier\n", .{ declarationName(id), name }),
+        try shell.scratchAllocator().print("{s}: `{s}': not a valid identifier\n", .{ declarationName(id), name }),
     );
 }
 
@@ -4390,8 +4389,7 @@ fn evalDeclarationPrint(shell: anytype, id: builtin.Id, operands: []const ast.Wo
                 } else {
                     try shell.host.writeAll(
                         .stderr,
-                        try std.fmt.allocPrint(
-                            shell.scratchAllocator(),
+                        try shell.scratchAllocator().print(
                             "{s}: {s}: not found\n",
                             .{ declarationName(id), name },
                         ),
@@ -4411,8 +4409,7 @@ fn evalDeclarationPrint(shell: anytype, id: builtin.Id, operands: []const ast.Wo
             } else {
                 try shell.host.writeAll(
                     .stderr,
-                    try std.fmt.allocPrint(
-                        shell.scratchAllocator(),
+                    try shell.scratchAllocator().print(
                         "{s}: {s}: not found\n",
                         .{ declarationName(id), name },
                     ),
@@ -4481,7 +4478,7 @@ fn writeArrayDeclarationEntry(shell: anytype, id: builtin.Id, array: state_mod.A
         for (array.elements, 0..) |element, index| {
             if (index != 0) try shell.host.writeAll(.stdout, " ");
             try shell.host.writeAll(.stdout, "[");
-            try shell.host.writeAll(.stdout, try std.fmt.allocPrint(shell.scratchAllocator(), "{}", .{element.index}));
+            try shell.host.writeAll(.stdout, try shell.scratchAllocator().print("{}", .{element.index}));
             try shell.host.writeAll(.stdout, "]=");
             try shell.host.writeAll(.stdout, try doubleQuoteShell(shell.scratchAllocator(), element.value));
         }
@@ -4616,7 +4613,7 @@ fn evalExecBuiltin(shell: anytype, args: []const []const u8, assignments: []cons
             error.AccessDenied => "Permission denied",
             else => "cannot execute",
         };
-        const message = try std.fmt.allocPrint(shell.scratchAllocator(), "exec: {s}: {s}\n", .{ args[1], reason });
+        const message = try shell.scratchAllocator().print("exec: {s}: {s}\n", .{ args[1], reason });
         try shell.host.writeAll(.stderr, message);
         // A failed exec is a special built-in error: a non-interactive shell exits.
         const status = execFailureStatus(err);
@@ -4702,7 +4699,7 @@ test "function allocation failures preserve caller positional ownership and unwi
             .name = "test",
             .text = "g() { shift; : \"$1\"; }; f() { set -- changed arguments; g \"$@\"; }",
         });
-        const large_arg = "x" ** 8192;
+        const large_arg: []const u8 = &@as([8192]u8, @splat('x'));
         try shell.state.setPositionals(&.{ large_arg, "caller-second" });
         const caller = shell.state.positionals;
         shell.state.loop_depth = 3;
@@ -4898,7 +4895,7 @@ fn applyRedirection(
     switch (redirection.op) {
         .input, .output, .append, .read_write, .clobber => {
             const expanded = try expandWordTracking(shell, redirection.target, substitution_status);
-            const path = try shell.scratchAllocator().dupeZ(u8, expanded);
+            const path = try shell.scratchAllocator().dupeSentinel(u8, expanded, 0);
             const opened = try openRedirectionPath(shell, path, redirection.op);
             if (opened != target) {
                 defer shell.host.close(opened) catch {};
@@ -4915,7 +4912,7 @@ fn applyRedirection(
         },
         .here_string => {
             const expanded = try expandWordTracking(shell, redirection.target, substitution_status);
-            const body = try std.fmt.allocPrint(shell.scratchAllocator(), "{s}\n", .{expanded});
+            const body = try shell.scratchAllocator().print("{s}\n", .{expanded});
             const pid = try applyPipeInputRedirection(shell, target, body);
             try here_doc_writers.append(shell.scratchAllocator(), pid);
         },
@@ -4941,7 +4938,7 @@ fn applyOutputAndErrorRedirection(
     try frames.append(shell.scratchAllocator(), .{ .target = .stderr, .saved = stderr_saved });
 
     const expanded = try expandWordTracking(shell, redirection.target, substitution_status);
-    const path = try shell.scratchAllocator().dupeZ(u8, expanded);
+    const path = try shell.scratchAllocator().dupeSentinel(u8, expanded, 0);
     const file_op: ast.RedirectionOperator = switch (redirection.op) {
         .output_and_error => .output,
         .append_and_error => .append,
@@ -5112,7 +5109,7 @@ fn parseFd(text: []const u8) !host_mod.Fd {
 }
 
 fn parseKnownFd(raw: u31) host_mod.Fd {
-    return @enumFromInt(@as(i32, @intCast(raw)));
+    return @fromBackingInt(@intCast(@as(i32, @intCast(raw))));
 }
 
 fn applyAssignments(shell: anytype, assignments: []const ast.Assignment) !void {
@@ -5257,7 +5254,7 @@ fn arrayElementValuesForStorage(
 
 fn integerAssignmentValue(shell: anytype, value: []const u8) ![]const u8 {
     const arithmetic_value = try evalArithmeticValue(shell, value);
-    return std.fmt.allocPrint(shell.scratchAllocator(), "{}", .{arithmetic_value});
+    return shell.scratchAllocator().print("{}", .{arithmetic_value});
 }
 
 fn expandArrayAssignmentElements(
@@ -5677,14 +5674,13 @@ fn unbracedParameterExpansionText(shell: anytype, expansion: ast.ParameterExpans
     if (expansion.span.len() != expected_len) return null;
 
     return switch (expansion.parameter) {
-        .variable => |name| try std.fmt.allocPrint(shell.scratchAllocator(), "${s}", .{name}),
+        .variable => |name| try shell.scratchAllocator().print("${s}", .{name}),
         .array => null,
         .positional => |index| if (index < 10)
-            try std.fmt.allocPrint(shell.scratchAllocator(), "${}", .{index})
+            try shell.scratchAllocator().print("${}", .{index})
         else
             null,
-        .special => |special| try std.fmt.allocPrint(
-            shell.scratchAllocator(),
+        .special => |special| try shell.scratchAllocator().print(
             "${c}",
             .{specialParameterByte(special)},
         ),
@@ -5842,7 +5838,7 @@ fn numericBraceSequence(shell: anytype, parts: []const []const u8) !?[]const []c
         const text = if (padded)
             try paddedNumericBraceValue(shell, value, width)
         else
-            try std.fmt.allocPrint(shell.scratchAllocator(), "{}", .{value});
+            try shell.scratchAllocator().print("{}", .{value});
         try items.append(shell.scratchAllocator(), text);
 
         const next: i128 = @as(i128, value) + step;
@@ -5855,7 +5851,7 @@ fn numericBraceSequence(shell: anytype, parts: []const []const u8) !?[]const []c
 }
 
 fn paddedNumericBraceValue(shell: anytype, value: i64, width: usize) ![]const u8 {
-    const raw = try std.fmt.allocPrint(shell.scratchAllocator(), "{}", .{value});
+    const raw = try shell.scratchAllocator().print("{}", .{value});
     const sign_len: usize = if (raw[0] == '-') 1 else 0;
     if (raw.len - sign_len >= width) return raw;
 
@@ -6405,7 +6401,7 @@ fn expandPathnamePattern(
         if (prefix.len == 0 and slash_index == 0 and rest.text.len != 0) {
             try expandPathnamePattern(shell, allocator, matches, "/", rest);
         } else if (slash_index != null and rest.text.len != 0) {
-            try expandPathnamePattern(shell, allocator, matches, try std.fmt.allocPrint(allocator, "{s}/", .{prefix}), rest);
+            try expandPathnamePattern(shell, allocator, matches, try allocator.print("{s}/", .{prefix}), rest);
         }
         return;
     }
@@ -6414,7 +6410,7 @@ fn expandPathnamePattern(
         const candidate = try joinPathComponent(allocator, prefix, component.text);
         if (trailing_slash) {
             if (try pathIsDirectory(shell, candidate, .other)) {
-                try matches.append(allocator, try std.fmt.allocPrint(allocator, "{s}/", .{candidate}));
+                try matches.append(allocator, try allocator.print("{s}/", .{candidate}));
             }
         } else if (rest.text.len == 0) {
             // A wildcard prefix does not prove its literal suffix exists.
@@ -6439,7 +6435,7 @@ fn expandPathnamePattern(
         const candidate = try joinPathComponent(allocator, prefix, entry.name);
         if (trailing_slash) {
             if (try pathIsDirectory(shell, candidate, entry.kind)) {
-                try matches.append(allocator, try std.fmt.allocPrint(allocator, "{s}/", .{candidate}));
+                try matches.append(allocator, try allocator.print("{s}/", .{candidate}));
             }
         } else if (rest.text.len == 0) {
             try matches.append(allocator, candidate);
@@ -6509,7 +6505,7 @@ fn appendSyntheticDotPathnameMatch(
     if (!pattern_mod.matches(component, entry_name)) return;
     const candidate = try joinPathComponent(allocator, prefix, entry_name);
     if (trailing_slash) {
-        try matches.append(allocator, try std.fmt.allocPrint(allocator, "{s}/", .{candidate}));
+        try matches.append(allocator, try allocator.print("{s}/", .{candidate}));
     } else if (rest.text.len == 0) {
         try matches.append(allocator, candidate);
     } else {
@@ -6667,8 +6663,7 @@ fn expandLeadingTilde(shell: anytype, word: ast.Word, expanded: []const u8) ![]c
         .declaration_array_assignment => return expanded,
     };
     const expansion = tildeExpansion(shell, prefix.text, false, prefix.complete) orelse return expanded;
-    return std.fmt.allocPrint(
-        shell.scratchAllocator(),
+    return shell.scratchAllocator().print(
         "{s}{s}",
         .{ expansion.value, expanded[expansion.prefix_len..] },
     );
@@ -6775,7 +6770,7 @@ fn expandWordPart(
 
 fn expandArithmetic(shell: anytype, text: []const u8, status: ?*?result.ExitStatus) EvalError![]const u8 {
     const value = try parseArithmeticValue(shell, text, status);
-    return std.fmt.allocPrint(shell.scratchAllocator(), "{}", .{value});
+    return shell.scratchAllocator().print("{}", .{value});
 }
 
 fn evalArithmeticValue(shell: anytype, text: []const u8) !i64 {
@@ -6861,7 +6856,7 @@ fn expandProcessSubstitution(shell: anytype, substitution: ast.ProcessSubstituti
     }
     try shell.state.process_substitutions.append(shell.state.allocator, .{ .fd = parent_fd, .pid = pid });
     spawned_pid = null;
-    return std.fmt.allocPrint(shell.scratchAllocator(), "/dev/fd/{}", .{parent_fd.raw()});
+    return shell.scratchAllocator().print("/dev/fd/{}", .{parent_fd.raw()});
 }
 
 fn expandArithmeticText(shell: anytype, text: []const u8, status: ?*?result.ExitStatus) EvalError![]const u8 {
@@ -7375,7 +7370,7 @@ fn ArithmeticParser(comptime ShellType: type) type {
 
         fn assignVariable(self: *Self, name: []const u8, value: i64) ArithmeticError!void {
             if (!self.evaluating) return;
-            const text = try std.fmt.allocPrint(self.shell.scratchAllocator(), "{}", .{value});
+            const text = try self.shell.scratchAllocator().print("{}", .{value});
             self.shell.state.putVariable(.{
                 .name = name,
                 .value = text,
@@ -7651,13 +7646,15 @@ test "command substitution capture filters nulls and trims newlines across reads
             return self.scratch.allocator();
         }
     };
+    const a4096: [4096]u8 = @splat('a');
+    const b4096: [4096]u8 = @splat('b');
     const cases = [_]struct { chunks: []const []const u8, expected: []const u8 }{
         .{ .chunks = &.{}, .expected = "" },
         .{ .chunks = &.{ "\x00\x00", "\n\x00", "\n" }, .expected = "" },
         .{ .chunks = &.{ "first\n", "second\n", "\n" }, .expected = "first\nsecond" },
         .{ .chunks = &.{ "\x00a\x00\n", "\x00b\x00", "\n\x00\n" }, .expected = "a\nb" },
-        .{ .chunks = &.{ "a" ** 4096, "b" ** 4096, "\n\n" }, .expected = "a" ** 4096 ++ "b" ** 4096 },
-        .{ .chunks = &.{ "a" ** 4095 ++ "\x00", "\x00b\n", "\n" }, .expected = "a" ** 4095 ++ "b" },
+        .{ .chunks = &.{ &a4096, &b4096, "\n\n" }, .expected = &(a4096 ++ b4096) },
+        .{ .chunks = &.{ a4096[0..4095] ++ "\x00", "\x00b\n", "\n" }, .expected = a4096[0..4095] ++ "b" },
     };
     for (cases) |case| {
         var shell: TestShell = .{
@@ -7718,12 +7715,12 @@ fn expandParameter(
             return "";
         },
         .special => |special| switch (special) {
-            .hash => try std.fmt.allocPrint(shell.scratchAllocator(), "{}", .{shell.state.positionals.len}),
+            .hash => try shell.scratchAllocator().print("{}", .{shell.state.positionals.len}),
             .question => try formatExitStatus(shell, shell.state.last_status),
             .hyphen => try optionFlags(shell),
-            .dollar => try std.fmt.allocPrint(shell.scratchAllocator(), "{}", .{shellProcessId(shell)}),
+            .dollar => try shell.scratchAllocator().print("{}", .{shellProcessId(shell)}),
             .bang => if (shell.state.last_background_pid) |pid|
-                try std.fmt.allocPrint(shell.scratchAllocator(), "{}", .{pid})
+                try shell.scratchAllocator().print("{}", .{pid})
             else
                 "",
             .star => try joinPositionals(shell, ifsFirstCharacter(shell)),
@@ -7851,7 +7848,7 @@ fn joinArrayElements(shell: anytype, elements: []const state_mod.ArrayElement, s
 fn expandParameterLength(shell: anytype, parameter: ast.ParameterExpansion) EvalError![]const u8 {
     if (shell.state.options.mode == .bash) switch (parameter.parameter) {
         .special => |special| switch (special) {
-            .at, .star => return std.fmt.allocPrint(shell.scratchAllocator(), "{}", .{shell.state.positionals.len}),
+            .at, .star => return shell.scratchAllocator().print("{}", .{shell.state.positionals.len}),
             else => {},
         },
         .array => |array| switch (array.subscript) {
@@ -7868,7 +7865,7 @@ fn expandParameterLength(shell: anytype, parameter: ast.ParameterExpansion) Eval
         return "0";
     };
     const length = std.unicode.utf8CountCodepoints(value) catch value.len;
-    return std.fmt.allocPrint(shell.scratchAllocator(), "{}", .{length});
+    return shell.scratchAllocator().print("{}", .{length});
 }
 
 fn expandArrayElementCount(
@@ -7888,7 +7885,7 @@ fn expandArrayElementCount(
         }
         return "0";
     };
-    return std.fmt.allocPrint(shell.scratchAllocator(), "{}", .{count});
+    return shell.scratchAllocator().print("{}", .{count});
 }
 
 fn arrayElementCount(shell: anytype, parameter: ast.ArrayParameter) ?usize {
@@ -7989,12 +7986,12 @@ fn parameterCurrentValue(shell: anytype, parameter: ast.Parameter) !?[]const u8 
         .special => |special| switch (special) {
             .at => if (shell.state.positionals.len == 0) null else try joinPositionals(shell, " "),
             .star => if (shell.state.positionals.len == 0) null else try joinPositionals(shell, ifsFirstCharacter(shell)),
-            .hash => try std.fmt.allocPrint(shell.scratchAllocator(), "{}", .{shell.state.positionals.len}),
+            .hash => try shell.scratchAllocator().print("{}", .{shell.state.positionals.len}),
             .question => try formatExitStatus(shell, shell.state.last_status),
             .hyphen => try optionFlags(shell),
-            .dollar => try std.fmt.allocPrint(shell.scratchAllocator(), "{}", .{shellProcessId(shell)}),
+            .dollar => try shell.scratchAllocator().print("{}", .{shellProcessId(shell)}),
             .bang => if (shell.state.last_background_pid) |pid|
-                try std.fmt.allocPrint(shell.scratchAllocator(), "{}", .{pid})
+                try shell.scratchAllocator().print("{}", .{pid})
             else
                 null,
         },
@@ -8143,7 +8140,7 @@ fn pipelineStatusParameterValue(shell: anytype, subscript: ast.ArraySubscript) !
         .index => |word| value: {
             const index = try expandArrayIndex(shell, word);
             if (index >= statuses.len) break :value null;
-            break :value try std.fmt.allocPrint(shell.scratchAllocator(), "{}", .{statuses[index]});
+            break :value try shell.scratchAllocator().print("{}", .{statuses[index]});
         },
         .all => |special| switch (special) {
             .at => try joinPipelineStatuses(shell, " "),
@@ -8166,8 +8163,7 @@ fn joinPipelineStatuses(shell: anytype, separator: []const u8) ![]const u8 {
 }
 
 fn parameterExpansionValue(shell: anytype, name: []const u8, span: source_mod.Span) ?[]const u8 {
-    if (std.mem.eql(u8, name, "LINENO")) return std.fmt.allocPrint(
-        shell.scratchAllocator(),
+    if (std.mem.eql(u8, name, "LINENO")) return shell.scratchAllocator().print(
         "{}",
         .{span.start_line + shell.state.diagnostic_line_offset},
     ) catch null;
@@ -8348,8 +8344,7 @@ fn spliceSubstitution(
     matched: pattern_mod.Match,
     replacement: []const u8,
 ) ![]const u8 {
-    return std.fmt.allocPrint(
-        shell.scratchAllocator(),
+    return shell.scratchAllocator().print(
         "{s}{s}{s}",
         .{ value[0..matched.start], replacement, value[matched.end..] },
     );
@@ -8365,8 +8360,7 @@ fn writeExpansionDiagnostic(
     name: []const u8,
     message: []const u8,
 ) !void {
-    const diagnostic = try std.fmt.allocPrint(
-        shell.scratchAllocator(),
+    const diagnostic = try shell.scratchAllocator().print(
         "{}: expansion error: {s}: {s}\n",
         .{ parameter.span.start_line + shell.state.diagnostic_line_offset, name, message },
     );
@@ -8377,8 +8371,7 @@ fn parameterValue(shell: anytype, name: []const u8) ?[]const u8 {
     if (dynamicParameterValue(shell, name)) |value| return value;
     if (shell.state.getVariable(name)) |variable| return variable.value;
     if (shell.state.bindings.contains(name)) return null;
-    if (std.mem.eql(u8, name, "PPID")) return std.fmt.allocPrint(
-        shell.scratchAllocator(),
+    if (std.mem.eql(u8, name, "PPID")) return shell.scratchAllocator().print(
         "{}",
         .{parentProcessId(shell)},
     ) catch null;
@@ -8393,25 +8386,21 @@ fn parameterValue(shell: anytype, name: []const u8) ?[]const u8 {
 
 fn dynamicParameterValue(shell: anytype, name: []const u8) ?[]const u8 {
     if (shell.state.options.mode != .bash) return null;
-    if (std.mem.eql(u8, name, "RANDOM")) return std.fmt.allocPrint(
-        shell.scratchAllocator(),
+    if (std.mem.eql(u8, name, "RANDOM")) return shell.scratchAllocator().print(
         "{}",
         .{shell.state.nextRandom()},
     ) catch null;
-    if (std.mem.eql(u8, name, "SECONDS")) return std.fmt.allocPrint(
-        shell.scratchAllocator(),
+    if (std.mem.eql(u8, name, "SECONDS")) return shell.scratchAllocator().print(
         "{}",
         .{shell.state.secondsValue(currentWallTimeNs(shell))},
     ) catch null;
-    if (std.mem.eql(u8, name, "EPOCHSECONDS")) return std.fmt.allocPrint(
-        shell.scratchAllocator(),
+    if (std.mem.eql(u8, name, "EPOCHSECONDS")) return shell.scratchAllocator().print(
         "{}",
         .{@divFloor(currentWallTimeNs(shell), std.time.ns_per_s)},
     ) catch null;
     if (std.mem.eql(u8, name, "EPOCHREALTIME")) {
         const now_ns = currentWallTimeNs(shell);
-        return std.fmt.allocPrint(
-            shell.scratchAllocator(),
+        return shell.scratchAllocator().print(
             "{}.{d:0>6}",
             .{
                 @divFloor(now_ns, std.time.ns_per_s),
@@ -8550,14 +8539,14 @@ fn writeCommandNotFoundDiagnostic(shell: anytype, command: []const u8, search_pa
         shell.state.root_source_kind == .sourced_file;
     if (!interactive_startup) try collectCommandSuggestions(shell, command, search_path, &suggestions);
     if (suggestions.count == 0) {
-        const message = try std.fmt.allocPrint(shell.scratchAllocator(), "{s}: not found\n", .{command});
+        const message = try shell.scratchAllocator().print("{s}: not found\n", .{command});
         try shell.host.writeAll(.stderr, message);
         return;
     }
 
     var message: std.ArrayList(u8) = .empty;
     const allocator = shell.scratchAllocator();
-    const prefix = try std.fmt.allocPrint(allocator, "{s}: not found; did you mean: ", .{command});
+    const prefix = try allocator.print("{s}: not found; did you mean: ", .{command});
     try message.appendSlice(allocator, prefix);
     for (suggestions.items[0..suggestions.count], 0..) |suggestion, index| {
         if (index != 0) try message.appendSlice(allocator, ", ");
@@ -8786,7 +8775,7 @@ fn searchExternalCommand(
     std.debug.assert(command.len != 0);
     const allocator = shell.scratchAllocator();
     if (std.mem.indexOfScalar(u8, command, '/') != null) {
-        const command_z = try allocator.dupeZ(u8, command);
+        const command_z = try allocator.dupeSentinel(u8, command, 0);
         if (shell.host.isExecutableZ(command_z)) {
             if (try pathIsDirectory(shell, command, .other)) return .not_executable;
             return .{ .executable = command_z };
@@ -8894,7 +8883,7 @@ fn makeShellFallbackArgv(
     const argv = try allocator.allocSentinel(?[*:0]const u8, args.len + 2, null);
     argv[0] = default_shell_path.ptr;
     argv[1] = path.ptr;
-    for (args, 0..) |arg, index| argv[index + 2] = (try allocator.dupeZ(u8, arg)).ptr;
+    for (args, 0..) |arg, index| argv[index + 2] = (try allocator.dupeSentinel(u8, arg, 0)).ptr;
     return argv;
 }
 
@@ -9055,13 +9044,13 @@ fn resolveCommandPathWithSearchPath(shell: anytype, command: [:0]const u8, searc
         if (shell.host.isExecutableZ(candidate)) return candidate;
     }
 
-    return allocator.dupeZ(u8, command);
+    return allocator.dupeSentinel(u8, command, 0);
 }
 
 fn findCommandPath(shell: anytype, command: []const u8, search_path: ?[]const u8) !?[]const u8 {
     const allocator = shell.scratchAllocator();
     if (std.mem.indexOfScalar(u8, command, '/') != null) {
-        const command_z = try allocator.dupeZ(u8, command);
+        const command_z = try allocator.dupeSentinel(u8, command, 0);
         return if (shell.host.isExecutableZ(command_z)) command else null;
     }
 
@@ -9458,7 +9447,7 @@ test "z builtin jumps through directory history" {
             return self.scratch;
         }
 
-        fn notifyDirectoryChange(self: *Self, old_pwd: []const u8, new_pwd: []const u8) void {
+        pub fn notifyDirectoryChange(self: *Self, old_pwd: []const u8, new_pwd: []const u8) void {
             self.notified_old = old_pwd;
             self.notified_new = new_pwd;
         }

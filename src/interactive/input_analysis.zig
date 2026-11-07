@@ -150,7 +150,7 @@ fn commandResolves(
 }
 
 fn existingCommandPath(allocator: std.mem.Allocator, sh: *RushShell, command: []const u8) bool {
-    const command_z = allocator.dupeZ(u8, command) catch return false;
+    const command_z = allocator.dupeSentinel(u8, command, 0) catch return false;
     defer allocator.free(command_z);
     if (!sh.host.fileAccessZ(command_z, .execute)) return false;
     const status = sh.host.fileTestStatusZ(command_z, true) orelse return false;
@@ -338,11 +338,11 @@ test "interactive input analysis requires command paths to be executable files" 
     defer std.Io.Dir.cwd().deleteTree(std.testing.io, tmpdir) catch {};
 
     const plain = try std.Io.Dir.cwd().createFile(std.testing.io, tmpdir ++ "/plain", .{
-        .permissions = @enumFromInt(0o600),
+        .permissions = @fromBackingInt(@intCast(0o600)),
     });
     plain.close(std.testing.io);
     const executable = try std.Io.Dir.cwd().createFile(std.testing.io, tmpdir ++ "/executable", .{
-        .permissions = @enumFromInt(0o700),
+        .permissions = @fromBackingInt(@intCast(0o700)),
     });
     executable.close(std.testing.io);
     try std.Io.Dir.cwd().createDir(std.testing.io, tmpdir ++ "/directory", .default_dir);

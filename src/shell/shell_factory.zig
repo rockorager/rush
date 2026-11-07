@@ -402,30 +402,26 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
             const message = message: {
                 const allocator = self.astAllocator();
                 break :message switch (err) {
-                    error.UnclosedQuote => std.fmt.allocPrint(
-                        allocator,
+                    error.UnclosedQuote => allocator.print(
                         "{}: syntax error: unterminated quoted string\n",
                         .{line},
                     ),
-                    error.UnclosedCommandSubstitution => std.fmt.allocPrint(
-                        allocator,
+                    error.UnclosedCommandSubstitution => allocator.print(
                         "{}: syntax error: unterminated command substitution\n",
                         .{line},
                     ),
-                    error.IncompleteHereDoc => std.fmt.allocPrint(
-                        allocator,
+                    error.IncompleteHereDoc => allocator.print(
                         "{}: syntax error: here-document missing terminating delimiter\n",
                         .{line},
                     ),
-                    error.InvalidParameterExpansion => std.fmt.allocPrint(
-                        allocator,
+                    error.InvalidParameterExpansion => allocator.print(
                         "{}: syntax error: bad substitution\n",
                         .{line},
                     ),
                     else => if (near) |text|
-                        std.fmt.allocPrint(allocator, "{}: syntax error: unexpected '{s}'\n", .{ line, text })
+                        allocator.print("{}: syntax error: unexpected '{s}'\n", .{ line, text })
                     else
-                        std.fmt.allocPrint(allocator, "{}: syntax error: unexpected end of input\n", .{line}),
+                        allocator.print("{}: syntax error: unexpected end of input\n", .{line}),
                 } catch return;
             };
             // Best-effort diagnostic; the parse error still propagates.
@@ -584,7 +580,10 @@ test "nested source parsing does not accumulate in the caller AST arena" {
         .id = 1,
         .kind = .sourced_file,
         .name = "nested",
-        .text = "value=kept\n" ** 128,
+        .text = comptime text: {
+            const lines: [128][11]u8 = @splat("value=kept\n".*);
+            break :text @ptrCast(&lines);
+        },
     };
     for (0..16) |_| {
         const evaluated = try shell.evalSourceNested(src);

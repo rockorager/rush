@@ -68,12 +68,12 @@ fn sourceFileIfExists(
     source_id: *shell.source.SourceId,
     path: []const u8,
 ) !?u8 {
-    const path_z = try sh.allocator.dupeZ(u8, path);
+    const path_z = try sh.allocator.dupeSentinel(u8, path, 0);
     defer sh.allocator.free(path_z);
     if (!sh.host.fileAccessZ(path_z, .read)) return null;
 
     const text = file_util.readFileAlloc(sh.allocator, &sh.host, path) catch {
-        const message = try std.fmt.allocPrint(sh.scratchAllocator(), "rush: cannot read {s}\n", .{path});
+        const message = try sh.scratchAllocator().print("rush: cannot read {s}\n", .{path});
         try sh.host.writeAll(.stderr, message);
         return null;
     };
@@ -96,7 +96,7 @@ fn sourceText(
     source_id.* +%= 1;
 
     const evaluated = sh.evalSource(src) catch {
-        const message = try std.fmt.allocPrint(sh.scratchAllocator(), "rush: error while sourcing {s}\n", .{name});
+        const message = try sh.scratchAllocator().print("rush: error while sourcing {s}\n", .{name});
         try sh.host.writeAll(.stderr, message);
         return null;
     };

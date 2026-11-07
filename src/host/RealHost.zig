@@ -92,7 +92,7 @@ pub fn effectiveUserName(_: RealHost, allocator: std.mem.Allocator) ![]const u8 
             const name = (entry orelse return error.Unexpected).name orelse return error.Unexpected;
             return allocator.dupe(u8, std.mem.span(name));
         }
-        if (rc != @intFromEnum(std.c.E.RANGE)) return error.Unexpected;
+        if (rc != @backingInt(std.c.E.RANGE)) return error.Unexpected;
     }
     return error.Unexpected;
 }
@@ -109,7 +109,7 @@ pub fn terminalName(_: RealHost, allocator: std.mem.Allocator, fd: host.Fd) ![]c
         defer allocator.free(buffer);
         const rc = ttyname_r(fd.raw(), buffer.ptr, buffer.len);
         if (rc == 0) return allocator.dupe(u8, std.mem.sliceTo(buffer, 0));
-        if (rc != @intFromEnum(std.c.E.RANGE)) return error.Unexpected;
+        if (rc != @backingInt(std.c.E.RANGE)) return error.Unexpected;
     }
     return error.Unexpected;
 }
@@ -117,14 +117,14 @@ pub fn terminalName(_: RealHost, allocator: std.mem.Allocator, fd: host.Fd) ![]c
 pub fn formatLocalTime(_: RealHost, allocator: std.mem.Allocator, timestamp: i64, format: []const u8) ![]const u8 {
     const timestamp_c: std.c.time_t = @intCast(timestamp);
     var local: CTime = undefined;
-    const local_result = if (builtin.os.tag == .netbsd)
+    const local_result = if (builtin.target.os.tag == .netbsd)
         __localtime_r50(&timestamp_c, &local)
     else
         localtime_r(&timestamp_c, &local);
     if (local_result == null) return error.Unexpected;
     if (format.len == 0) return allocator.dupe(u8, "");
 
-    const format_z = try allocator.dupeZ(u8, format);
+    const format_z = try allocator.dupeSentinel(u8, format, 0);
     defer allocator.free(format_z);
     const minimum_len = std.math.add(usize, format.len, 1) catch return error.OutOfMemory;
     if (minimum_len > local_time_max_buffer_len) return error.Unexpected;
@@ -145,7 +145,7 @@ pub fn formatLocalTime(_: RealHost, allocator: std.mem.Allocator, timestamp: i64
 
 fn clockTimeNs(clock: std.c.clockid_t) ?i128 {
     var timespec: std.c.timespec = undefined;
-    switch (builtin.os.tag) {
+    switch (builtin.target.os.tag) {
         .linux => switch (std.os.linux.errno(std.os.linux.clock_gettime(clock, &timespec))) {
             .SUCCESS => {},
             else => return null,
@@ -213,7 +213,7 @@ pub const ResourceLimitError = host.ResourceLimitError;
 
 pub fn read(_: RealHost, fd: host.Fd, buffer: []u8) ReadError!usize {
     if (buffer.len == 0) return 0;
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxRead(fd, buffer),
         .macos, .freebsd, .openbsd, .netbsd => libcRead(fd, buffer),
         else => @compileError("unsupported host OS"),
@@ -228,7 +228,7 @@ pub fn readInterruptible(_: RealHost, fd: host.Fd, buffer: []u8) ReadError!host.
     if (buffer.len == 0) return .{ .read = 0 };
     while (true) {
         if (peekPendingSignal()) |signal| return .{ .signal = signal };
-        const result = switch (builtin.os.tag) {
+        const result = switch (builtin.target.os.tag) {
             .linux => linuxReadOnce(fd, buffer),
             .macos, .freebsd, .openbsd, .netbsd => libcReadOnce(fd, buffer),
             else => @compileError("unsupported host OS"),
@@ -267,8 +267,8 @@ pub fn readInteractiveKey(self: RealHost, timeout_ms: u64) ?u8 {
     raw.lflag.ECHO = false;
     raw.lflag.ECHONL = false;
     raw.lflag.ICANON = false;
-    raw.cc[@intFromEnum(std.posix.V.MIN)] = 0;
-    raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
+    raw.cc[@backingInt(std.posix.V.MIN)] = 0;
+    raw.cc[@backingInt(std.posix.V.TIME)] = 0;
     std.posix.tcsetattr(raw_fd, .DRAIN, raw) catch return null;
     defer std.posix.tcsetattr(raw_fd, .DRAIN, saved) catch {};
 
@@ -304,7 +304,7 @@ pub fn writeAll(self: RealHost, fd: host.Fd, bytes: []const u8) WriteError!void 
 
 pub fn write(_: RealHost, fd: host.Fd, bytes: []const u8) WriteError!usize {
     if (bytes.len == 0) return 0;
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxWrite(fd, bytes),
         .macos, .freebsd, .openbsd, .netbsd => libcWrite(fd, bytes),
         else => @compileError("unsupported host OS"),
@@ -313,7 +313,7 @@ pub fn write(_: RealHost, fd: host.Fd, bytes: []const u8) WriteError!usize {
 
 pub fn seekTo(_: RealHost, fd: host.Fd, offset: u64) host.SeekError!void {
     const signed_offset = std.math.cast(i64, offset) orelse return error.Unexpected;
-    switch (builtin.os.tag) {
+    switch (builtin.target.os.tag) {
         .linux => {
             const rc = std.os.linux.lseek(fd.raw(), signed_offset, std.os.linux.SEEK.SET);
             if (std.os.linux.errno(rc) != .SUCCESS) return error.Unexpected;
@@ -328,7 +328,7 @@ pub fn seekTo(_: RealHost, fd: host.Fd, offset: u64) host.SeekError!void {
 
 pub fn openZ(_: RealHost, path: [:0]const u8, options: host.OpenOptions) OpenError!host.Fd {
     std.debug.assert(path.len != 0);
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxOpenZ(path, options),
         .macos, .freebsd, .openbsd, .netbsd => libcOpenZ(path, options),
         else => @compileError("unsupported host OS"),
@@ -336,7 +336,7 @@ pub fn openZ(_: RealHost, path: [:0]const u8, options: host.OpenOptions) OpenErr
 }
 
 pub fn close(_: RealHost, fd: host.Fd) CloseError!void {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxClose(fd),
         .macos, .freebsd, .openbsd, .netbsd => libcClose(fd),
         else => @compileError("unsupported host OS"),
@@ -344,7 +344,7 @@ pub fn close(_: RealHost, fd: host.Fd) CloseError!void {
 }
 
 pub fn deleteFileZ(_: RealHost, path: [:0]const u8) DeleteFileError!void {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxDeleteFileZ(path),
         .macos, .freebsd, .openbsd, .netbsd => libcDeleteFileZ(path),
         else => @compileError("unsupported host OS"),
@@ -352,7 +352,7 @@ pub fn deleteFileZ(_: RealHost, path: [:0]const u8) DeleteFileError!void {
 }
 
 pub fn duplicate(_: RealHost, fd: host.Fd) DuplicateError!host.Fd {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxDuplicate(fd),
         .macos, .freebsd, .openbsd, .netbsd => libcDuplicate(fd),
         else => @compileError("unsupported host OS"),
@@ -360,7 +360,7 @@ pub fn duplicate(_: RealHost, fd: host.Fd) DuplicateError!host.Fd {
 }
 
 pub fn duplicateAtLeast(_: RealHost, fd: host.Fd, min_fd: u31) DuplicateError!host.Fd {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxDuplicateAtLeast(fd, min_fd),
         .macos, .freebsd, .openbsd, .netbsd => libcDuplicateAtLeast(fd, min_fd),
         else => @compileError("unsupported host OS"),
@@ -368,7 +368,7 @@ pub fn duplicateAtLeast(_: RealHost, fd: host.Fd, min_fd: u31) DuplicateError!ho
 }
 
 pub fn duplicateTo(_: RealHost, from: host.Fd, to: host.Fd) DuplicateError!void {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxDuplicateTo(from, to),
         .macos, .freebsd, .openbsd, .netbsd => libcDuplicateTo(from, to),
         else => @compileError("unsupported host OS"),
@@ -376,7 +376,7 @@ pub fn duplicateTo(_: RealHost, from: host.Fd, to: host.Fd) DuplicateError!void 
 }
 
 pub fn setCloseOnExec(_: RealHost, fd: host.Fd, enabled: bool) FdFlagError!void {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxSetCloseOnExec(fd, enabled),
         .macos, .freebsd, .openbsd, .netbsd => libcSetCloseOnExec(fd, enabled),
         else => @compileError("unsupported host OS"),
@@ -384,7 +384,7 @@ pub fn setCloseOnExec(_: RealHost, fd: host.Fd, enabled: bool) FdFlagError!void 
 }
 
 pub fn pipe(_: RealHost) PipeError!host.Pipe {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxPipe(),
         .macos, .freebsd, .openbsd, .netbsd => libcPipe(),
         else => @compileError("unsupported host OS"),
@@ -402,8 +402,8 @@ pub fn forkProcess(self: RealHost, options: host.ForkOptions) ForkError!host.For
     // the BSDs discard it, so a TERM sent to the new child before it restores
     // the default would be lost. Catch those signals across the fork instead;
     // re-ignoring them in the parent discards anything that arrived meanwhile.
-    const caught = if (builtin.os.tag == .linux) 0 else catchIgnoredSignals(options.default_signals);
-    const forked = switch (builtin.os.tag) {
+    const caught = if (builtin.target.os.tag == .linux) 0 else catchIgnoredSignals(options.default_signals);
+    const forked = switch (builtin.target.os.tag) {
         .linux => linuxForkProcess(),
         .macos, .freebsd, .openbsd, .netbsd => libcForkProcess(),
         else => @compileError("unsupported host OS"),
@@ -423,7 +423,7 @@ pub fn forkProcess(self: RealHost, options: host.ForkOptions) ForkError!host.For
 }
 
 pub fn exit(_: RealHost, status: u8) noreturn {
-    switch (builtin.os.tag) {
+    switch (builtin.target.os.tag) {
         // exit_group ends every thread, not only the calling one.
         .linux => std.os.linux.exit_group(status),
         .macos, .freebsd, .openbsd, .netbsd => std.c._exit(status),
@@ -432,7 +432,7 @@ pub fn exit(_: RealHost, status: u8) noreturn {
 }
 
 pub fn currentProcessId(_: RealHost) host.Pid {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => @intCast(std.os.linux.getpid()),
         .macos, .freebsd, .openbsd, .netbsd => @intCast(std.c.getpid()),
         else => @compileError("unsupported host OS"),
@@ -444,7 +444,7 @@ pub fn currentProcessGroup(_: RealHost) host.Pid {
 }
 
 pub fn currentParentProcessId(_: RealHost) host.Pid {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => @intCast(std.os.linux.getppid()),
         .macos, .freebsd, .openbsd, .netbsd => @intCast(std.c.getppid()),
         else => @compileError("unsupported host OS"),
@@ -452,7 +452,7 @@ pub fn currentParentProcessId(_: RealHost) host.Pid {
 }
 
 pub fn sendSignal(_: RealHost, pid: host.Pid, signal: u8) KillError!void {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxSendSignal(pid, signal),
         .macos, .freebsd, .openbsd, .netbsd => libcSendSignal(pid, signal),
         else => @compileError("unsupported host OS"),
@@ -460,7 +460,7 @@ pub fn sendSignal(_: RealHost, pid: host.Pid, signal: u8) KillError!void {
 }
 
 pub fn setProcessGroup(_: RealHost, pid: host.Pid, process_group: host.Pid) ProcessGroupError!void {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxSetProcessGroup(pid, process_group),
         .macos, .freebsd, .openbsd, .netbsd => libcSetProcessGroup(pid, process_group),
         else => @compileError("unsupported host OS"),
@@ -503,17 +503,17 @@ pub fn setTerminalProcessGroup(_: RealHost, fd: host.Fd, process_group: host.Pid
 
 pub fn isSignalIgnored(_: RealHost, signal: u8) bool {
     // KILL and STOP cannot be ignored, and macOS rejects even querying their dispositions.
-    if (signal == @intFromEnum(std.posix.SIG.KILL) or signal == @intFromEnum(std.posix.SIG.STOP)) return false;
+    if (signal == @backingInt(std.posix.SIG.KILL) or signal == @backingInt(std.posix.SIG.STOP)) return false;
     var action: std.posix.Sigaction = undefined;
-    std.posix.sigaction(@enumFromInt(signal), null, &action);
+    std.posix.sigaction(@fromBackingInt(@intCast(signal)), null, &action);
     return action.handler.handler == std.posix.SIG.IGN;
 }
 
 test "signal ignore queries handle immutable defaults and mutable dispositions" {
-    try std.testing.expect(!real_host.isSignalIgnored(@intFromEnum(std.posix.SIG.KILL)));
-    try std.testing.expect(!real_host.isSignalIgnored(@intFromEnum(std.posix.SIG.STOP)));
+    try std.testing.expect(!real_host.isSignalIgnored(@backingInt(std.posix.SIG.KILL)));
+    try std.testing.expect(!real_host.isSignalIgnored(@backingInt(std.posix.SIG.STOP)));
 
-    const usr1: u8 = @intFromEnum(std.posix.SIG.USR1);
+    const usr1: u8 = @backingInt(std.posix.SIG.USR1);
     var previous_action: std.posix.Sigaction = undefined;
     std.posix.sigaction(.USR1, null, &previous_action);
     defer std.posix.sigaction(.USR1, &previous_action, null);
@@ -527,7 +527,7 @@ test "signal ignore queries handle immutable defaults and mutable dispositions" 
 }
 
 test "trapped signals wake the registered wake fd and stay pending" {
-    const usr1: u8 = @intFromEnum(std.posix.SIG.USR1);
+    const usr1: u8 = @backingInt(std.posix.SIG.USR1);
     var previous_action: std.posix.Sigaction = undefined;
     std.posix.sigaction(.USR1, null, &previous_action);
     defer std.posix.sigaction(.USR1, &previous_action, null);
@@ -587,7 +587,7 @@ pub fn setResourceLimit(_: RealHost, kind: host.ResourceLimitKind, limit: host.R
 }
 
 fn setSignalAction(signal: u8, handler: ?std.posix.Sigaction.handler_fn) !void {
-    if (signal == @intFromEnum(std.posix.SIG.KILL) or signal == @intFromEnum(std.posix.SIG.STOP)) {
+    if (signal == @backingInt(std.posix.SIG.KILL) or signal == @backingInt(std.posix.SIG.STOP)) {
         return error.InvalidSignal;
     }
     var action: std.posix.Sigaction = .{
@@ -595,18 +595,18 @@ fn setSignalAction(signal: u8, handler: ?std.posix.Sigaction.handler_fn) !void {
         .mask = std.posix.sigemptyset(),
         .flags = 0,
     };
-    std.posix.sigaction(@enumFromInt(signal), &action, null);
+    std.posix.sigaction(@fromBackingInt(@intCast(signal)), &action, null);
 }
 
 fn trapSignalHandler(signal: std.posix.SIG) callconv(.c) void {
-    const number: u8 = @intCast(@intFromEnum(signal));
+    const number: u8 = @intCast(@backingInt(signal));
     if (number >= 64) return;
     const mask = @as(u64, 1) << @intCast(number);
     _ = pending_signal_bits.fetchOr(mask, .seq_cst);
     const wake_fd = signal_wake_fd.load(.seq_cst);
     if (wake_fd < 0) return;
     // A full pipe already guarantees a wakeup, so the result is ignored.
-    switch (builtin.os.tag) {
+    switch (builtin.target.os.tag) {
         .linux => _ = std.os.linux.write(wake_fd, "s", 1),
         else => {
             const saved_errno = std.c._errno().*;
@@ -631,7 +631,7 @@ fn peekPendingSignal() ?u8 {
 
 pub fn isExecutableZ(_: RealHost, path: [:0]const u8) bool {
     std.debug.assert(path.len != 0);
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxIsExecutableZ(path),
         .macos, .freebsd, .openbsd, .netbsd => libcIsExecutableZ(path),
         else => @compileError("unsupported host OS"),
@@ -640,7 +640,7 @@ pub fn isExecutableZ(_: RealHost, path: [:0]const u8) bool {
 
 pub fn existsZ(_: RealHost, path: [:0]const u8) bool {
     std.debug.assert(path.len != 0);
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxExistsZ(path),
         .macos, .freebsd, .openbsd, .netbsd => libcExistsZ(path),
         else => @compileError("unsupported host OS"),
@@ -649,7 +649,7 @@ pub fn existsZ(_: RealHost, path: [:0]const u8) bool {
 
 pub fn fileStatusZ(_: RealHost, path: [:0]const u8) FileStatusError!host.FileStatus {
     std.debug.assert(path.len != 0);
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxFileStatusZ(path),
         .macos, .freebsd, .openbsd, .netbsd => libcFileStatusZ(path),
         else => @compileError("unsupported host OS"),
@@ -658,7 +658,7 @@ pub fn fileStatusZ(_: RealHost, path: [:0]const u8) FileStatusError!host.FileSta
 
 pub fn fileTestStatusZ(_: RealHost, path: [:0]const u8, follow_symlinks: bool) ?host.FileStatus {
     std.debug.assert(path.len != 0);
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxFileTestStatusZ(path, follow_symlinks),
         .macos, .freebsd, .openbsd, .netbsd => libcFileTestStatusZ(path, follow_symlinks),
         else => @compileError("unsupported host OS"),
@@ -667,7 +667,7 @@ pub fn fileTestStatusZ(_: RealHost, path: [:0]const u8, follow_symlinks: bool) ?
 
 pub fn fileAccessZ(_: RealHost, path: [:0]const u8, access: host.FileAccess) bool {
     std.debug.assert(path.len != 0);
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxFileAccessZ(path, access),
         .macos, .freebsd, .openbsd, .netbsd => libcFileAccessZ(path, access),
         else => @compileError("unsupported host OS"),
@@ -680,7 +680,7 @@ pub fn isTerminalFd(_: RealHost, fd: host.Fd) bool {
 
 pub fn listDir(_: RealHost, allocator: std.mem.Allocator, path: []const u8) ListDirError!host.ListDirResult {
     std.debug.assert(path.len != 0);
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxListDir(allocator, path),
         .macos, .freebsd, .openbsd, .netbsd => libcListDir(allocator, path),
         else => @compileError("unsupported host OS"),
@@ -689,7 +689,7 @@ pub fn listDir(_: RealHost, allocator: std.mem.Allocator, path: []const u8) List
 
 pub fn changeDir(_: RealHost, path: []const u8) ChangeDirError!void {
     std.debug.assert(path.len != 0);
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxChangeDir(path),
         .macos, .freebsd, .openbsd, .netbsd => libcChangeDir(path),
         else => @compileError("unsupported host OS"),
@@ -697,7 +697,7 @@ pub fn changeDir(_: RealHost, path: []const u8) ChangeDirError!void {
 }
 
 pub fn currentDir(_: RealHost, allocator: std.mem.Allocator) CurrentDirError![]const u8 {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxCurrentDir(allocator),
         .macos, .freebsd, .openbsd, .netbsd => libcCurrentDir(allocator),
         else => @compileError("unsupported host OS"),
@@ -714,7 +714,7 @@ pub fn startupPwd(
 ) std.mem.Allocator.Error!?[]const u8 {
     if (inherited_pwd) |pwd| {
         if (isNormalizedAbsolutePath(pwd)) {
-            const pwd_z = try allocator.dupeZ(u8, pwd);
+            const pwd_z = try allocator.dupeSentinel(u8, pwd, 0);
             defer allocator.free(pwd_z);
             const inherited_status = self.fileTestStatusZ(pwd_z, true);
             const current_status = self.fileTestStatusZ(".", true);
@@ -753,7 +753,7 @@ pub fn spawnAndWait(self: RealHost, request: host.SpawnRequest) SpawnError!host.
 
 pub fn spawn(_: RealHost, request: host.SpawnRequest) SpawnError!host.SpawnResult {
     request.validate();
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxSpawn(request),
         .macos, .freebsd, .openbsd, .netbsd => libcSpawn(request),
         else => @compileError("unsupported host OS"),
@@ -774,7 +774,7 @@ pub fn exec(self: RealHost, request: host.SpawnRequest) ExecError!noreturn {
     const previous_group = self.currentProcessGroup();
     // The shell keeps its new group if the old one has vanished.
     defer if (request.process_group != null) self.setProcessGroup(0, previous_group) catch {};
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxExec(request),
         .macos, .freebsd, .openbsd, .netbsd => libcExec(request),
         else => @compileError("unsupported host OS"),
@@ -782,7 +782,7 @@ pub fn exec(self: RealHost, request: host.SpawnRequest) ExecError!noreturn {
 }
 
 test "failed exec leaves the current process dispositions unchanged" {
-    const usr1: u8 = @intFromEnum(std.posix.SIG.USR1);
+    const usr1: u8 = @backingInt(std.posix.SIG.USR1);
     var previous_action: std.posix.Sigaction = undefined;
     std.posix.sigaction(.USR1, null, &previous_action);
     defer std.posix.sigaction(.USR1, &previous_action, null);
@@ -807,10 +807,10 @@ const SavedSignalActions = struct {
 
     fn capture(self: *SavedSignalActions, signals: []const u8) void {
         for (signals) |signal| {
-            if (signal == @intFromEnum(std.posix.SIG.KILL) or signal == @intFromEnum(std.posix.SIG.STOP)) continue;
+            if (signal == @backingInt(std.posix.SIG.KILL) or signal == @backingInt(std.posix.SIG.STOP)) continue;
             std.debug.assert(self.count < self.signals.len);
             self.signals[self.count] = signal;
-            std.posix.sigaction(@enumFromInt(signal), null, &self.actions[self.count]);
+            std.posix.sigaction(@fromBackingInt(@intCast(signal)), null, &self.actions[self.count]);
             self.count += 1;
         }
     }
@@ -820,7 +820,7 @@ const SavedSignalActions = struct {
         var index = self.count;
         while (index > 0) {
             index -= 1;
-            std.posix.sigaction(@enumFromInt(self.signals[index]), &self.actions[index], null);
+            std.posix.sigaction(@fromBackingInt(@intCast(self.signals[index])), &self.actions[index], null);
         }
     }
 };
@@ -835,7 +835,7 @@ fn execErrorFromErrno(err: std.posix.E) ExecError {
 }
 
 pub fn wait(_: RealHost, pid: host.Pid) WaitError!host.WaitStatus {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxWait(pid),
         .macos, .freebsd, .openbsd, .netbsd => libcWait(pid),
         else => @compileError("unsupported host OS"),
@@ -843,7 +843,7 @@ pub fn wait(_: RealHost, pid: host.Pid) WaitError!host.WaitStatus {
 }
 
 pub fn waitNonBlocking(_: RealHost, pid: host.Pid) WaitError!?host.WaitStatus {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxWaitNonBlocking(pid),
         .macos, .freebsd, .openbsd, .netbsd => libcWaitNonBlocking(pid),
         else => @compileError("unsupported host OS"),
@@ -851,7 +851,7 @@ pub fn waitNonBlocking(_: RealHost, pid: host.Pid) WaitError!?host.WaitStatus {
 }
 
 pub fn waitJobEvent(_: RealHost, pid: host.Pid) WaitError!host.WaitStatus {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => linuxWaitJobEvent(pid),
         .macos, .freebsd, .openbsd, .netbsd => libcWaitJobEvent(pid),
         else => @compileError("unsupported host OS"),
@@ -946,7 +946,7 @@ fn linuxOpenZ(path: [:0]const u8, options: host.OpenOptions) OpenError!host.Fd {
     flags.CLOEXEC = true;
     const rc = linux.openat(linux.AT.FDCWD, path.ptr, flags, @intCast(options.mode));
     switch (linux.errno(rc)) {
-        .SUCCESS => return @enumFromInt(@as(i32, @intCast(rc))),
+        .SUCCESS => return @fromBackingInt(@intCast(@as(i32, @intCast(rc)))),
         .ACCES, .PERM => return error.AccessDenied,
         .NOENT => return error.FileNotFound,
         .EXIST => return error.PathAlreadyExists,
@@ -963,7 +963,7 @@ fn libcOpenZ(path: [:0]const u8, options: host.OpenOptions) OpenError!host.Fd {
     flags.CLOEXEC = true;
     const rc = std.c.open(path.ptr, flags, @as(std.c.mode_t, @intCast(options.mode)));
     switch (std.c.errno(rc)) {
-        .SUCCESS => return @enumFromInt(@as(i32, @intCast(rc))),
+        .SUCCESS => return @fromBackingInt(@intCast(@as(i32, @intCast(rc)))),
         .ACCES, .PERM => return error.AccessDenied,
         .NOENT => return error.FileNotFound,
         .EXIST => return error.PathAlreadyExists,
@@ -1029,7 +1029,7 @@ fn linuxDuplicate(fd: host.Fd) DuplicateError!host.Fd {
     const linux = std.os.linux;
     const rc = linux.dup(fd.raw());
     switch (linux.errno(rc)) {
-        .SUCCESS => return @enumFromInt(@as(i32, @intCast(rc))),
+        .SUCCESS => return @fromBackingInt(@intCast(@as(i32, @intCast(rc)))),
         .BADF => return error.BadFd,
         .INTR => return error.Interrupted,
         .MFILE => return error.SystemResources,
@@ -1040,7 +1040,7 @@ fn linuxDuplicate(fd: host.Fd) DuplicateError!host.Fd {
 fn libcDuplicate(fd: host.Fd) DuplicateError!host.Fd {
     const rc = std.c.dup(@intCast(fd.raw()));
     switch (std.c.errno(rc)) {
-        .SUCCESS => return @enumFromInt(@as(i32, @intCast(rc))),
+        .SUCCESS => return @fromBackingInt(@intCast(@as(i32, @intCast(rc)))),
         .BADF => return error.BadFd,
         .INTR => return error.Interrupted,
         .MFILE => return error.SystemResources,
@@ -1052,7 +1052,7 @@ fn linuxDuplicateAtLeast(fd: host.Fd, min_fd: u31) DuplicateError!host.Fd {
     const linux = std.os.linux;
     const rc = linux.fcntl(fd.raw(), linux.F.DUPFD_CLOEXEC, min_fd);
     switch (linux.errno(rc)) {
-        .SUCCESS => return @enumFromInt(@as(i32, @intCast(rc))),
+        .SUCCESS => return @fromBackingInt(@intCast(@as(i32, @intCast(rc)))),
         .BADF => return error.BadFd,
         .INTR => return error.Interrupted,
         .MFILE => return error.SystemResources,
@@ -1065,7 +1065,7 @@ fn libcDuplicateAtLeast(fd: host.Fd, min_fd: u31) DuplicateError!host.Fd {
     const rc = std.c.fcntl(@intCast(fd.raw()), command, @as(c_int, @intCast(min_fd)));
     switch (std.c.errno(rc)) {
         .SUCCESS => {
-            const duplicated: host.Fd = @enumFromInt(@as(i32, @intCast(rc)));
+            const duplicated: host.Fd = @fromBackingInt(@intCast(@as(i32, @intCast(rc))));
             if (comptime !@hasDecl(std.c.F, "DUPFD_CLOEXEC")) {
                 libcSetCloseOnExec(duplicated, true) catch |err| {
                     real_host.close(duplicated) catch {};
@@ -1113,7 +1113,7 @@ fn linuxPipe() PipeError!host.Pipe {
     var fds: [2]i32 = undefined;
     const rc = std.os.linux.pipe2(&fds, .{ .CLOEXEC = true });
     switch (std.os.linux.errno(rc)) {
-        .SUCCESS => return .{ .read = @enumFromInt(fds[0]), .write = @enumFromInt(fds[1]) },
+        .SUCCESS => return .{ .read = @fromBackingInt(@intCast(fds[0])), .write = @fromBackingInt(@intCast(fds[1])) },
         .MFILE, .NFILE, .NOMEM => return error.SystemResources,
         else => return error.Unexpected,
     }
@@ -1127,11 +1127,11 @@ fn libcPipe() PipeError!host.Pipe {
         .MFILE, .NFILE, .NOMEM => return error.SystemResources,
         else => return error.Unexpected,
     }
-    errdefer real_host.close(@enumFromInt(fds[0])) catch {};
-    errdefer real_host.close(@enumFromInt(fds[1])) catch {};
-    try setCloseOnExecForPipe(@enumFromInt(fds[0]));
-    try setCloseOnExecForPipe(@enumFromInt(fds[1]));
-    return .{ .read = @enumFromInt(fds[0]), .write = @enumFromInt(fds[1]) };
+    errdefer real_host.close(@fromBackingInt(@intCast(fds[0]))) catch {};
+    errdefer real_host.close(@fromBackingInt(@intCast(fds[1]))) catch {};
+    try setCloseOnExecForPipe(@fromBackingInt(@intCast(fds[0])));
+    try setCloseOnExecForPipe(@fromBackingInt(@intCast(fds[1])));
+    return .{ .read = @fromBackingInt(@intCast(fds[0])), .write = @fromBackingInt(@intCast(fds[1])) };
 }
 
 fn setCloseOnExecForPipe(fd: host.Fd) PipeError!void {
@@ -1210,7 +1210,7 @@ fn linuxExistsZ(path: [:0]const u8) bool {
 }
 
 fn linuxSendSignal(pid: host.Pid, signal: u8) KillError!void {
-    const rc = std.os.linux.kill(pid, @enumFromInt(signal));
+    const rc = std.os.linux.kill(pid, @fromBackingInt(@intCast(signal)));
     switch (std.os.linux.errno(rc)) {
         .SUCCESS => return,
         .PERM => return error.AccessDenied,
@@ -1241,7 +1241,7 @@ fn libcExistsZ(path: [:0]const u8) bool {
 }
 
 fn libcSendSignal(pid: host.Pid, signal: u8) KillError!void {
-    const rc = std.c.kill(@intCast(pid), @enumFromInt(signal));
+    const rc = std.c.kill(@intCast(pid), @fromBackingInt(@intCast(signal)));
     switch (std.c.errno(rc)) {
         .SUCCESS => return,
         .PERM => return error.AccessDenied,
@@ -1379,7 +1379,7 @@ fn linuxListDir(allocator: std.mem.Allocator, path: []const u8) ListDirError!hos
         .MFILE, .NFILE, .NOMEM, .NOBUFS => return error.SystemResources,
         else => return error.Unexpected,
     }
-    const directory_fd: host.Fd = @enumFromInt(@as(i32, @intCast(fd)));
+    const directory_fd: host.Fd = @fromBackingInt(@intCast(@as(i32, @intCast(fd))));
     defer real_host.close(directory_fd) catch {};
 
     var entries: std.ArrayList(host.DirectoryEntry) = .empty;
@@ -1417,7 +1417,7 @@ fn linuxListDir(allocator: std.mem.Allocator, path: []const u8) ListDirError!hos
 
 fn linuxGetDents(fd: i32, buffer: []u8) ListDirError!usize {
     while (true) {
-        const rc = std.os.linux.getdents64(fd, buffer.ptr, buffer.len);
+        const rc = std.os.linux.getdents64(fd, buffer.ptr, @intCast(@min(buffer.len, std.math.maxInt(c_uint))));
         switch (std.os.linux.errno(rc)) {
             .SUCCESS => return rc,
             .INTR => continue,
@@ -1561,7 +1561,8 @@ fn libcFileKindFromMode(mode: std.c.mode_t) host.FileKind {
 fn linuxSpawn(request: host.SpawnRequest) SpawnError!host.SpawnResult {
     // Ordinary launches need no child-side work beyond resetting dispositions.
     // Keep the existing fork path for job control, fd actions, and new ignores.
-    if ((builtin.abi.isGnu() or builtin.abi.isMusl()) and request.cwd == null and request.fd_actions.len == 0 and
+    const abi = builtin.target.abi;
+    if ((abi.isGnu() or abi.isMusl()) and request.cwd == null and request.fd_actions.len == 0 and
         request.ignored_signals.len == 0 and request.process_group == null)
     {
         var pid: host.Pid = undefined;
@@ -1610,8 +1611,8 @@ fn linuxSpawn(request: host.SpawnRequest) SpawnError!host.SpawnResult {
 }
 
 test "Linux spawn preserves ignored signals, requested defaults, and the caller mask" {
-    if (builtin.os.tag != .linux) return error.SkipZigTest;
-    const usr1: u8 = @intFromEnum(std.posix.SIG.USR1);
+    if (builtin.target.os.tag != .linux) return error.SkipZigTest;
+    const usr1: u8 = @backingInt(std.posix.SIG.USR1);
     var previous_action: std.posix.Sigaction = undefined;
     std.posix.sigaction(.USR1, null, &previous_action);
     defer std.posix.sigaction(.USR1, &previous_action, null);
@@ -1647,7 +1648,7 @@ test "Linux spawn preserves ignored signals, requested defaults, and the caller 
 }
 
 test "Linux spawn returns waitable statuses for exec and fd-action failures" {
-    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    if (builtin.target.os.tag != .linux) return error.SkipZigTest;
     const argv = [_:null]?[*:0]const u8{ "/bin/sh", "-c", "exit 17" };
     const envp: [0:null]?[*:0]const u8 = .{};
     const command_status: host.WaitStatus = .{ .exited = 17 };
@@ -1659,7 +1660,7 @@ test "Linux spawn returns waitable statuses for exec and fd-action failures" {
     try std.testing.expectEqualDeep(failure_status, try real_host.spawnAndWait(request));
 
     request.path = "/bin/sh";
-    request.fd_actions = &.{.{ .close = @enumFromInt(-1) }};
+    request.fd_actions = &.{.{ .close = @fromBackingInt(-1) }};
     try std.testing.expectEqualDeep(failure_status, try real_host.spawnAndWait(request));
 }
 
@@ -1680,11 +1681,11 @@ fn linuxExec(request: host.SpawnRequest) ExecError {
 
 fn linuxWait(pid: host.Pid) WaitError!host.WaitStatus {
     const linux = std.os.linux;
-    var status: u32 = 0;
+    var status: i32 = 0;
     while (true) {
         const wait_rc = linux.waitpid(pid, &status, 0);
         switch (linux.errno(wait_rc)) {
-            .SUCCESS => return decodeWaitStatus(status),
+            .SUCCESS => return decodeWaitStatus(@bitCast(status)),
             .INTR => continue,
             else => return error.Unexpected,
         }
@@ -1693,11 +1694,11 @@ fn linuxWait(pid: host.Pid) WaitError!host.WaitStatus {
 
 fn linuxWaitNonBlocking(pid: host.Pid) WaitError!?host.WaitStatus {
     const linux = std.os.linux;
-    var status: u32 = 0;
+    var status: i32 = 0;
     while (true) {
         const wait_rc = linux.waitpid(pid, &status, linux.W.NOHANG | linux.W.UNTRACED);
         switch (linux.errno(wait_rc)) {
-            .SUCCESS => return if (wait_rc == 0) null else decodeWaitStatus(status),
+            .SUCCESS => return if (wait_rc == 0) null else decodeWaitStatus(@bitCast(status)),
             .INTR => continue,
             else => return error.Unexpected,
         }
@@ -1706,11 +1707,11 @@ fn linuxWaitNonBlocking(pid: host.Pid) WaitError!?host.WaitStatus {
 
 fn linuxWaitJobEvent(pid: host.Pid) WaitError!host.WaitStatus {
     const linux = std.os.linux;
-    var status: u32 = 0;
+    var status: i32 = 0;
     while (true) {
         const wait_rc = linux.waitpid(pid, &status, linux.W.UNTRACED);
         switch (linux.errno(wait_rc)) {
-            .SUCCESS => return decodeWaitStatus(status),
+            .SUCCESS => return decodeWaitStatus(@bitCast(status)),
             .INTR => continue,
             else => return error.Unexpected,
         }
@@ -1846,7 +1847,7 @@ fn waitForChildInterruptible(pid: host.Pid, flags: u32) WaitError!host.Interrupt
 
         // Atomically unblock and sleep: a signal arriving after the checks
         // cannot be lost between a separate mask restoration and blocking wait.
-        const rc = if (builtin.os.tag == .netbsd) __sigsuspend14(&suspend_mask) else sigsuspend(&suspend_mask);
+        const rc = if (builtin.target.os.tag == .netbsd) __sigsuspend14(&suspend_mask) else sigsuspend(&suspend_mask);
         if (std.c.errno(rc) != .INTR) return error.Unexpected;
     }
 }

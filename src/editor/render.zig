@@ -542,17 +542,17 @@ fn cursorShapeSequence(shape: CursorShape) []const u8 {
 
 fn cursorMoveFrom(allocator: std.mem.Allocator, from_row: usize, to_row: usize, col: u16) ![]const u8 {
     if (col == 0) {
-        if (from_row > to_row) return std.fmt.allocPrint(allocator, "\x1b[{d}A\r", .{from_row - to_row});
-        if (to_row > from_row) return std.fmt.allocPrint(allocator, "\x1b[{d}B\r", .{to_row - from_row});
+        if (from_row > to_row) return allocator.print("\x1b[{d}A\r", .{from_row - to_row});
+        if (to_row > from_row) return allocator.print("\x1b[{d}B\r", .{to_row - from_row});
         return allocator.dupe(u8, "\r");
     }
     if (from_row > to_row) {
-        return std.fmt.allocPrint(allocator, "\x1b[{d}A\r\x1b[{d}C", .{ from_row - to_row, col });
+        return allocator.print("\x1b[{d}A\r\x1b[{d}C", .{ from_row - to_row, col });
     }
     if (to_row > from_row) {
-        return std.fmt.allocPrint(allocator, "\x1b[{d}B\r\x1b[{d}C", .{ to_row - from_row, col });
+        return allocator.print("\x1b[{d}B\r\x1b[{d}C", .{ to_row - from_row, col });
     }
-    return std.fmt.allocPrint(allocator, "\r\x1b[{d}C", .{col});
+    return allocator.print("\r\x1b[{d}C", .{col});
 }
 
 fn cursorLineFeedFrom(allocator: std.mem.Allocator, from_row: usize, to_row: usize) ![]const u8 {

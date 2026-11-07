@@ -172,7 +172,7 @@ fn drainPendingSignalPipe(fd: std.posix.fd_t, pending: *std.atomic.Value(bool)) 
 }
 
 pub fn makePipe(io: std.Io) !Pipe {
-    const fds = switch (builtin.os.tag) {
+    const fds = switch (builtin.target.os.tag) {
         .linux => blk: {
             var fds: [2]i32 = undefined;
             const rc = std.os.linux.pipe2(&fds, .{ .CLOEXEC = true });
@@ -233,7 +233,7 @@ pub fn rawWriteAll(fd: std.posix.fd_t, bytes: []const u8) !void {
 }
 
 fn rawWrite(fd: std.posix.fd_t, bytes: []const u8) !usize {
-    if (builtin.os.tag == .linux and !builtin.link_libc) {
+    if (builtin.target.os.tag == .linux and !builtin.link_libc) {
         const rc = std.os.linux.write(fd, bytes.ptr, bytes.len);
         switch (std.os.linux.errno(rc)) {
             .SUCCESS => return rc,
@@ -265,7 +265,7 @@ fn closeFd(io: std.Io, fd: std.posix.fd_t) void {
 }
 
 fn setCloseOnExec(fd: std.posix.fd_t) !void {
-    if (builtin.os.tag == .linux and !builtin.link_libc) return;
+    if (builtin.target.os.tag == .linux and !builtin.link_libc) return;
     const rc = std.c.fcntl(fd, @as(c_int, std.c.F.SETFD), @as(c_int, std.c.FD_CLOEXEC));
     switch (std.c.errno(rc)) {
         .SUCCESS => {},

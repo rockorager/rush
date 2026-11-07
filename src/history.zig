@@ -1,9 +1,7 @@
 //! Command history storage and editor history adapters.
 
 const std = @import("std");
-const sqlite = @cImport({
-    @cInclude("sqlite3.h");
-});
+const sqlite = @import("sqlite3.zig");
 
 const command_history = @import("shell/command_history.zig");
 const line_editor = @import("editor.zig").line;
@@ -1677,7 +1675,7 @@ fn createPrivateFileIfMissing(io: std.Io, path: []const u8) !void {
 /// Opens and migrates a history database. `error_owner`, when given, records
 /// SQLite's error message if opening fails.
 fn openHistoryDb(allocator: std.mem.Allocator, path: []const u8, error_owner: ?*History) !*sqlite.sqlite3 {
-    const path_z = try allocator.dupeZ(u8, path);
+    const path_z = try allocator.dupeSentinel(u8, path, 0);
     defer allocator.free(path_z);
     var db: ?*sqlite.sqlite3 = null;
     // SQLite allocates a handle even when opening fails; it must be closed.
@@ -2019,7 +2017,7 @@ pub fn localHostname(allocator: std.mem.Allocator) ![]const u8 {
 pub fn sessionId(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
     const pid = std.c.getpid();
     const started_ns = std.Io.Clock.Timestamp.now(io, .awake).raw.toNanoseconds();
-    return std.fmt.allocPrint(allocator, "{d}:{d}", .{ pid, started_ns });
+    return allocator.print("{d}:{d}", .{ pid, started_ns });
 }
 
 pub fn defaultPath(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) !?[]const u8 {
@@ -2096,11 +2094,15 @@ test "history writes commands through to sqlite fts" {
     var reloaded = try History.init(std.testing.allocator);
     defer reloaded.deinit();
     try reloaded.load(std.testing.io, path);
+    // Without a tracked shell cwd, the record falls back to the process cwd.
+    var cwd_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const cwd_len = try std.Io.Dir.cwd().realPath(std.testing.io, &cwd_buffer);
     try expectLatestHistoryRecord(reloaded.db, .{
         .cmd = "git checkout feature",
         .status = 130,
         .exit_signal = 2,
         .duration_ms = 55,
+        .cwd = cwd_buffer[0..cwd_len],
     });
 
     const count = try historyFtsMatchCount(reloaded.db, "checkout");
@@ -2459,7 +2461,7 @@ test "history load migrates whitespace dedupe keys for old sqlite databases" {
     defer std.Io.Dir.cwd().deleteFile(std.testing.io, path ++ "-wal") catch {};
     defer std.Io.Dir.cwd().deleteFile(std.testing.io, path ++ "-shm") catch {};
 
-    const path_z = try std.testing.allocator.dupeZ(u8, path);
+    const path_z = try std.testing.allocator.dupeSentinel(u8, path, 0);
     defer std.testing.allocator.free(path_z);
     var db: ?*sqlite.sqlite3 = null;
     try sqliteCheck(sqlite.sqlite3_open_v2(

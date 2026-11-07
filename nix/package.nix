@@ -2,7 +2,7 @@
   callPackage,
   lib,
   stdenv,
-  zig_0_16,
+  zig_0_17,
 }:
 
 let
@@ -17,7 +17,7 @@ stdenv.mkDerivation {
   strictDeps = true;
   dontInstall = true;
 
-  nativeBuildInputs = [ zig_0_16.hook ];
+  nativeBuildInputs = [ zig_0_17.hook ];
 
   postConfigure = ''
     # Cache paths appear in the static library's debug information.

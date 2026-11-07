@@ -14,7 +14,7 @@ pub fn expandLeadingTilde(
     const value = home orelse return allocator.dupe(u8, path);
     if (path.len == 0 or path[0] != '~') return allocator.dupe(u8, path);
     if (path.len != 1 and path[1] != '/') return allocator.dupe(u8, path);
-    return std.fmt.allocPrint(allocator, "{s}{s}", .{ value, path[1..] });
+    return allocator.print("{s}{s}", .{ value, path[1..] });
 }
 
 /// Returns whether `entry` should complete as a directory.
@@ -35,14 +35,14 @@ pub fn pathCandidateIsDirectory(
     if (entry.kind == .directory) return true;
     if (entry.kind != .symlink and entry.kind != .other) return false;
 
-    const unexpanded_path = try std.fmt.allocPrint(allocator, "{s}{s}", .{ dir_prefix, entry.name });
+    const unexpanded_path = try allocator.print("{s}{s}", .{ dir_prefix, entry.name });
     defer allocator.free(unexpanded_path);
     const path = if (expand_leading_tilde)
         try expandLeadingTilde(allocator, unexpanded_path, home)
     else
         try allocator.dupe(u8, unexpanded_path);
     defer allocator.free(path);
-    const path_z = try allocator.dupeZ(u8, path);
+    const path_z = try allocator.dupeSentinel(u8, path, 0);
     defer allocator.free(path_z);
     const status = sh.host.fileTestStatusZ(path_z, true) orelse return false;
     return status.kind == .directory;

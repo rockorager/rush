@@ -77,7 +77,16 @@ pub fn main(init: std.process.Init) !u8 {
         var arena: std.heap.ArenaAllocator = .init(allocator);
         defer arena.deinit();
         const source = try std.Io.Dir.cwd().readFileAllocOptions(io, path, arena.allocator(), .unlimited, .of(u8), 0);
-        const suite = try std.zon.parse.fromSliceAlloc(Suite, arena.allocator(), source, null, .{});
+        var diagnostics: std.zon.parse.Diagnostics = undefined;
+        const suite = std.zon.parse.fromSlice(Suite, .{
+            .gpa = allocator,
+            .arena = arena.allocator(),
+            .source = source,
+            .diagnostics = &diagnostics,
+        }) catch |err| {
+            if (err == error.ParseZon) diagnostics.log(path);
+            return err;
+        };
         for (suite.cases) |case| {
             if (case_filter) |filter| if (std.mem.find(u8, case.name, filter) == null) continue;
             if (try runCase(allocator, io, rush, case)) |failure| {
@@ -123,7 +132,7 @@ fn runCase(allocator: std.mem.Allocator, io: std.Io, rush: []const u8, case: Cas
 
     var random: u64 = undefined;
     io.random(std.mem.asBytes(&random));
-    const home = try std.fmt.allocPrint(arena, "/tmp/rush-terminal-{x}", .{random});
+    const home = try arena.print("/tmp/rush-terminal-{x}", .{random});
     const config_dir = try std.fs.path.join(arena, &.{ home, ".config", "rush" });
     try std.Io.Dir.cwd().createDirPath(io, config_dir);
     defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
@@ -170,17 +179,18 @@ const Session = struct {
         if (master < 0) return error.PtyUnavailable;
         errdefer _ = std.c.close(master);
         if (grantpt(master) != 0 or unlockpt(master) != 0) return error.PtyUnavailable;
-        const slave_path = try arena.dupeZ(u8, std.mem.span(ptsname(master) orelse return error.PtyUnavailable));
+        const slave_name = ptsname(master) orelse return error.PtyUnavailable;
+        const slave_path = try arena.dupeSentinel(u8, std.mem.span(slave_name), 0);
 
-        const rush_z = try arena.dupeZ(u8, rush);
+        const rush_z = try arena.dupeSentinel(u8, rush, 0);
         const argv_default = [_:null]?[*:0]const u8{ rush_z, "-i" };
         const argv_posix = [_:null]?[*:0]const u8{ rush_z, "--posix", "-i" };
         const argv: [*:null]const ?[*:0]const u8 = if (posix) &argv_posix else &argv_default;
         const envp = [_:null]?[*:0]const u8{
-            (try std.fmt.allocPrintSentinel(arena, "HOME={s}", .{home}, 0)).ptr,
-            (try std.fmt.allocPrintSentinel(arena, "XDG_CONFIG_HOME={s}/.config", .{home}, 0)).ptr,
-            (try std.fmt.allocPrintSentinel(arena, "XDG_STATE_HOME={s}/state", .{home}, 0)).ptr,
-            (try std.fmt.allocPrintSentinel(arena, "XDG_DATA_HOME={s}/data", .{home}, 0)).ptr,
+            (try arena.printSentinel("HOME={s}", .{home}, 0)).ptr,
+            (try arena.printSentinel("XDG_CONFIG_HOME={s}/.config", .{home}, 0)).ptr,
+            (try arena.printSentinel("XDG_STATE_HOME={s}/state", .{home}, 0)).ptr,
+            (try arena.printSentinel("XDG_DATA_HOME={s}/data", .{home}, 0)).ptr,
             "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
             "TERM=xterm-256color",
             "LANG=C.UTF-8",
@@ -232,9 +242,9 @@ const Session = struct {
     }
 
     fn signal(self: *Session, name: []const u8) !void {
-        inline for (@typeInfo(std.posix.SIG).@"enum".fields) |field| {
-            if (std.mem.eql(u8, field.name, name)) {
-                _ = std.c.kill(self.pid, @field(std.posix.SIG, field.name));
+        inline for (@typeInfo(std.posix.SIG).@"enum".field_names) |field_name| {
+            if (std.mem.eql(u8, field_name, name)) {
+                _ = std.c.kill(self.pid, @field(std.posix.SIG, field_name));
                 return;
             }
         }
@@ -307,8 +317,7 @@ const Session = struct {
     ) ![]const u8 {
         const unmatched = self.text.items[self.cursor..];
         const tail = unmatched[unmatched.len -| 1500..];
-        return std.fmt.allocPrint(
-            allocator,
+        return allocator.print(
             "  step {d}: {s} \"{s}\"\n  terminal text after the last match:\n{s}",
             .{ step_index + 1, what, text, tail },
         );
@@ -346,8 +355,8 @@ fn nowMs() u64 {
 }
 
 // std.c.T lacks these on macOS; the BSD values are shared by macOS and FreeBSD.
-const tiocswinsz: c_ulong = if (builtin.os.tag == .linux) std.os.linux.T.IOCSWINSZ else 0x80087467;
-const tiocsctty: c_ulong = if (builtin.os.tag == .linux) std.os.linux.T.IOCSCTTY else 0x20007461;
+const tiocswinsz: c_ulong = if (builtin.target.os.tag == .linux) std.os.linux.T.IOCSWINSZ else 0x80087467;
+const tiocsctty: c_ulong = if (builtin.target.os.tag == .linux) std.os.linux.T.IOCSCTTY else 0x20007461;
 
 /// std.c declares the request as c_int, which sign-extends requests with the
 /// high bit set, such as TIOCSWINSZ on macOS; the C prototype takes an

@@ -3,7 +3,7 @@
 const std = @import("std");
 const zig_builtin = @import("builtin");
 
-pub const RealHost = if (!zig_builtin.cpu.arch.isWasm())
+pub const RealHost = if (!zig_builtin.target.cpu.arch.isWasm())
     // RealHost is omitted on wasm so posix is not analyzed.
     @import("host/RealHost.zig")
 else
@@ -85,7 +85,7 @@ pub fn assertHost(comptime Host: type, comptime level: enum { scripts, full }) v
 }
 
 comptime {
-    if (!zig_builtin.cpu.arch.isWasm()) assertHost(RealHost, .full);
+    if (!zig_builtin.target.cpu.arch.isWasm()) assertHost(RealHost, .full);
     assertHost(WasmHost, .scripts);
 }
 
@@ -96,7 +96,7 @@ pub const Fd = enum(i32) {
     _,
 
     pub fn raw(self: Fd) i32 {
-        return @intFromEnum(self);
+        return @backingInt(self);
     }
 };
 

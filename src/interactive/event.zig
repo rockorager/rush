@@ -251,7 +251,7 @@ test "event commands quote context and capture redirections" {
         "timer.tick",
         .{ .name = "tick'one", .action = "on_tick", .priority = 0 },
         &.{"arg value"},
-        @enumFromInt(9),
+        @fromBackingInt(9),
     );
     defer std.testing.allocator.free(command);
 

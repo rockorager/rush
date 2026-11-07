@@ -286,7 +286,7 @@ pub fn candidateMatchRank(candidate: Candidate, query: []const u8, policy: Match
     const value_rank = matchRank(candidate.value, query, policy);
     const display_rank = if (candidate.display) |display| matchRank(display, query, policy) else null;
     if (value_rank) |value| {
-        if (display_rank) |display| return if (@intFromEnum(display) < @intFromEnum(value)) display else value;
+        if (display_rank) |display| return if (@backingInt(display) < @backingInt(value)) display else value;
         return value;
     }
     return display_rank;

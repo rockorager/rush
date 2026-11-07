@@ -156,10 +156,14 @@ pub fn main(init: std.process.Init) !u8 {
     std.posix.sigaction(.INT, &default_action, null);
     std.posix.sigaction(.QUIT, &default_action, null);
     const allocator = init.gpa;
-    const args = try init.minimal.args.toSlice(init.arena.allocator());
-    if (args.len >= 4 and std.mem.eql(u8, args[1], "--mismatched-ids")) {
-        return execWithMismatchedIds(init, args);
+    const raw_args = try init.minimal.args.toSlice(init.arena.allocator());
+    if (raw_args.len >= 4 and std.mem.eql(u8, raw_args[1], "--mismatched-ids")) {
+        return execWithMismatchedIds(init, raw_args);
     }
+    const args = if (raw_args.len >= 2 and std.mem.eql(u8, raw_args[1], "--build-variant"))
+        (try selectBuildVariant(init.arena.allocator(), raw_args)) orelse return 0
+    else
+        raw_args;
     const parsed_config = (try parseArgs(allocator, args)) orelse {
         try writeUsage(init.io);
         return 2;
@@ -252,6 +256,76 @@ fn execWithMismatchedIds(init: std.process.Init, args: []const []const u8) !u8 {
     return std.process.replace(init.io, .{ .argv = args[3..], .environ_map = init.environ_map });
 }
 
+const BuildVariant = enum { posix, @"posix-interactive", bash, @"bash-interactive" };
+
+/// `zig build conformance` starts one run per variant, each with
+/// `--build-variant VARIANT RUSH` followed by the user's passthru args. The
+/// build script cannot observe those args, so the harness selects here:
+/// without args every variant runs; with args only the POSIX suites run, and
+/// the interactive one only when the args select no suite files and do not
+/// already ask for `--interactive`. A `--rush` or `--shell` arg replaces the
+/// default target. Returns the effective argv, or null when the variant does
+/// not apply.
+fn selectBuildVariant(arena: std.mem.Allocator, args: []const []const u8) !?[]const []const u8 {
+    std.debug.assert(args.len >= 4);
+    const variant = std.meta.stringToEnum(BuildVariant, args[2]) orelse return error.InvalidBuildVariant;
+    const rush_path = args[3];
+    const user_args = args[4..];
+    const mode: Mode, const interactive = switch (variant) {
+        .posix => .{ .posix, false },
+        .@"posix-interactive" => .{ .posix, true },
+        .bash => .{ .bash, false },
+        .@"bash-interactive" => .{ .bash, true },
+    };
+
+    var effective: std.ArrayList([]const u8) = .empty;
+    try effective.append(arena, args[0]);
+    if (user_args.len == 0) {
+        try effective.appendSlice(arena, &.{ "--rush", rush_path, "--mode", @tagName(mode) });
+        if (interactive) try effective.append(arena, "--interactive");
+        return effective.items;
+    }
+    if (mode != .posix) return null;
+    if (interactive and (argsSelectInteractive(user_args) or argsHaveSuiteFiles(user_args))) return null;
+    if (!argsSelectTarget(user_args)) try effective.appendSlice(arena, &.{ "--rush", rush_path, "--mode", "posix" });
+    try effective.appendSlice(arena, user_args);
+    if (interactive) try effective.append(arena, "--interactive");
+    return effective.items;
+}
+
+fn argsSelectTarget(args: []const []const u8) bool {
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--rush") or std.mem.eql(u8, arg, "--shell")) return true;
+    }
+    return false;
+}
+
+fn argsSelectInteractive(args: []const []const u8) bool {
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--interactive")) return true;
+    }
+    return false;
+}
+
+fn argsHaveSuiteFiles(args: []const []const u8) bool {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--rush") or
+            std.mem.eql(u8, arg, "--shell") or
+            std.mem.eql(u8, arg, "--shell-arg") or
+            std.mem.eql(u8, arg, "--mode") or
+            std.mem.eql(u8, arg, "--case"))
+        {
+            index += 1;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--")) continue;
+        return true;
+    }
+    return false;
+}
+
 fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !?Config {
     if (args.len < 4) return null;
     var rush_path: ?[]const u8 = null;
@@ -318,12 +392,12 @@ fn parseMode(text: []const u8) ?Mode {
 }
 
 fn resolvePath(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![:0]u8 {
-    if (std.Io.Dir.path.isAbsolute(path)) return allocator.dupeZ(u8, path);
+    if (std.Io.Dir.path.isAbsolute(path)) return allocator.dupeSentinel(u8, path, 0);
     return std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator);
 }
 
 fn resolveCommandPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![:0]u8 {
-    if (std.mem.indexOfScalar(u8, path, '/') == null) return allocator.dupeZ(u8, path);
+    if (std.mem.indexOfScalar(u8, path, '/') == null) return allocator.dupeSentinel(u8, path, 0);
     return resolvePath(allocator, io, path);
 }
 
@@ -340,7 +414,7 @@ fn discoverSuiteFiles(
     var iterator = dir.iterate();
     while (try iterator.next(io)) |entry| {
         if (!std.mem.endsWith(u8, entry.name, ".zon")) continue;
-        const file_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, entry.name });
+        const file_path = try allocator.print("{s}/{s}", .{ dir_path, entry.name });
         errdefer allocator.free(file_path);
         try discovered_files.files.append(allocator, file_path);
     }
@@ -370,16 +444,29 @@ fn countCases(allocator: std.mem.Allocator, io: std.Io, config: Config) !usize {
     for (config.files) |path| {
         const source = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited);
         defer allocator.free(source);
-        const source_z = try allocator.dupeZ(u8, source);
+        const source_z = try allocator.dupeSentinel(u8, source, 0);
         defer allocator.free(source_z);
 
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
-        const suite = try std.zon.parse.fromSliceAlloc(Suite, arena.allocator(), source_z, null, .{});
+        const suite = try parseSuite(allocator, arena.allocator(), source_z, path);
         std.debug.assert(suite.mode == config.mode);
         case_count += countMatchingCases(config, suite);
     }
     return case_count;
+}
+
+fn parseSuite(gpa: std.mem.Allocator, arena: std.mem.Allocator, source: [:0]const u8, path: []const u8) !Suite {
+    var diagnostics: std.zon.parse.Diagnostics = undefined;
+    return std.zon.parse.fromSlice(Suite, .{
+        .gpa = gpa,
+        .arena = arena,
+        .source = source,
+        .diagnostics = &diagnostics,
+    }) catch |err| {
+        if (err == error.ParseZon) diagnostics.log(path);
+        return err;
+    };
 }
 
 fn countMatchingCases(config: Config, suite: Suite) usize {
@@ -404,12 +491,12 @@ fn runSuiteFile(
 ) !RunStats {
     const source = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited);
     defer allocator.free(source);
-    const source_z = try allocator.dupeZ(u8, source);
+    const source_z = try allocator.dupeSentinel(u8, source, 0);
     defer allocator.free(source_z);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    const suite = try std.zon.parse.fromSliceAlloc(Suite, arena.allocator(), source_z, null, .{});
+    const suite = try parseSuite(allocator, arena.allocator(), source_z, path);
     std.debug.assert(suite.mode == config.mode);
     const matching_cases = countMatchingCases(config, suite);
     if (matching_cases == 0) return .{};
@@ -456,8 +543,7 @@ fn createTempRoot(
         var random_bytes: [8]u8 = undefined;
         io.random(&random_bytes);
         const random = std.mem.readInt(u64, &random_bytes, .little);
-        const path = try std.fmt.allocPrint(
-            allocator,
+        const path = try allocator.print(
             ".zig-cache/rush-conformance-{x}",
             .{random},
         );
@@ -681,7 +767,7 @@ fn runCommand(
             std.posix.kill(-child.id.?, .KILL) catch {};
             return .{
                 .stdout = try allocator.dupe(u8, ""),
-                .stderr = try std.fmt.allocPrint(allocator, "harness: timed out after {d} ms\n", .{case_timeout_ms}),
+                .stderr = try allocator.print("harness: timed out after {d} ms\n", .{case_timeout_ms}),
                 .status = 124,
             };
         },
@@ -735,8 +821,8 @@ fn interactiveShellWarningLine(line: []const u8) bool {
 fn statusFromTerm(term: std.process.Child.Term) u8 {
     return switch (term) {
         .exited => |status| status,
-        .signal => |signal| signalStatus(@intFromEnum(signal)),
-        .stopped => |signal| signalStatus(@intFromEnum(signal)),
+        .signal => |signal| signalStatus(@backingInt(signal)),
+        .stopped => |signal| signalStatus(@backingInt(signal)),
         .unknown => 255,
     };
 }

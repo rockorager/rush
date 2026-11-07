@@ -178,7 +178,7 @@ test "command evaluation does not allocate shell state from the process arena" {
         \\[ "$i" -eq 1000 ] && [ "${#value}" -eq 1024 ]
     ;
     const status = try run(std.testing.allocator, process_allocator.allocator(), .{
-        .args = .{ .vector = &.{ "rush", "--posix", "-c", script, "rush", "x" ** 1024 } },
+        .args = .{ .vector = &.{ "rush", "--posix", "-c", script, "rush", &@as([1024:0]u8, @splat('x')) } },
         .environ = .empty,
     });
     try std.testing.expectEqual(@as(u8, 0), status);
@@ -189,7 +189,7 @@ test "script input does not consume the process arena" {
     defer dir.cleanup();
     try dir.dir.writeFile(std.testing.io, .{
         .sub_path = "script",
-        .data = "#" ++ "x" ** (128 * 1024) ++ "\nf() { : \"${x:-ok}\"; }; trap f EXIT\n",
+        .data = "#" ++ @as([128 * 1024]u8, @splat('x')) ++ "\nf() { : \"${x:-ok}\"; }; trap f EXIT\n",
     });
     const path = try std.fs.path.joinZ(std.testing.allocator, &.{ ".zig-cache", "tmp", &dir.sub_path, "script" });
     defer std.testing.allocator.free(path);

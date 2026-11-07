@@ -17,7 +17,7 @@ pub const AnonymousFile = struct {
         while (attempts < 8) : (attempts += 1) {
             var random: u64 = undefined;
             io.random(std.mem.asBytes(&random));
-            const path = try std.fmt.allocPrintSentinel(allocator, "/tmp/{s}-{x}", .{ prefix, random }, 0);
+            const path = try allocator.printSentinel("/tmp/{s}-{x}", .{ prefix, random }, 0);
             defer allocator.free(path);
             const opened_fd = file_host.openZ(path, .{
                 .access = .read_write,
@@ -87,7 +87,7 @@ test "anonymous files never occupy a standard descriptor" {
 
 /// Returns the complete file contents owned by `allocator`.
 pub fn readFileAlloc(allocator: std.mem.Allocator, real_host: *host.RealHost, path: []const u8) ![]const u8 {
-    const path_z = try allocator.dupeZ(u8, path);
+    const path_z = try allocator.dupeSentinel(u8, path, 0);
     defer allocator.free(path_z);
 
     const fd = try real_host.openZ(path_z, .{ .access = .read_only });

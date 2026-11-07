@@ -2,23 +2,23 @@
     .name = .rush,
     .version = "0.2.0",
     .fingerprint = 0xf533deef8806632f,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.1",
     .dependencies = .{
         .vaxis = .{
-            .url = "git+https://github.com/rockorager/libvaxis.git#a12e9c3046247b6e2e877bf1dcb3806929ecb01a",
-            .hash = "vaxis-0.6.0-BWNV_EojCgAHV2Lvn5hO22DPkmB1YRlswBIvavDqmP8K",
+            .url = "git+https://github.com/rockorager/libvaxis.git#a62e107753b5ac8fa488df3bbcbe9c34628e65b9",
+            .hash = "vaxis-0.6.0-BWNV_J2zDQArkPcsc2nkktgxfg2r0u1AwwQP9WLugo_1",
         },
         .sqlite = .{
-            .url = "https://www.sqlite.org/2026/sqlite-amalgamation-3530200.zip",
-            .hash = "N-V-__8AALc_rgC04POe18O0LKFRm4ouQpLtL3riscEmWp-Q",
+            .url = "https://www.sqlite.org/2026/sqlite-amalgamation-3540100.zip",
+            .hash = "N-V-__8AAETTsABEodUZZFAyfdAm9hEyqBXuLw9pRSO0vFh9",
         },
         .uucode = .{
-            .url = "git+https://github.com/jacobsandlund/uucode#2826a37a4562284fdacd8fa029d49509cc9bffcd",
-            .hash = "uucode-0.2.0-ZZjBPlK5VADj7fdoq7G8LIHzD5o6FSkcBXXrRWr4jnrA",
+            .url = "git+https://github.com/jacobsandlund/uucode.git#1fb73433bba5d93366c57f23ff2e9d7939746500",
+            .hash = "uucode-0.2.0-ZZjBPm6FVgBcY-79AHV8ckQj86z0JwOyVyj89VeZrEiv",
         },
         .zeit = .{
-            .url = "git+https://github.com/rockorager/zeit.git#b1c1c2fcbc71fd7799a316bbcf0ff88d06d80ccc",
-            .hash = "zeit-0.9.0-5I6bk2m9AgBSMH8-L6rYJkwuQAyhXplnfxnvTSGzVHUR",
+            .url = "git+https://github.com/rockorager/zeit.git#06bb7b462b4218770fb5438ebe6b0c0c5ef18888",
+            .hash = "zeit-0.10.0-5I6bkxS-AgAaI3lI3RsXsWnPw7sMCqJKoFnSB8_QRAoo",
         },
     },
     .paths = .{

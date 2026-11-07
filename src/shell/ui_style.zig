@@ -152,7 +152,7 @@ fn appendAnsiColor(
                     .bg => if (index < 8) 40 else 100,
                     .ul => unreachable,
                 };
-                const sequence = try std.fmt.allocPrint(allocator, "\x1b[{d}m", .{base + index % 8});
+                const sequence = try allocator.print("\x1b[{d}m", .{base + index % 8});
                 defer allocator.free(sequence);
                 try out.appendSlice(allocator, sequence);
                 return;
@@ -162,8 +162,7 @@ fn appendAnsiColor(
                 .bg => "48",
                 .ul => "58",
             };
-            const sequence = try std.fmt.allocPrint(
-                allocator,
+            const sequence = try allocator.print(
                 "\x1b[{s}:5:{d}m",
                 .{ prefix, index },
             );
@@ -176,8 +175,7 @@ fn appendAnsiColor(
                 .bg => "48",
                 .ul => "58",
             };
-            const sequence = try std.fmt.allocPrint(
-                allocator,
+            const sequence = try allocator.print(
                 "\x1b[{s}:2:{d}:{d}:{d}m",
                 .{ prefix, rgb[0], rgb[1], rgb[2] },
             );

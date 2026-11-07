@@ -111,7 +111,7 @@ fn closePendingQuoteForParsing(
     pending_quote: ?PendingQuote,
 ) error{OutOfMemory}![]const u8 {
     const pending = pending_quote orelse return raw;
-    return std.fmt.allocPrint(allocator, "{s}{c}", .{ raw, pending.delimiter });
+    return allocator.print("{s}{c}", .{ raw, pending.delimiter });
 }
 
 fn appendLiteralWord(

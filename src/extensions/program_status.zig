@@ -98,7 +98,7 @@ fn fail(comptime format: []const u8, sh: anytype, args: anytype) result.EvalResu
 }
 
 fn diagnose(comptime format: []const u8, sh: anytype, args: anytype) void {
-    const message = std.fmt.allocPrint(sh.scratchAllocator(), "program_status: " ++ format, args) catch return;
+    const message = sh.scratchAllocator().print("program_status: " ++ format, args) catch return;
     // Diagnostics are best effort; the exit status still reports the failure.
     sh.host.writeAll(.stderr, message) catch {};
 }

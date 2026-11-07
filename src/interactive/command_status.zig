@@ -95,7 +95,7 @@ test "command status skips commands interrupted or stopped from the keyboard" {
 
 test "command status truncates long command lines within the message limit" {
     var buffer: [program_status.max_message_len]u8 = undefined;
-    const line = "x" ** (program_status.max_message_len * 2);
+    const line: []const u8 = &@as([program_status.max_message_len * 2]u8, @splat('x'));
     const report = finishedReport(&buffer, line, 255, 0, 0).?;
     try std.testing.expect(std.mem.endsWith(u8, report.msg.?, "x (exit 255)"));
     try std.testing.expectEqual(program_status.max_message_len, report.msg.?.len);

@@ -7,7 +7,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const source = @import("source.zig");
-const validation_enabled = builtin.mode == .Debug or builtin.mode == .ReleaseSafe;
+const validation_enabled = builtin.mode.runtimeSafety();
 
 pub const Program = struct {
     source_id: source.SourceId,

@@ -194,11 +194,11 @@ const InteractiveSession = struct {
         defer self.terminal = null;
         // Trapped signals that arrive while the editor waits wake it so their
         // traps run at the prompt instead of after the next command.
-        self.sh.host.setSignalWakeFd(@enumFromInt(terminal.trapSignalWakeFd()));
+        self.sh.host.setSignalWakeFd(@fromBackingInt(@intCast(terminal.trapSignalWakeFd())));
         defer self.sh.host.setSignalWakeFd(null);
         self.sh.setDirectoryChangeCallback(self, onDirectoryChange);
         self.sh.setForegroundCommandCallback(self, onForegroundCommand);
-        self.restore_terminal_pgrp = enableJobControl(self.sh, @enumFromInt(terminal.ttyFd()));
+        self.restore_terminal_pgrp = enableJobControl(self.sh, @fromBackingInt(@intCast(terminal.ttyFd())));
         self.sh.extensions.configurePromptAsync(self.io, terminal.promptRedrawWakeFd(), .{
             .context = self,
             .register = registerPromptAsyncFd,
@@ -1077,7 +1077,7 @@ fn appendPrint(
     comptime fmt: []const u8,
     args: anytype,
 ) !void {
-    const bytes = try std.fmt.allocPrint(allocator, fmt, args);
+    const bytes = try allocator.print(fmt, args);
     defer allocator.free(bytes);
     try output.appendSlice(allocator, bytes);
 }

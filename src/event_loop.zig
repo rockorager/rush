@@ -2,9 +2,6 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const c = @cImport({
-    @cInclude("sys/select.h");
-});
 
 pub const Source = enum(u32) {
     tty_input,
@@ -19,7 +16,7 @@ pub const Event = struct {
     source: Source,
 };
 
-pub const EventLoop = switch (builtin.os.tag) {
+pub const EventLoop = switch (builtin.target.os.tag) {
     .linux => EpollEventLoop,
     .macos => SelectEventLoop,
     .freebsd, .openbsd, .netbsd, .dragonfly => KqueueEventLoop,
@@ -46,7 +43,7 @@ pub const SelectEventLoop = struct {
     }
 
     pub fn addReadFd(self: *SelectEventLoop, fd: std.posix.fd_t, source: Source) !void {
-        if (fd < 0 or fd >= c.FD_SETSIZE) return error.Unexpected;
+        if (fd < 0 or fd >= fd_setsize) return error.Unexpected;
         if (self.count == self.registrations.len) return error.Unexpected;
         for (self.registrations[0..self.count]) |registration| {
             if (registration.fd == fd) return error.Unexpected;
@@ -73,20 +70,20 @@ pub const SelectEventLoop = struct {
     pub fn waitTimeout(self: *SelectEventLoop, out: []Event, timeout_ms: ?u64) ![]Event {
         std.debug.assert(out.len != 0);
 
-        var readfds: c.fd_set = std.mem.zeroes(c.fd_set);
+        var readfds: FdSet = std.mem.zeroes(FdSet);
         var max_fd: std.posix.fd_t = -1;
         for (self.registrations[0..self.count]) |registration| {
             fdSet(registration.fd, &readfds);
             max_fd = @max(max_fd, registration.fd);
         }
 
-        var timeout: c.struct_timeval = if (timeout_ms) |ms| .{
-            .tv_sec = @intCast(ms / 1000),
-            .tv_usec = @intCast((ms % 1000) * std.time.us_per_ms),
+        var timeout: std.c.timeval = if (timeout_ms) |ms| .{
+            .sec = @intCast(ms / 1000),
+            .usec = @intCast((ms % 1000) * std.time.us_per_ms),
         } else undefined;
-        const timeout_ptr: ?*c.struct_timeval = if (timeout_ms == null) null else &timeout;
+        const timeout_ptr: ?*std.c.timeval = if (timeout_ms == null) null else &timeout;
 
-        const rc = c.select(@intCast(max_fd + 1), &readfds, null, null, timeout_ptr);
+        const rc = select(@intCast(max_fd + 1), &readfds, null, null, timeout_ptr);
         if (rc < 0) switch (std.c.errno(rc)) {
             .INTR => return self.waitTimeout(out, timeout_ms),
             else => return error.Unexpected,
@@ -102,13 +99,13 @@ pub const SelectEventLoop = struct {
         return out[0..out_count];
     }
 
-    fn fdSet(fd: std.posix.fd_t, set: *c.fd_set) void {
+    fn fdSet(fd: std.posix.fd_t, set: *FdSet) void {
         const index: usize = @intCast(@divTrunc(fd, fd_set_bits));
         const bit: u5 = @intCast(@mod(fd, fd_set_bits));
         set.fds_bits[index] |= @as(c_int, 1) << bit;
     }
 
-    fn fdIsSet(fd: std.posix.fd_t, set: *const c.fd_set) bool {
+    fn fdIsSet(fd: std.posix.fd_t, set: *const FdSet) bool {
         const index: usize = @intCast(@divTrunc(fd, fd_set_bits));
         const bit: u5 = @intCast(@mod(fd, fd_set_bits));
         return (set.fds_bits[index] & (@as(c_int, 1) << bit)) != 0;
@@ -116,6 +113,20 @@ pub const SelectEventLoop = struct {
 };
 
 const fd_set_bits: comptime_int = @bitSizeOf(c_int);
+
+// Darwin <sys/select.h>: FD_SETSIZE bits packed into 32-bit words. Bind the
+// plain `select` symbol, as the translated header did before Zig 0.17.
+const fd_setsize = 1024;
+const FdSet = extern struct {
+    fds_bits: [fd_setsize / fd_set_bits]c_int,
+};
+extern "c" fn select(
+    nfds: c_int,
+    readfds: ?*FdSet,
+    writefds: ?*FdSet,
+    errorfds: ?*FdSet,
+    timeout: ?*std.c.timeval,
+) c_int;
 
 pub const KqueueEventLoop = struct {
     fd: std.posix.fd_t,
@@ -138,7 +149,7 @@ pub const KqueueEventLoop = struct {
             .flags = std.c.EV.ADD | std.c.EV.CLEAR,
             .fflags = 0,
             .data = 0,
-            .udata = @intFromEnum(source),
+            .udata = @backingInt(source),
         };
         _ = try std.Io.Kqueue.kevent(self.fd, &.{change}, &.{}, null);
     }
@@ -174,7 +185,7 @@ pub const KqueueEventLoop = struct {
             if (timeout) |*value| value else null,
         );
         for (events[0..count], 0..) |event, index| {
-            out[index] = .{ .source = @enumFromInt(event.udata) };
+            out[index] = .{ .source = @fromBackingInt(@intCast(event.udata)) };
         }
         return out[0..count];
     }
@@ -199,7 +210,7 @@ pub const EpollEventLoop = struct {
     pub fn addReadFd(self: *EpollEventLoop, fd: std.posix.fd_t, source: Source) !void {
         var event: std.os.linux.epoll_event = .{
             .events = std.os.linux.EPOLL.IN | std.os.linux.EPOLL.ERR | std.os.linux.EPOLL.HUP,
-            .data = .{ .u32 = @intFromEnum(source) },
+            .data = .{ .u32 = @backingInt(source) },
         };
         const rc = std.os.linux.epoll_ctl(self.fd, std.os.linux.EPOLL.CTL_ADD, fd, &event);
         switch (std.os.linux.errno(rc)) {
@@ -233,7 +244,7 @@ pub const EpollEventLoop = struct {
         }
         const n: usize = @intCast(count);
         for (events[0..n], 0..) |event, index| {
-            out[index] = .{ .source = @enumFromInt(event.data.u32) };
+            out[index] = .{ .source = @fromBackingInt(@intCast(event.data.u32)) };
         }
         return out[0..n];
     }
@@ -278,7 +289,7 @@ const TestPipe = struct {
 };
 
 fn makeTestPipe() !TestPipe {
-    const fds = switch (builtin.os.tag) {
+    const fds = switch (builtin.target.os.tag) {
         .linux => blk: {
             var fds: [2]i32 = undefined;
             const rc = std.os.linux.pipe2(&fds, .{ .CLOEXEC = true });

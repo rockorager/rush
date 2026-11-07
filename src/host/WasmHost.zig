@@ -190,7 +190,7 @@ fn availableFd(self: *const WasmHost, min_fd: u31) ?host.Fd {
         if (raw_fd == std.math.maxInt(i32)) return null;
         raw_fd += 1;
     }
-    return @enumFromInt(raw_fd);
+    return @fromBackingInt(@intCast(raw_fd));
 }
 
 pub fn pipe(_: *const WasmHost) PipeError!host.Pipe {

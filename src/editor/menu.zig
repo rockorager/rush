@@ -234,8 +234,7 @@ fn scrollSummaryText(
     count: usize,
     summary: ScrollSummary,
 ) ![]const u8 {
-    return std.fmt.allocPrint(
-        allocator,
+    return allocator.print(
         "{s}{d}{s}{d}{s}{d}",
         .{ summary.prefix, window.start + 1, summary.range_separator, window.end, summary.count_separator, count },
     );
@@ -277,8 +276,7 @@ fn candidateLabel(
     const option = candidate.option orelse return .{ .text = candidate.value };
     if (option.long) |long| {
         if (option.short) |short| {
-            const owned = try std.fmt.allocPrint(
-                allocator,
+            const owned = try allocator.print(
                 "{s}{s}{s}{s}{s}",
                 .{
                     presentation.long_option_prefix,

@@ -93,9 +93,9 @@ fn Layout(comptime copying: bool) type {
             switch (@typeInfo(T)) {
                 .@"struct" => |info| {
                     var result = value;
-                    inline for (info.fields) |field| {
-                        const copied = try self.copy(@field(value, field.name));
-                        if (copying) @field(result, field.name) = copied;
+                    inline for (info.field_names) |field_name| {
+                        const copied = try self.copy(@field(value, field_name));
+                        if (copying) @field(result, field_name) = copied;
                     }
                     return result;
                 },
@@ -109,7 +109,7 @@ fn Layout(comptime copying: bool) type {
                 },
                 .optional => return if (value) |payload| try self.copy(payload) else null,
                 .pointer => |info| {
-                    comptime std.debug.assert(info.is_const and info.sentinel_ptr == null);
+                    comptime std.debug.assert(info.attrs.@"const" and info.sentinel_ptr == null);
                     const Child = info.child;
                     switch (info.size) {
                         .slice => {

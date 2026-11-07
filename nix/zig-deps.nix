@@ -8,42 +8,34 @@
 
 linkFarm "zig-packages" [
   {
-    name = "N-V-__8AALc_rgC04POe18O0LKFRm4ouQpLtL3riscEmWp-Q";
+    name = "N-V-__8AAETTsABEodUZZFAyfdAm9hEyqBXuLw9pRSO0vFh9";
     path = fetchzip {
-      url = "https://www.sqlite.org/2026/sqlite-amalgamation-3530200.zip";
-      hash = "sha256-V+uqp0TCOneh57ECQU33LAQP5xewnWyMisYZjSD9qcc=";
+      url = "https://www.sqlite.org/2026/sqlite-amalgamation-3540100.zip";
+      hash = "sha256-NFLUmOWa5iXvBsM98QW3nw/PulG9H3iI6V9vMnpcBK4=";
     };
   }
   {
-    name = "uucode-0.2.0-ZZjBPlK5VADj7fdoq7G8LIHzD5o6FSkcBXXrRWr4jnrA";
+    name = "uucode-0.2.0-ZZjBPm6FVgBcY-79AHV8ckQj86z0JwOyVyj89VeZrEiv";
     path = fetchgit {
       url = "https://github.com/jacobsandlund/uucode";
-      rev = "2826a37a4562284fdacd8fa029d49509cc9bffcd";
-      hash = "sha256-R5RXW5tWIaDq5JOF2+oWd5YOYOyns6WH7f687WE+b20=";
+      rev = "1fb73433bba5d93366c57f23ff2e9d7939746500";
+      hash = "sha256-fZTYVFN0N10R0Ty+3tpMkTLqEBq4tTpkBK6G1m6VgmY=";
     };
   }
   {
-    name = "vaxis-0.6.0-BWNV_EojCgAHV2Lvn5hO22DPkmB1YRlswBIvavDqmP8K";
+    name = "vaxis-0.6.0-BWNV_J2zDQArkPcsc2nkktgxfg2r0u1AwwQP9WLugo_1";
     path = fetchgit {
       url = "https://github.com/rockorager/libvaxis";
-      rev = "a12e9c3046247b6e2e877bf1dcb3806929ecb01a";
-      hash = "sha256-52jFyhmoJlzf89pLhB23Kb0t5YK2/+ZfLRYboIoD56g=";
+      rev = "a62e107753b5ac8fa488df3bbcbe9c34628e65b9";
+      hash = "sha256-fwyZBG/2vDlFVRzdOcFAZsl5uwUC8WIrcaEXNMvDhbM=";
     };
   }
   {
-    name = "zeit-0.9.0-5I6bk2m9AgBSMH8-L6rYJkwuQAyhXplnfxnvTSGzVHUR";
+    name = "zeit-0.10.0-5I6bkxS-AgAaI3lI3RsXsWnPw7sMCqJKoFnSB8_QRAoo";
     path = fetchgit {
       url = "https://github.com/rockorager/zeit";
-      rev = "b1c1c2fcbc71fd7799a316bbcf0ff88d06d80ccc";
-      hash = "sha256-2hOyrKTk8nYdkhYC5vpDgkpzJ4QPA8Xy5+Nn2Rd6NB0=";
-    };
-  }
-  {
-    name = "zigimg-0.1.0-8_eo2oyaFwBZwJpmqPkCfVXWBrHcqbYwmrp1I6bTD3lI";
-    path = fetchgit {
-      url = "https://github.com/zigimg/zigimg";
-      rev = "d695acd97c02e57bb151e8f659d1280f5cd6ca70";
-      hash = "sha256-0IYATQldT6eJxRR2T/2CsIYZuzomqjvmdVyjmsjguyE=";
+      rev = "06bb7b462b4218770fb5438ebe6b0c0c5ef18888";
+      hash = "sha256-Yi8EqBA49ZArYyj2uAjkMkDp/dkq7Qs+lSF+z9czLAQ=";
     };
   }
 ]

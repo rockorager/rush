@@ -50,7 +50,7 @@ pub const LineRequest = union(Kind) {
 
 /// Owns at most one request of each kind.
 pub const Outbox = struct {
-    items: [@typeInfo(Kind).@"enum".fields.len]LineRequest = undefined,
+    items: [@typeInfo(Kind).@"enum".field_names.len]LineRequest = undefined,
     len: usize = 0,
 
     pub fn deinit(self: *Outbox, allocator: std.mem.Allocator) void {

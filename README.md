@@ -29,7 +29,7 @@ Rush targets POSIX-like systems first: Linux, macOS, and BSDs.
 
 ## Build and install
 
-Rush requires Zig 0.16. The repository includes `mise.toml` for `mise` users,
+Rush requires Zig 0.17.1. The repository includes `mise.toml` for `mise` users,
 and Zig fetches the declared dependencies from `build.zig.zon`. SQLite is built
 from the bundled amalgamation by default; packagers can opt into system SQLite
 with `-fsys=sqlite3`.

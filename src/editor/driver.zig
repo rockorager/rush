@@ -34,7 +34,7 @@ const stale_cursor_query_timeout_ms = 1000;
 const kitty_keyboard_default = terminal.kitty_keyboard_default;
 const kitty_keyboard_editor = terminal.kitty_keyboard_editor;
 /// The control character value that disables a terminal special character.
-const posix_vdisable: u8 = if (builtin.os.tag == .linux) 0 else 0xff;
+const posix_vdisable: u8 = if (builtin.target.os.tag == .linux) 0 else 0xff;
 
 pub const TerminalEvent = terminal.Event;
 pub const ColorScheme = terminal.ColorScheme;
@@ -263,9 +263,9 @@ pub const TerminalSession = struct {
         const raw = std.posix.tcgetattr(fd) catch return;
         var interruptible = raw;
         interruptible.lflag.ISIG = true;
-        interruptible.cc[@intFromEnum(std.posix.V.QUIT)] = posix_vdisable;
-        interruptible.cc[@intFromEnum(std.posix.V.SUSP)] = posix_vdisable;
-        if (@hasField(std.posix.V, "DSUSP")) interruptible.cc[@intFromEnum(std.posix.V.DSUSP)] = posix_vdisable;
+        interruptible.cc[@backingInt(std.posix.V.QUIT)] = posix_vdisable;
+        interruptible.cc[@backingInt(std.posix.V.SUSP)] = posix_vdisable;
+        if (@hasField(std.posix.V, "DSUSP")) interruptible.cc[@backingInt(std.posix.V.DSUSP)] = posix_vdisable;
         std.posix.tcsetattr(fd, .NOW, interruptible) catch return;
         self.shell_code_raw = raw;
         // The kitty keyboard protocol would send Ctrl-C as an escape sequence
@@ -461,7 +461,7 @@ pub const TerminalSession = struct {
     }
 
     pub fn finishSemanticCommand(self: *TerminalSession, status: u8) !void {
-        const sequence = try std.fmt.allocPrint(self.allocator, "\x1b]133;D;{d}\x07", .{status});
+        const sequence = try self.allocator.print("\x1b]133;D;{d}\x07", .{status});
         defer self.allocator.free(sequence);
         try writeTtyAll(&self.tty, sequence);
     }
@@ -1309,7 +1309,7 @@ fn clearScreenSequence(allocator: std.mem.Allocator, cursor_position: ?CursorPos
     const position = cursor_position orelse return allocator.dupe(u8, "\x1b[H\x1b[2J");
     const lines_above_prompt = position.row -| 1;
     if (lines_above_prompt == 0) return allocator.dupe(u8, "\x1b[H\x1b[2J");
-    return std.fmt.allocPrint(allocator, "\x1b[{d}S\x1b[H\x1b[2J", .{lines_above_prompt});
+    return allocator.print("\x1b[{d}S\x1b[H\x1b[2J", .{lines_above_prompt});
 }
 
 fn promptRefreshWaitMs(io: std.Io, next_prompt_refresh_ms: ?u64) ?u64 {
@@ -1341,7 +1341,7 @@ fn nowMs(io: std.Io) u64 {
 
 fn initPosixTtyPreserveInput(io: std.Io, buffer: []u8) !vaxis.tty.PosixTty {
     var file = try std.Io.Dir.openFileAbsolute(io, "/dev/tty", .{ .mode = .read_write });
-    errdefer if (builtin.os.tag != .macos) file.close(io);
+    errdefer if (builtin.target.os.tag != .macos) file.close(io);
 
     const termios = try makeRawPreserveInput(file.handle);
     const tty: vaxis.tty.PosixTty = .{
@@ -1358,7 +1358,7 @@ fn deinitPosixTtyPreserveInput(tty: vaxis.tty.PosixTty) void {
     std.posix.tcsetattr(tty.fd.handle, .DRAIN, tty.termios) catch |err| {
         std.log.err("couldn't restore terminal: {}", .{err});
     };
-    if (builtin.os.tag != .macos) tty.fd.close(tty.io);
+    if (builtin.target.os.tag != .macos) tty.fd.close(tty.io);
 }
 
 fn makeRawPreserveInput(fd: std.posix.fd_t) !std.posix.termios {
@@ -1384,8 +1384,8 @@ fn makeRawPreserveInput(fd: std.posix.fd_t) !std.posix.termios {
     raw.cflag.CSIZE = .CS8;
     raw.cflag.PARENB = false;
 
-    raw.cc[@intFromEnum(std.posix.V.MIN)] = 1;
-    raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
+    raw.cc[@backingInt(std.posix.V.MIN)] = 1;
+    raw.cc[@backingInt(std.posix.V.TIME)] = 0;
     try std.posix.tcsetattr(fd, .DRAIN, raw);
     return state;
 }
@@ -1456,7 +1456,7 @@ const TestHistoryPage = struct {
         for (entries, 0..) |*entry, index| {
             entry.* = .{
                 .id = @intCast(index + 1),
-                .text = try std.fmt.allocPrint(allocator, "history {d}", .{index}),
+                .text = try allocator.print("history {d}", .{index}),
             };
             initialized += 1;
         }

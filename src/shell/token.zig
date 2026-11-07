@@ -415,7 +415,7 @@ pub const Stream = struct {
                 .start = tok.span.start - (tok.span.start_column - 1),
                 .number = tok.span.start_line,
             };
-            if (self.lines.getLastOrNull()) |previous| {
+            if (self.lines.last()) |previous| {
                 std.debug.assert(line.number >= previous.number);
                 if (line.number == previous.number) {
                     std.debug.assert(line.start == previous.start);
@@ -620,7 +620,7 @@ test "compact stream bounds line metadata for large here-documents" {
         .id = 1,
         .kind = .script_file,
         .name = "test",
-        .text = "cat <<E\n" ++ ("\n" ** 4096) ++ "E\n",
+        .text = "cat <<E\n" ++ @as([4096]u8, @splat('\n')) ++ "E\n",
     };
     const stream = try test_lexer.lex(arena.allocator(), src);
     try std.testing.expectEqual(@as(usize, 6), stream.items.len);
@@ -638,7 +638,11 @@ test "compact stream reclaims storage on allocation failures" {
                 .id = 8,
                 .kind = .script_file,
                 .name = "test",
-                .text = "echo foo\\\nbar\ncat <<-E\n\tbody\n\tE\n" ** 32,
+                .text = comptime text: {
+                    const chunk = "echo foo\\\nbar\ncat <<-E\n\tbody\n\tE\n";
+                    const chunks: [32][chunk.len]u8 = @splat(chunk.*);
+                    break :text @ptrCast(&chunks);
+                },
             };
             const stream = try test_lexer.lexWithTokenAllocator(text_arena.allocator(), allocator, src);
             defer stream.deinit(allocator);

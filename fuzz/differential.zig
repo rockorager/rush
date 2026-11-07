@@ -4,8 +4,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const default_timeout_ms: i64 = switch (builtin.mode) {
-    .Debug => 5000,
-    .ReleaseSafe, .ReleaseFast, .ReleaseSmall => 1000,
+    .debug => 5000,
+    .safe, .fast, .small => 1000,
 };
 
 const Config = struct {
@@ -469,12 +469,12 @@ fn parseArgs(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8)
 }
 
 fn resolvePath(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![:0]u8 {
-    if (std.Io.Dir.path.isAbsolute(path)) return allocator.dupeZ(u8, path);
+    if (std.Io.Dir.path.isAbsolute(path)) return allocator.dupeSentinel(u8, path, 0);
     return std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator);
 }
 
 fn resolveCommandPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![:0]u8 {
-    if (std.mem.indexOfScalar(u8, path, '/') == null) return allocator.dupeZ(u8, path);
+    if (std.mem.indexOfScalar(u8, path, '/') == null) return allocator.dupeSentinel(u8, path, 0);
     return resolvePath(allocator, io, path);
 }
 
@@ -513,7 +513,7 @@ fn createTempRoot(allocator: std.mem.Allocator, io: std.Io) !TempRoot {
         var random_bytes: [8]u8 = undefined;
         io.random(&random_bytes);
         const random = std.mem.readInt(u64, &random_bytes, .little);
-        const path = try std.fmt.allocPrint(allocator, ".zig-cache/rush-differential-{x}", .{random});
+        const path = try allocator.print(".zig-cache/rush-differential-{x}", .{random});
         errdefer allocator.free(path);
         cwd.createDir(io, path, .default_dir) catch |err| switch (err) {
             error.PathAlreadyExists => {
@@ -592,7 +592,7 @@ const Value = enum {
     three,
 
     fn random(random_source: std.Random) Value {
-        return @enumFromInt(random_source.uintLessThan(u3, 4));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u3, 4)));
     }
 
     fn shell(self: Value) []const u8 {
@@ -610,7 +610,7 @@ const Variable = enum {
     B,
 
     fn random(random_source: std.Random) Variable {
-        return @enumFromInt(random_source.uintLessThan(u2, 2));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u2, 2)));
     }
 
     fn shell(self: Variable) []const u8 {
@@ -623,7 +623,7 @@ const PositionalParameter = enum {
     two,
 
     fn random(random_source: std.Random) PositionalParameter {
-        return @enumFromInt(random_source.uintLessThan(u2, 2));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u2, 2)));
     }
 
     fn number(self: PositionalParameter) u8 {
@@ -758,7 +758,7 @@ const FileName = enum {
     out,
 
     fn random(random_source: std.Random) FileName {
-        return @enumFromInt(random_source.uintLessThan(u3, 4));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u3, 4)));
     }
 
     fn shell(self: FileName) []const u8 {
@@ -769,7 +769,7 @@ const FileName = enum {
 const FileNameMask = u4;
 
 fn fileNameBit(file: FileName) FileNameMask {
-    const shift: std.math.Log2Int(FileNameMask) = @intCast(@intFromEnum(file));
+    const shift: std.math.Log2Int(FileNameMask) = @intCast(@backingInt(file));
     return @as(FileNameMask, 1) << shift;
 }
 
@@ -862,7 +862,7 @@ const FunctionBodyOperand = union(enum) {
         seven,
 
         fn random(random_source: std.Random) ReturnStatus {
-            return @enumFromInt(random_source.uintLessThan(u3, 4));
+            return @fromBackingInt(@intCast(random_source.uintLessThan(u3, 4)));
         }
 
         fn value(self: ReturnStatus) u8 {
@@ -1018,7 +1018,7 @@ const FunctionScopeProbe = enum {
     group,
 
     fn random(random_source: std.Random) FunctionScopeProbe {
-        return @enumFromInt(random_source.uintLessThan(u2, 2));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u2, 2)));
     }
 
     fn render(self: FunctionScopeProbe, writer: *std.Io.Writer) !void {
@@ -1038,7 +1038,7 @@ const FunctionRedefinitionProbe = enum {
     group_redefine,
 
     fn random(random_source: std.Random) FunctionRedefinitionProbe {
-        return @enumFromInt(random_source.uintLessThan(u2, 3));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u2, 3)));
     }
 
     fn render(self: FunctionRedefinitionProbe, writer: *std.Io.Writer) !void {
@@ -1063,7 +1063,7 @@ const FunctionUnsetProbe = enum {
     group_unset,
 
     fn random(random_source: std.Random) FunctionUnsetProbe {
-        return @enumFromInt(random_source.uintLessThan(u2, 3));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u2, 3)));
     }
 
     fn render(self: FunctionUnsetProbe, writer: *std.Io.Writer) !void {
@@ -1095,7 +1095,7 @@ const AliasProbe = enum {
     trailing_blank_after_negation,
 
     fn random(random_source: std.Random) AliasProbe {
-        return @enumFromInt(random_source.uintLessThan(u4, 8));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u4, 8)));
     }
 
     fn render(self: AliasProbe, writer: *std.Io.Writer) !void {
@@ -1140,7 +1140,7 @@ const LoopProbe = enum {
     variable_persists,
 
     fn random(random_source: std.Random) LoopProbe {
-        return @enumFromInt(random_source.uintLessThan(u2, 3));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u2, 3)));
     }
 
     fn render(self: LoopProbe, writer: *std.Io.Writer) !void {
@@ -1165,7 +1165,7 @@ const IfProbe = enum {
     variable_persists,
 
     fn random(random_source: std.Random) IfProbe {
-        return @enumFromInt(random_source.uintLessThan(u3, 4));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u3, 4)));
     }
 
     fn render(self: IfProbe, writer: *std.Io.Writer) !void {
@@ -1194,7 +1194,7 @@ const CaseProbe = enum {
     no_match_status,
 
     fn random(random_source: std.Random) CaseProbe {
-        return @enumFromInt(random_source.uintLessThan(u3, 5));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u3, 5)));
     }
 
     fn render(self: CaseProbe, writer: *std.Io.Writer) !void {
@@ -1226,7 +1226,7 @@ const WhileProbe = enum {
     variable_persists,
 
     fn random(random_source: std.Random) WhileProbe {
-        return @enumFromInt(random_source.uintLessThan(u3, 5));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u3, 5)));
     }
 
     fn render(self: WhileProbe, writer: *std.Io.Writer) !void {
@@ -1259,7 +1259,7 @@ const PipelineProbe = enum {
     asynchronous_last_pid,
 
     fn random(random_source: std.Random) PipelineProbe {
-        return @enumFromInt(random_source.uintLessThan(u3, 6));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u3, 6)));
     }
 
     fn render(self: PipelineProbe, writer: *std.Io.Writer) !void {
@@ -1300,7 +1300,7 @@ const NegationProbe = enum {
     list_status,
 
     fn random(random_source: std.Random) NegationProbe {
-        return @enumFromInt(random_source.uintLessThan(u3, 5));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u3, 5)));
     }
 
     fn render(self: NegationProbe, writer: *std.Io.Writer) !void {
@@ -1332,7 +1332,7 @@ const BreakContinueProbe = enum {
     nested_break,
 
     fn random(random_source: std.Random) BreakContinueProbe {
-        return @enumFromInt(random_source.uintLessThan(u3, 5));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u3, 5)));
     }
 
     fn render(self: BreakContinueProbe, writer: *std.Io.Writer) !void {
@@ -1366,7 +1366,7 @@ const ArithmeticProbe = enum {
     quoted_expansion,
 
     fn random(random_source: std.Random) ArithmeticProbe {
-        return @enumFromInt(random_source.uintLessThan(u3, 5));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u3, 5)));
     }
 
     fn render(self: ArithmeticProbe, writer: *std.Io.Writer) !void {
@@ -1401,7 +1401,7 @@ const WordExpansionProbe = enum {
     tilde_pattern_removal,
 
     fn random(random_source: std.Random) WordExpansionProbe {
-        return @enumFromInt(random_source.uintLessThan(u4, 8));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u4, 8)));
     }
 
     fn render(self: WordExpansionProbe, writer: *std.Io.Writer) !void {
@@ -1445,7 +1445,7 @@ const ParameterExpansionProbe = enum {
     status_after_lists,
 
     fn random(random_source: std.Random) ParameterExpansionProbe {
-        return @enumFromInt(random_source.uintLessThan(u4, 8));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u4, 8)));
     }
 
     fn render(self: ParameterExpansionProbe, writer: *std.Io.Writer) !void {
@@ -1485,7 +1485,7 @@ const HereDocProbe = enum {
     redirected_file,
 
     fn random(random_source: std.Random) HereDocProbe {
-        return @enumFromInt(random_source.uintLessThan(u3, 4));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u3, 4)));
     }
 
     fn render(self: HereDocProbe, writer: *std.Io.Writer) !void {
@@ -1515,7 +1515,7 @@ const FdRoutingProbe = enum {
     command_exec_keeps_redirection,
 
     fn random(random_source: std.Random) FdRoutingProbe {
-        return @enumFromInt(random_source.uintLessThan(u3, 6));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u3, 6)));
     }
 
     fn render(self: FdRoutingProbe, writer: *std.Io.Writer) !void {
@@ -1553,7 +1553,7 @@ const CommandSubstitutionStressProbe = enum {
     duplicated_stderr_before_stdout_redirect,
 
     fn random(random_source: std.Random) CommandSubstitutionStressProbe {
-        return @enumFromInt(random_source.uintLessThan(u3, 6));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u3, 6)));
     }
 
     fn render(self: CommandSubstitutionStressProbe, writer: *std.Io.Writer) !void {
@@ -1588,7 +1588,7 @@ const CompoundRedirectionProbe = enum {
     if_body_redirected,
 
     fn random(random_source: std.Random) CompoundRedirectionProbe {
-        return @enumFromInt(random_source.uintLessThan(u3, 5));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u3, 5)));
     }
 
     fn render(self: CompoundRedirectionProbe, writer: *std.Io.Writer) !void {
@@ -1620,7 +1620,7 @@ const PipelineStressProbe = enum {
     command_substitution_pipeline,
 
     fn random(random_source: std.Random) PipelineStressProbe {
-        return @enumFromInt(random_source.uintLessThan(u3, 5));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u3, 5)));
     }
 
     fn render(self: PipelineStressProbe, writer: *std.Io.Writer) !void {
@@ -1651,7 +1651,7 @@ const FunctionStressProbe = enum {
     list_tail_status,
 
     fn random(random_source: std.Random) FunctionStressProbe {
-        return @enumFromInt(random_source.uintLessThan(u3, 4));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u3, 4)));
     }
 
     fn render(self: FunctionStressProbe, writer: *std.Io.Writer) !void {
@@ -1681,7 +1681,7 @@ const SourceEvalProbe = enum {
     dot_preserves_positionals,
 
     fn random(random_source: std.Random) SourceEvalProbe {
-        return @enumFromInt(random_source.uintLessThan(u3, 5));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u3, 5)));
     }
 
     fn render(self: SourceEvalProbe, writer: *std.Io.Writer) !void {
@@ -1713,7 +1713,7 @@ const TrapProbe = enum {
     subshell_trap_does_not_leak,
 
     fn random(random_source: std.Random) TrapProbe {
-        return @enumFromInt(random_source.uintLessThan(u3, 5));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u3, 5)));
     }
 
     fn render(self: TrapProbe, writer: *std.Io.Writer) !void {
@@ -1754,7 +1754,7 @@ const CorpusProbe = enum {
     async_subshell_fifo_redirection,
 
     fn random(random_source: std.Random) CorpusProbe {
-        return @enumFromInt(random_source.uintLessThan(u4, 14));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u4, 14)));
     }
 
     fn render(self: CorpusProbe, writer: *std.Io.Writer) !void {
@@ -1814,7 +1814,7 @@ const DirName = enum {
     e,
 
     fn random(random_source: std.Random) DirName {
-        return @enumFromInt(random_source.uintLessThan(u2, 2));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u2, 2)));
     }
 
     fn shell(self: DirName) []const u8 {
@@ -1827,7 +1827,7 @@ const Fd = enum {
     fd4,
 
     fn random(random_source: std.Random) Fd {
-        return @enumFromInt(random_source.uintLessThan(u2, 2));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u2, 2)));
     }
 
     fn number(self: Fd) u8 {
@@ -1843,7 +1843,7 @@ const FdSource = enum {
     stderr,
 
     fn random(random_source: std.Random) FdSource {
-        return @enumFromInt(random_source.uintLessThan(u2, 2));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u2, 2)));
     }
 
     fn number(self: FdSource) u8 {
@@ -1859,7 +1859,7 @@ const ListOperator = enum {
     or_if,
 
     fn random(random_source: std.Random) ListOperator {
-        return @enumFromInt(random_source.uintLessThan(u2, 2));
+        return @fromBackingInt(@intCast(random_source.uintLessThan(u2, 2)));
     }
 
     fn shell(self: ListOperator) []const u8 {
@@ -2368,7 +2368,7 @@ fn runOne(
     script: []const u8,
     timeout_value: std.Io.Timeout,
 ) !RunResult {
-    const sub_path = try std.fmt.allocPrint(allocator, "{s}-{d}", .{ prefix, case_index });
+    const sub_path = try allocator.print("{s}-{d}", .{ prefix, case_index });
     defer allocator.free(sub_path);
     var cwd = try temp_root.dir.createDirPathOpen(io, sub_path, .{ .open_options = .{ .iterate = true } });
     defer cwd.close(io);
@@ -2466,7 +2466,7 @@ fn runProcessGroup(
 
 fn killProcessGroup(pid: ?std.process.Child.Id) void {
     const child_pid = pid orelse return;
-    if (builtin.os.tag == .windows) return;
+    if (builtin.target.os.tag == .windows) return;
     std.posix.kill(-child_pid, .KILL) catch |err| {
         std.debug.print("differential: failed to kill process group {d}: {s}\n", .{ child_pid, @errorName(err) });
     };
@@ -2537,8 +2537,8 @@ fn lessFileSnapshot(_: void, lhs: FileSnapshot, rhs: FileSnapshot) bool {
 fn statusFromTerm(term: std.process.Child.Term) u8 {
     return switch (term) {
         .exited => |status| status,
-        .signal => |signal| signalStatus(@intFromEnum(signal)),
-        .stopped => |signal| signalStatus(@intFromEnum(signal)),
+        .signal => |signal| signalStatus(@backingInt(signal)),
+        .stopped => |signal| signalStatus(@backingInt(signal)),
         .unknown => 255,
     };
 }
@@ -2592,9 +2592,9 @@ fn shrinkScriptAlloc(
         }
     }
 
-    const rush_prefix = try std.fmt.allocPrint(allocator, "shrunk-rush-{d}", .{attempt});
+    const rush_prefix = try allocator.print("shrunk-rush-{d}", .{attempt});
     defer allocator.free(rush_prefix);
-    const ref_prefix = try std.fmt.allocPrint(allocator, "shrunk-ref-{d}", .{attempt});
+    const ref_prefix = try allocator.print("shrunk-ref-{d}", .{attempt});
     defer allocator.free(ref_prefix);
     const rush = try runOne(
         allocator,
@@ -2632,9 +2632,9 @@ fn scriptStillMismatches(
     attempt: usize,
     script: []const u8,
 ) !bool {
-    const rush_prefix = try std.fmt.allocPrint(allocator, "shrink-rush-{d}", .{attempt});
+    const rush_prefix = try allocator.print("shrink-rush-{d}", .{attempt});
     defer allocator.free(rush_prefix);
-    const ref_prefix = try std.fmt.allocPrint(allocator, "shrink-ref-{d}", .{attempt});
+    const ref_prefix = try allocator.print("shrink-ref-{d}", .{attempt});
     defer allocator.free(ref_prefix);
     const rush = try runOne(
         allocator,
