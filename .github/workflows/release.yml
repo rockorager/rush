@@ -18,12 +18,16 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      notes: ${{ steps.version.outputs.notes }}
     steps:
+      # Tags tell whether this is the first release.
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
 
-      # The tag, both version declarations, and the checked-in notes must
-      # agree before anything is built or published.
+      # The tag and both version declarations must agree, and every release
+      # after the first needs checked-in notes, before anything is built.
       - name: Check version and release notes
         id: version
         run: |
@@ -34,11 +38,16 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME does not match build.zig ($build_version) and build.zig.zon ($zon_version)"
             exit 1
           fi
-          if [ ! -s "docs/releases/$version.md" ]; then
-            echo "::error::missing release notes docs/releases/$version.md"
-            exit 1
+          notes="docs/releases/$version.md"
+          if [ ! -s "$notes" ]; then
+            if git tag --list 'v[0-9]*' | grep -qvxF "$GITHUB_REF_NAME"; then
+              echo "::error::missing release notes $notes"
+              exit 1
+            fi
+            notes=
           fi
           echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "notes=$notes" >>"$GITHUB_OUTPUT"
 
   build:
     name: Build ${{ matrix.arch }}-linux
@@ -114,6 +123,7 @@ jobs:
       contents: write
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
+      NOTES: ${{ needs.prepare.outputs.notes }}
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -132,8 +142,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if [ -n "$NOTES" ]; then set -- --notes-file "$NOTES"; else set -- --notes ""; fi
           gh release create "$GITHUB_REF_NAME" \
             --verify-tag \
             --title "Rush $VERSION" \
-            --notes-file "docs/releases/$VERSION.md" \
+            "$@" \
             dist/*.tar.xz dist/SHA256SUMS

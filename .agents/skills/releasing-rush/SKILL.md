@@ -12,7 +12,8 @@ responsibility of the repository's configured CI.
 ## Release contract
 
 - Use versions in `X.Y.Z` form and tags in `vX.Y.Z` form.
-- Store notes at `docs/releases/X.Y.Z.md`.
+- Store notes at `docs/releases/X.Y.Z.md`. The first release has none; every
+  later release needs them.
 - Commit the version and release notes before creating the tag.
 - Create the tag from that clean release commit.
 - Treat hosted release pages and downloadable artifacts as projections of the
@@ -22,7 +23,8 @@ responsibility of the repository's configured CI.
 - Let configured CI publish the release. Do not manually publish unless the
   user explicitly requests an exception.
 - `.github/workflows/release.yml` is that CI. On a `vX.Y.Z` tag it checks the
-  tag against both version declarations and the notes file, builds static
+  tag against both version declarations, requires the notes file unless no
+  other release tag exists, builds static
   `rush-X.Y.Z-{x86_64,aarch64}-linux.tar.xz` tarballs laid out for a `/usr`
   prefix, and publishes them with `SHA256SUMS` and the notes as the release
   description.
@@ -87,8 +89,8 @@ Released YYYY-MM-DD.
 ```
 
 Keep only sections that have content. Add `## Upgrade notes` when users must
-take action. For the first release, summarize the supported experience and
-major capabilities instead of fabricating a change comparison.
+take action. Skip this step for the first release: CI publishes it with an
+empty description.
 
 Release notes must:
 
