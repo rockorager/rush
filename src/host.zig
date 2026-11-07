@@ -271,6 +271,13 @@ pub const TimedReadResult = union(enum) {
     timeout,
 };
 
+/// Result of a read that gives up when a trapped signal is pending.
+pub const InterruptibleRead = union(enum) {
+    read: usize,
+    /// The pending signal, which stays pending for the trap checkpoint.
+    signal: u8,
+};
+
 pub const DuplicateError = error{
     BadFd,
     Interrupted,

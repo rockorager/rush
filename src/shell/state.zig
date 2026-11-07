@@ -338,6 +338,8 @@ pub const State = struct {
     }) = .empty,
     /// Implicit interactive signal actions apply only in the original environment.
     interactive_signal_defaults: bool = false,
+    /// A foreground job died of SIGINT; the next trap checkpoint interrupts.
+    foreground_interrupted: bool = false,
     pending_traps: std.ArrayListUnmanaged([]const u8) = .empty,
     process_substitutions: std.ArrayListUnmanaged(ProcessSubstitution) = .empty,
     reap_process_substitutions: std.ArrayListUnmanaged(ReapOnlyProcessSubstitution) = .empty,

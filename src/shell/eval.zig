@@ -70,8 +70,15 @@ pub fn runPendingTraps(shell: anytype) EvalError!result.EvalResult {
 
 fn runPendingTrapCheckpoint(shell: anytype) EvalError!result.EvalResult {
     if (shell.state.running_signal_trap) return .{};
-    if (shell.state.interactive_signal_defaults and shell.state.getSignalTrap("INT") == null)
-        _ = shell.host.consumePendingSignal(builtin.signalNumber("INT").?);
+    if (untrappedInteractiveInterrupt(shell)) {
+        // Both checks run so neither event is left behind for the next line.
+        const signaled = shell.host.consumePendingSignal(builtin.signalNumber("INT").?);
+        const foreground = shell.state.foreground_interrupted;
+        shell.state.foreground_interrupted = false;
+        if ((signaled or foreground) and interactiveInterruptsCommands(shell)) {
+            return .{ .status = 130, .flow = .interrupt };
+        }
+    }
     // Fast path for the common trap-free shell: nothing can be queued and
     // nothing is pending, so skip the polling walk.
     if (shell.state.signal_traps.count() == 0 and shell.state.pending_traps.items.len == 0) return .{};
@@ -90,6 +97,33 @@ fn runPendingTrapCheckpoint(shell: anytype) EvalError!result.EvalResult {
     shell.state.last_status = saved_status;
     if (evaluated.flow != .normal) return evaluated;
     return .{ .status = saved_status };
+}
+
+/// An interactive shell without an INT trap abandons the current input line
+/// on Ctrl-C, whether the shell itself or its foreground job received it, as
+/// dash and Bash do. --posix keeps Issue 8's literal rule that SIGINT outside
+/// line editing is caught with no action.
+fn interactiveInterruptsCommands(shell: anytype) bool {
+    return untrappedInteractiveInterrupt(shell) and shell.state.options.mode != .posix;
+}
+
+fn untrappedInteractiveInterrupt(shell: anytype) bool {
+    return shell.state.interactive_signal_defaults and shell.state.getSignalTrap("INT") == null;
+}
+
+/// Records a foreground job that died of SIGINT. With job control the
+/// terminal sends Ctrl-C only to the job's process group, so the shell learns
+/// of it from the wait status.
+fn noteForegroundStatus(shell: anytype, status: host_mod.WaitStatus) void {
+    // Without job control the shell shares the job's process group and
+    // receives the Ctrl-C itself.
+    if (!interactiveInterruptsCommands(shell) or !shell.state.jobControlEnabled()) return;
+    switch (status) {
+        .signaled => |signal| if (signal == builtin.signalNumber("INT").?) {
+            shell.state.foreground_interrupted = true;
+        },
+        else => {},
+    }
 }
 
 fn queuePolledSignalTraps(shell: anytype) !void {
@@ -509,6 +543,7 @@ fn waitForegroundPids(shell: anytype, pids: []const host_mod.Pid) ![]const host_
             try shell.host.waitJobEvent(pid)
         else
             try shell.host.wait(pid);
+        noteForegroundStatus(shell, statuses[index]);
         switch (statuses[index]) {
             .stopped => |signal| {
                 for (statuses[index + 1 ..]) |*status| status.* = .{ .stopped = signal };
@@ -3215,7 +3250,7 @@ fn evalReadBuiltin(shell: anytype, args: []const []const u8, assignments: []cons
             error.ReadonlyVariable => return readReadonlyFailure(shell, name),
             else => return err,
         };
-        if (line_result.timed_out) return .{ .status = 142 };
+        if (line_result.stop_status) |status| return .{ .status = status };
         return .{ .status = if (line_result.found_delimiter) 0 else 1 };
     }
     const values = if (options.exact_count)
@@ -3235,7 +3270,7 @@ fn evalReadBuiltin(shell: anytype, args: []const []const u8, assignments: []cons
             else => return err,
         };
     }
-    if (line_result.timed_out) return .{ .status = 142 };
+    if (line_result.stop_status) |status| return .{ .status = status };
     return .{ .status = if (line_result.found_delimiter) 0 else 1 };
 }
 
@@ -3294,7 +3329,9 @@ fn parseReadTimeout(text: []const u8) ?u64 {
 const ReadLineResult = struct {
     line: []const u8,
     found_delimiter: bool,
-    timed_out: bool = false,
+    /// Set when a timeout (142) or a trapped signal (128 + signal) ended the
+    /// read early; the partial line is still assigned.
+    stop_status: ?result.ExitStatus = null,
 };
 
 const read_escape_marker: u8 = 0;
@@ -3315,10 +3352,10 @@ fn readBuiltinLine(shell: anytype, options: ReadOptions) !ReadLineResult {
             .line = try line.toOwnedSlice(shell.scratchAllocator()),
             .found_delimiter = false,
         };
-        if (first == .timeout) return .{
+        if (first == .stop) return .{
             .line = try line.toOwnedSlice(shell.scratchAllocator()),
             .found_delimiter = false,
-            .timed_out = true,
+            .stop_status = first.stop,
         };
         const byte = first.byte;
         // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
@@ -3330,10 +3367,10 @@ fn readBuiltinLine(shell: anytype, options: ReadOptions) !ReadLineResult {
                 try line.append(shell.scratchAllocator(), '\\');
                 return .{ .line = try line.toOwnedSlice(shell.scratchAllocator()), .found_delimiter = false };
             };
-            if (escaped == .timeout) return .{
+            if (escaped == .stop) return .{
                 .line = try line.toOwnedSlice(shell.scratchAllocator()),
                 .found_delimiter = false,
-                .timed_out = true,
+                .stop_status = escaped.stop,
             };
             if (!options.exact_count and escaped.byte == options.delimiter and options.delimiter == '\n') continue;
             try line.append(shell.scratchAllocator(), read_escape_marker);
@@ -3353,7 +3390,9 @@ fn readBuiltinLine(shell: anytype, options: ReadOptions) !ReadLineResult {
 
 const ReadByteResult = union(enum) {
     byte: u8,
-    timeout,
+    /// The read ended early with this status: 142 for a timeout, or 128 plus
+    /// a trapped signal that interrupted it.
+    stop: result.ExitStatus,
 };
 
 fn readBuiltinByte(shell: anytype, timeout_ms: ?u64) !?ReadByteResult {
@@ -3361,12 +3400,34 @@ fn readBuiltinByte(shell: anytype, timeout_ms: ?u64) !?ReadByteResult {
     if (timeout_ms) |ms| {
         return switch (try shell.host.readWithTimeout(.stdin, &byte, ms)) {
             .read => |read_len| if (read_len == 0) null else .{ .byte = byte[0] },
-            .timeout => .timeout,
+            .timeout => .{ .stop = 142 },
         };
     }
 
-    const read_len = try shell.host.read(.stdin, &byte);
-    return if (read_len == 0) null else .{ .byte = byte[0] };
+    const HostType = switch (@typeInfo(@TypeOf(shell.host))) {
+        .pointer => |pointer| pointer.child,
+        else => @TypeOf(shell.host),
+    };
+    if (comptime !@hasDecl(HostType, "readInterruptible")) {
+        const read_len = try shell.host.read(.stdin, &byte);
+        return if (read_len == 0) null else .{ .byte = byte[0] };
+    }
+    const interrupt_signal = builtin.signalNumber("INT").?;
+    while (true) {
+        switch (try shell.host.readInterruptible(.stdin, &byte)) {
+            .read => |read_len| return if (read_len == 0) null else .{ .byte = byte[0] },
+            .signal => |signal| {
+                if (signal == interrupt_signal and untrappedInteractiveInterrupt(shell) and
+                    !interactiveInterruptsCommands(shell))
+                {
+                    // --posix: an untrapped interactive SIGINT takes no action.
+                    _ = shell.host.consumePendingSignal(signal);
+                    continue;
+                }
+                return .{ .stop = 128 +| signal };
+            },
+        }
+    }
 }
 
 fn appendReadCharacter(shell: anytype, line: *std.ArrayList(u8), first: u8, timeout_ms: ?u64) !void {
@@ -3379,7 +3440,7 @@ fn appendReadCharacter(shell: anytype, line: *std.ArrayList(u8), first: u8, time
         const next = (try readBuiltinByte(shell, timeout_ms)) orelse return;
         switch (next) {
             .byte => |byte| try line.append(allocator, byte),
-            .timeout => return,
+            .stop => return,
         }
     }
 }
@@ -8505,6 +8566,7 @@ fn evalExternalWithSearchPath(
         defer if (foreground_restore_group) |process_group| builtin.restoreTerminalToShell(shell, process_group);
         // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         const waited = if (@hasDecl(HostType, "waitJobEvent")) try shell.host.waitJobEvent(pid) else try shell.host.wait(pid);
+        noteForegroundStatus(shell, waited);
         switch (waited) {
             .stopped => {
                 try shell.state.addBackgroundJob(pid, try externalCommandText(shell, fields), true);

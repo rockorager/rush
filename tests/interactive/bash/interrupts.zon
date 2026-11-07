@@ -1,0 +1,58 @@
+.{
+    .name = "Bash interactive interrupts",
+    .mode = .bash,
+    .cases = .{
+        .{
+            // Ctrl-C reaches the shell as SIGINT; with no INT trap the rest of
+            // the input line is abandoned, as in dash and Bash.
+            .name = "SIGINT abandons a builtin loop and the rest of its line",
+            .script = "",
+            .stdin =
+            \\i=0; while :; do i=$((i+1)); if [ "$i" -eq 3 ]; then kill -s INT "$$"; fi; done; echo same-line
+            \\printf 'status:%s i:%s\n' "$?" "$i"
+            \\exit
+            \\
+            ,
+            .stdout = "status:130 i:3\n",
+            .stderr_match = .any,
+        },
+        .{
+            .name = "SIGINT unwinds through functions",
+            .script = "",
+            .stdin =
+            \\f() { kill -s INT "$$"; echo in-function; }
+            \\f; echo after-call
+            \\printf 'status:%s\n' "$?"
+            \\exit
+            \\
+            ,
+            .stdout = "status:130\n",
+            .stderr_match = .any,
+        },
+        .{
+            .name = "SIGINT interrupts a blocked read",
+            .script = "",
+            .stdin =
+            \\mkfifo fifo; exec 3<>fifo
+            \\(sleep 1; kill -s INT "$$") & read -r line <&3; echo same-line
+            \\printf 'status:%s\n' "$?"
+            \\exit
+            \\
+            ,
+            .stdout = "status:130\n",
+            .stderr_match = .any,
+        },
+        .{
+            .name = "an INT trap replaces abandoning the line",
+            .script = "",
+            .stdin =
+            \\trap 'echo trapped' INT
+            \\kill -s INT "$$"; echo same-line
+            \\exit
+            \\
+            ,
+            .stdout = "trapped\nsame-line\n",
+            .stderr_match = .any,
+        },
+    },
+}

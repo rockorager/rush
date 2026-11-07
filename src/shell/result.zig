@@ -12,6 +12,9 @@ pub const ControlFlow = union(enum) {
     break_: usize,
     continue_: usize,
     fatal: ExitStatus,
+    /// Abandon the whole input line after an interactive SIGINT (Ctrl-C).
+    /// Nothing downgrades it; the interactive reader returns to the prompt.
+    interrupt,
 };
 
 pub const EvalResult = struct {

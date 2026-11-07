@@ -220,6 +220,26 @@ pub fn read(_: RealHost, fd: host.Fd, buffer: []u8) ReadError!usize {
     };
 }
 
+/// Reads like `read`, but returns the pending signal instead of restarting
+/// when a trapped signal interrupts the wait, so a blocking builtin such as
+/// `read` can let its trap run. A signal that arrives after the pending check
+/// but before the read blocks is noticed at the next interruption.
+pub fn readInterruptible(_: RealHost, fd: host.Fd, buffer: []u8) ReadError!host.InterruptibleRead {
+    if (buffer.len == 0) return .{ .read = 0 };
+    while (true) {
+        if (peekPendingSignal()) |signal| return .{ .signal = signal };
+        const result = switch (builtin.os.tag) {
+            .linux => linuxReadOnce(fd, buffer),
+            .macos, .freebsd, .openbsd, .netbsd => libcReadOnce(fd, buffer),
+            else => @compileError("unsupported host OS"),
+        };
+        return .{ .read = result catch |err| switch (err) {
+            error.Interrupted => continue,
+            else => |read_err| return read_err,
+        } };
+    }
+}
+
 pub fn readWithTimeout(self: RealHost, fd: host.Fd, buffer: []u8, timeout_ms: u64) ReadError!host.TimedReadResult {
     if (buffer.len == 0) return .{ .read = 0 };
     if (!self.readReady(fd, timeout_ms)) return .timeout;
@@ -838,34 +858,42 @@ pub fn waitInterruptible(_: RealHost, pid: host.Pid) WaitError!host.Interruptibl
 }
 
 fn linuxRead(fd: host.Fd, buffer: []u8) ReadError!usize {
+    while (true) return linuxReadOnce(fd, buffer) catch |err| switch (err) {
+        error.Interrupted => continue,
+        else => |read_err| return read_err,
+    };
+}
+
+fn linuxReadOnce(fd: host.Fd, buffer: []u8) (ReadError || error{Interrupted})!usize {
     const linux = std.os.linux;
-    while (true) {
-        const rc = linux.read(fd.raw(), buffer.ptr, buffer.len);
-        switch (linux.errno(rc)) {
-            .SUCCESS => return rc,
-            .INTR => continue,
-            .AGAIN => return error.WouldBlock,
-            .IO => return error.InputOutput,
-            .NOBUFS, .NOMEM => return error.SystemResources,
-            .BADF, .FAULT, .INVAL, .ISDIR => return error.Unexpected,
-            else => return error.Unexpected,
-        }
-    }
+    const rc = linux.read(fd.raw(), buffer.ptr, buffer.len);
+    return switch (linux.errno(rc)) {
+        .SUCCESS => rc,
+        .INTR => error.Interrupted,
+        .AGAIN => error.WouldBlock,
+        .IO => error.InputOutput,
+        .NOBUFS, .NOMEM => error.SystemResources,
+        else => error.Unexpected,
+    };
 }
 
 fn libcRead(fd: host.Fd, buffer: []u8) ReadError!usize {
-    while (true) {
-        const rc = std.c.read(@intCast(fd.raw()), buffer.ptr, buffer.len);
-        switch (std.c.errno(rc)) {
-            .SUCCESS => return @intCast(rc),
-            .INTR => continue,
-            .AGAIN => return error.WouldBlock,
-            .IO => return error.InputOutput,
-            .NOBUFS, .NOMEM => return error.SystemResources,
-            .BADF, .FAULT, .INVAL, .ISDIR => return error.Unexpected,
-            else => return error.Unexpected,
-        }
-    }
+    while (true) return libcReadOnce(fd, buffer) catch |err| switch (err) {
+        error.Interrupted => continue,
+        else => |read_err| return read_err,
+    };
+}
+
+fn libcReadOnce(fd: host.Fd, buffer: []u8) (ReadError || error{Interrupted})!usize {
+    const rc = std.c.read(@intCast(fd.raw()), buffer.ptr, buffer.len);
+    return switch (std.c.errno(rc)) {
+        .SUCCESS => @intCast(rc),
+        .INTR => error.Interrupted,
+        .AGAIN => error.WouldBlock,
+        .IO => error.InputOutput,
+        .NOBUFS, .NOMEM => error.SystemResources,
+        else => error.Unexpected,
+    };
 }
 
 fn linuxWrite(fd: host.Fd, bytes: []const u8) WriteError!usize {
