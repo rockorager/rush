@@ -18,11 +18,6 @@ const ChildSignalFd = struct {
     var pending: std.atomic.Value(bool) = .init(false);
 };
 
-const InterruptSignalFd = struct {
-    var value: std.atomic.Value(std.posix.fd_t) = .init(invalid_fd);
-    var pending: std.atomic.Value(bool) = .init(false);
-};
-
 pub const Pipe = struct {
     read: std.Io.File,
     write: std.Io.File,
@@ -160,68 +155,6 @@ fn childSignalHandler(_: std.posix.SIG) callconv(.c) void {
     if (fd == invalid_fd) return;
     if (ChildSignalFd.pending.swap(true, .acq_rel)) return;
     _ = std.c.write(fd, "c", 1);
-}
-
-pub const InterruptSource = struct {
-    pipe: ?Pipe,
-    previous: ?std.posix.Sigaction,
-
-    pub fn init(io: std.Io) !InterruptSource {
-        var pipe = try makePipe(io);
-        errdefer pipe.close(io);
-        try setNonBlocking(pipe.read.handle);
-        try setNonBlocking(pipe.write.handle);
-
-        InterruptSignalFd.pending.store(false, .release);
-        InterruptSignalFd.value.store(pipe.write.handle, .release);
-        const action: std.posix.Sigaction = .{
-            .handler = .{ .handler = interruptSignalHandler },
-            .mask = std.posix.sigemptyset(),
-            .flags = 0,
-        };
-        var previous: std.posix.Sigaction = undefined;
-        std.posix.sigaction(.INT, &action, &previous);
-        return .{ .pipe = pipe, .previous = previous };
-    }
-
-    pub fn readFd(self: InterruptSource) std.posix.fd_t {
-        return self.pipe.?.read.handle;
-    }
-
-    pub fn drain(self: *InterruptSource) void {
-        const pipe = self.pipe orelse return;
-        drainPendingSignalPipe(pipe.read.handle, &InterruptSignalFd.pending);
-    }
-
-    pub fn deinit(self: *InterruptSource, io: std.Io, loop: *event_loop.EventLoop) void {
-        InterruptSignalFd.value.store(invalid_fd, .release);
-        InterruptSignalFd.pending.store(false, .release);
-        if (self.previous) |previous| {
-            std.posix.sigaction(.INT, &previous, null);
-            self.previous = null;
-        }
-        if (self.pipe) |*pipe| {
-            loop.removeFd(pipe.read.handle) catch |err| log.debug("failed to remove interrupt signal fd: {}", .{err});
-            pipe.close(io);
-            self.pipe = null;
-        }
-        self.* = undefined;
-    }
-
-    pub fn deinitUnregistered(self: *InterruptSource, io: std.Io) void {
-        InterruptSignalFd.value.store(invalid_fd, .release);
-        InterruptSignalFd.pending.store(false, .release);
-        if (self.previous) |previous| std.posix.sigaction(.INT, &previous, null);
-        if (self.pipe) |*pipe| pipe.close(io);
-        self.* = undefined;
-    }
-};
-
-fn interruptSignalHandler(_: std.posix.SIG) callconv(.c) void {
-    const fd = InterruptSignalFd.value.load(.acquire);
-    if (fd == invalid_fd) return;
-    if (InterruptSignalFd.pending.swap(true, .acq_rel)) return;
-    _ = std.c.write(fd, "i", 1);
 }
 
 fn drainPendingSignalPipe(fd: std.posix.fd_t, pending: *std.atomic.Value(bool)) void {
@@ -372,37 +305,4 @@ test "child signal source reports SIGCHLD through event loop" {
     try std.testing.expectEqual(@as(usize, 1), ready.len);
     try std.testing.expectEqual(event_loop.Source.child_signal, ready[0].source);
     source.drain();
-}
-
-test "interrupt signal source reports SIGINT through event loop" {
-    var source = try InterruptSource.init(std.testing.io);
-    var loop = try event_loop.EventLoop.init();
-    defer loop.deinit();
-    defer source.deinit(std.testing.io, &loop);
-    try loop.addReadFd(source.readFd(), .interrupt_signal);
-
-    interruptSignalHandler(.INT);
-
-    var events: [4]event_loop.Event = undefined;
-    const ready = try loop.waitTimeout(&events, 1000);
-    try std.testing.expectEqual(@as(usize, 1), ready.len);
-    try std.testing.expectEqual(event_loop.Source.interrupt_signal, ready[0].source);
-    source.drain();
-}
-
-test "interrupt signal source coalesces repeated pending signals" {
-    var source = try InterruptSource.init(std.testing.io);
-    defer source.deinitUnregistered(std.testing.io);
-
-    interruptSignalHandler(.INT);
-    interruptSignalHandler(.INT);
-
-    var buffer: [8]u8 = undefined;
-    const first = try rawRead(source.readFd(), &buffer);
-    try std.testing.expectEqual(@as(usize, 1), first);
-
-    InterruptSignalFd.pending.store(false, .release);
-    interruptSignalHandler(.INT);
-    const second = try rawRead(source.readFd(), &buffer);
-    try std.testing.expectEqual(@as(usize, 1), second);
 }

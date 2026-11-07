@@ -56,6 +56,18 @@ pub fn runExitTrap(shell: anytype, status: result.ExitStatus) EvalError!result.E
     return if (pending.flow != .normal) pending.status else status;
 }
 
+/// Runs every signal trap that is pending, as at a command boundary, for a
+/// caller that waits for input outside evaluation. Stops early when a trap
+/// leaves with a control flow such as `exit`.
+pub fn runPendingTraps(shell: anytype) EvalError!result.EvalResult {
+    if (shell.state.running_signal_trap) return .{};
+    while (true) {
+        const evaluated = try runPendingTrapCheckpoint(shell);
+        if (evaluated.flow != .normal) return evaluated;
+        if (shell.state.pending_traps.items.len == 0) return evaluated;
+    }
+}
+
 fn runPendingTrapCheckpoint(shell: anytype) EvalError!result.EvalResult {
     if (shell.state.running_signal_trap) return .{};
     if (shell.state.interactive_signal_defaults and shell.state.getSignalTrap("INT") == null)

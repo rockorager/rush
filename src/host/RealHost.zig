@@ -51,6 +51,9 @@ extern "c" fn strftime(
 ) usize;
 
 var pending_signal_bits: std.atomic.Value(u64) = .init(0);
+/// Nonblocking pipe write end that trap handlers poke so an event loop waiting
+/// outside evaluation (the line editor) notices pending traps; -1 when unset.
+var signal_wake_fd: std.atomic.Value(i32) = .init(-1);
 
 pub const ReadError = host.ReadError;
 
@@ -381,6 +384,7 @@ pub fn forkProcess(self: RealHost, options: host.ForkOptions) ForkError!host.For
         else => @compileError("unsupported host OS"),
     };
     if (forked == .child) {
+        signal_wake_fd.store(-1, .seq_cst);
         applyDefaultSignals(options.default_signals) catch self.exit(127);
         applyIgnoredSignals(options.ignored_signals) catch self.exit(127);
     }
@@ -490,6 +494,27 @@ test "signal ignore queries handle immutable defaults and mutable dispositions" 
     try std.testing.expect(!real_host.isSignalIgnored(usr1));
 }
 
+test "trapped signals wake the registered wake fd and stay pending" {
+    const usr1: u8 = @intFromEnum(std.posix.SIG.USR1);
+    var previous_action: std.posix.Sigaction = undefined;
+    std.posix.sigaction(.USR1, null, &previous_action);
+    defer std.posix.sigaction(.USR1, &previous_action, null);
+
+    const wake = try real_host.pipe();
+    defer real_host.close(wake.read) catch {};
+    defer real_host.close(wake.write) catch {};
+    real_host.setSignalWakeFd(wake.write);
+    defer real_host.setSignalWakeFd(null);
+
+    try real_host.installSignalTrap(usr1);
+    try std.posix.raise(.USR1);
+
+    var byte: [1]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 1), try real_host.read(wake.read, &byte));
+    try std.testing.expect(real_host.consumePendingSignal(usr1));
+    try std.testing.expect(!real_host.consumePendingSignal(usr1));
+}
+
 pub fn setSignalIgnored(_: RealHost, signal: u8) SignalDispositionError!void {
     setSignalAction(signal, std.posix.SIG.IGN) catch return error.InvalidSignal;
 }
@@ -546,6 +571,24 @@ fn trapSignalHandler(signal: std.posix.SIG) callconv(.c) void {
     if (number >= 64) return;
     const mask = @as(u64, 1) << @intCast(number);
     _ = pending_signal_bits.fetchOr(mask, .seq_cst);
+    const wake_fd = signal_wake_fd.load(.seq_cst);
+    if (wake_fd < 0) return;
+    // A full pipe already guarantees a wakeup, so the result is ignored.
+    switch (builtin.os.tag) {
+        .linux => _ = std.os.linux.write(wake_fd, "s", 1),
+        else => {
+            const saved_errno = std.c._errno().*;
+            _ = std.c.write(wake_fd, "s", 1);
+            std.c._errno().* = saved_errno;
+        },
+    }
+}
+
+/// Makes trap handlers write a byte to `fd`, a nonblocking pipe write end, so
+/// a caller waiting in its own event loop can run pending traps. Pass null
+/// before closing the pipe. Forked children start with no wake fd.
+pub fn setSignalWakeFd(_: RealHost, fd: ?host.Fd) void {
+    signal_wake_fd.store(if (fd) |value| value.raw() else -1, .seq_cst);
 }
 
 fn peekPendingSignal() ?u8 {

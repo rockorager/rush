@@ -47,7 +47,6 @@ pub const Pipe = signal.Pipe;
 pub const makePipe = signal.makePipe;
 const ResizeSignalSource = signal.ResizeSource;
 const ChildSignalSource = signal.ChildSource;
-const InterruptSignalSource = signal.InterruptSource;
 const rawRead = signal.rawRead;
 const rawWriteAll = signal.rawWriteAll;
 const setNonBlocking = signal.setNonBlocking;
@@ -136,6 +135,8 @@ pub const HookResult = struct {
     output: []const u8,
     refresh_prompt: bool = true,
     stop: bool = false,
+    /// Discard the line being edited, as Ctrl-C does.
+    cancel_line: bool = false,
 };
 
 pub const ReadLineResult = union(enum) {
@@ -156,7 +157,6 @@ pub const TerminalSession = struct {
     trap_signal: Pipe,
     resize: ResizeSignalSource,
     child_signal: ChildSignalSource,
-    interrupt_signal: InterruptSignalSource,
     loop: event_loop.EventLoop,
     terminal_parser: TerminalParser,
     renderer: line_editor.FrameRenderer = .{},
@@ -184,8 +184,6 @@ pub const TerminalSession = struct {
         errdefer resize.deinitUnregistered(io);
         var child_signal = try ChildSignalSource.init(io);
         errdefer child_signal.deinitUnregistered(io);
-        var interrupt_signal = try InterruptSignalSource.init(io);
-        errdefer interrupt_signal.deinitUnregistered(io);
         var loop = try event_loop.EventLoop.init();
         errdefer loop.deinit();
         try loop.addReadFd(tty.fd.handle, .tty_input);
@@ -193,7 +191,6 @@ pub const TerminalSession = struct {
         try loop.addReadFd(trap_signal.read.handle, .trap_signal);
         try loop.addReadFd(resize.readFd(), .resize);
         try loop.addReadFd(child_signal.readFd(), .child_signal);
-        try loop.addReadFd(interrupt_signal.readFd(), .interrupt_signal);
 
         const winsize = tty.getWinsize() catch vaxis.Winsize{ .rows = 24, .cols = 80, .x_pixel = 0, .y_pixel = 0 };
 
@@ -206,7 +203,6 @@ pub const TerminalSession = struct {
             .trap_signal = trap_signal,
             .resize = resize,
             .child_signal = child_signal,
-            .interrupt_signal = interrupt_signal,
             .loop = loop,
             .terminal_parser = .init(allocator),
             .winsize = winsize,
@@ -219,7 +215,6 @@ pub const TerminalSession = struct {
         self.events.deinit(self.allocator);
         self.terminal_parser.deinit();
         self.renderer.deinit(self.allocator);
-        self.interrupt_signal.deinit(self.io, &self.loop);
         self.child_signal.deinit(self.io, &self.loop);
         self.resize.deinit(self.io, &self.loop);
         self.loop.deinit();
@@ -405,6 +400,8 @@ pub const TerminalSession = struct {
         return self.tty.fd.handle;
     }
 
+    /// Nonblocking write end that wakes `readLine` to run its hooks; the shell
+    /// host writes to it when a trapped signal arrives.
     pub fn trapSignalWakeFd(self: TerminalSession) std.posix.fd_t {
         return self.trap_signal.write.handle;
     }
@@ -515,10 +512,6 @@ pub const TerminalSession = struct {
                         .child_signal => {
                             self.processChildSignal();
                             hook_ready = true;
-                        },
-                        .interrupt_signal => {
-                            self.processInterruptSignal();
-                            try session.cancel();
                         },
                         .trap_signal => {
                             self.processTrapSignal();
@@ -872,6 +865,7 @@ pub const TerminalSession = struct {
             render_needed.* = true;
             session.invalidatePrompt();
         }
+        if (hook_result.cancel_line) try session.cancel();
         return hook_result.stop;
     }
 
@@ -995,10 +989,6 @@ pub const TerminalSession = struct {
         var buffer: [64]u8 = undefined;
         // ziglint-ignore: Z026 best-effort signal-pipe drain
         _ = rawRead(self.trap_signal.read.handle, &buffer) catch {};
-    }
-
-    fn processInterruptSignal(self: *TerminalSession) void {
-        self.interrupt_signal.drain();
     }
 };
 

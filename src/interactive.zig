@@ -6,6 +6,7 @@ const command_status = @import("interactive/command_status.zig");
 const completion = @import("completion.zig");
 const editor = @import("editor.zig");
 const extensions = @import("extensions.zig");
+const file_util = @import("file_util.zig");
 const function_autoload = @import("function_autoload.zig");
 const history = @import("history.zig");
 const host = @import("host.zig");
@@ -198,6 +199,10 @@ const InteractiveSession = struct {
         defer deinitTerminalAfterRestore(self, &terminal);
         self.terminal = &terminal;
         defer self.terminal = null;
+        // Trapped signals that arrive while the editor waits wake it so their
+        // traps run at the prompt instead of after the next command.
+        self.sh.host.setSignalWakeFd(@enumFromInt(terminal.trapSignalWakeFd()));
+        defer self.sh.host.setSignalWakeFd(null);
         self.sh.setDirectoryChangeCallback(self, onDirectoryChange);
         self.sh.setForegroundCommandCallback(self, onForegroundCommand);
         self.restore_terminal_pgrp = enableJobControl(self.sh, @enumFromInt(terminal.ttyFd()));
@@ -226,6 +231,56 @@ const InteractiveSession = struct {
                 },
             }
         }
+    }
+
+    /// Consumes a pending SIGINT that the shell has no trap for; at the prompt
+    /// it cancels the line, as Ctrl-C does.
+    fn takePromptInterrupt(self: *InteractiveSession) bool {
+        if (self.sh.state.getSignalTrap("INT") != null) return false;
+        return self.sh.host.consumePendingSignal(shell.builtin.signalNumber("INT").?);
+    }
+
+    /// Runs traps for signals that arrived while the editor waited, capturing
+    /// their output for the editor to print above the prompt. Returns the exit
+    /// status when a trap exits the shell.
+    fn runPromptTraps(
+        self: *InteractiveSession,
+        allocator: std.mem.Allocator,
+        output: *std.ArrayList(u8),
+    ) !?shell.result.ExitStatus {
+        if (self.sh.state.signal_traps.count() == 0 and self.sh.state.pending_traps.items.len == 0) return null;
+        const sh_host = &self.sh.host;
+        var capture = try file_util.AnonymousFile.init(allocator, self.io, sh_host, "rush-trap");
+        defer capture.deinit(sh_host);
+        const saved_stdout = try sh_host.duplicateAtLeast(.stdout, 10);
+        // ziglint-ignore: Z026 closing a saved descriptor after restoring it
+        defer sh_host.close(saved_stdout) catch {};
+        const saved_stderr = try sh_host.duplicateAtLeast(.stderr, 10);
+        // ziglint-ignore: Z026 closing a saved descriptor after restoring it
+        defer sh_host.close(saved_stderr) catch {};
+
+        const evaluated = evaluated: {
+            defer {
+                // ziglint-ignore: Z026 the saved descriptors are valid; restoring them cannot fail
+                sh_host.duplicateTo(saved_stdout, .stdout) catch {};
+                // ziglint-ignore: Z026 the saved descriptors are valid; restoring them cannot fail
+                sh_host.duplicateTo(saved_stderr, .stderr) catch {};
+            }
+            try sh_host.duplicateTo(capture.fd, .stdout);
+            try sh_host.duplicateTo(capture.fd, .stderr);
+            break :evaluated shell.eval.runPendingTraps(self.sh) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    try output.print(allocator, "rush: trap failed: {s}\n", .{@errorName(err)});
+                    break :evaluated shell.result.EvalResult{ .status = 2 };
+                },
+            };
+        };
+        try capture.readAll(allocator, sh_host, output);
+        return switch (evaluated.flow) {
+            .exit, .fatal => evaluated.status,
+            else => null,
+        };
     }
 
     fn restoreTerminalProcessGroup(self: *InteractiveSession) void {
@@ -318,6 +373,9 @@ const InteractiveSession = struct {
         // Collect prompt async refreshes that completed while a foreground
         // command was running so the first render shows fresh output.
         self.sh.extensions.pumpPromptAsync();
+        // A SIGINT the finished command did not consume must not cancel the
+        // new line.
+        _ = self.takePromptInterrupt();
 
         self.clearBashPromptCache();
         if (try self.runBashPromptCommand()) |status| {
@@ -922,6 +980,12 @@ fn runInteractiveHooks(context: *anyopaque, allocator: std.mem.Allocator, io: st
     // A child signal may come from an exited prompt async child; reap it.
     session.sh.extensions.pumpPromptAsync();
     session.sh.extensions.expirePromptAsync();
+    const interrupted = session.takePromptInterrupt();
+    const trap_exit_status = try session.runPromptTraps(allocator, &output);
+    if (trap_exit_status) |status| {
+        pendingEventExit(session, status);
+        return .{ .output = try output.toOwnedSlice(allocator), .stop = true };
+    }
     const prompt_async_event_ran = try session.dispatchPromptAsyncLifecycleEvents(allocator);
     var dispatched = try session.events.runDueTimers(allocator, io);
     defer dispatched.deinit(allocator);
@@ -931,6 +995,7 @@ fn runInteractiveHooks(context: *anyopaque, allocator: std.mem.Allocator, io: st
         .output = try output.toOwnedSlice(allocator),
         .refresh_prompt = prompt_async_event_ran or dispatched.ran_count != 0 or dispatched.output.len != 0,
         .stop = dispatched.exit_status != null,
+        .cancel_line = interrupted,
     };
 }
 
