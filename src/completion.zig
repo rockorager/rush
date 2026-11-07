@@ -765,6 +765,9 @@ fn appendFunctionProvider(
     defer sh.state.popVariableSnapshot();
 
     if (companion_path) |path| try sourceCompanionIfNeeded(allocator, io, sh, path);
+    // The manifest names a shell function; it is never evaluated as source text.
+    if (!isProviderFunctionName(function_name)) return;
+    if (sh.state.getFunction(function_name) == null and !try sh.tryAutoloadFunction(function_name)) return;
 
     const parsed_options = try parsedOptionsForProvider(allocator, analyzed, root_command);
     defer allocator.free(parsed_options);
@@ -816,6 +819,14 @@ fn appendFunctionProvider(
     const candidates = try provider_context.takeCandidates();
     defer editor_completion.freeCandidates(allocator, candidates);
     for (candidates) |candidate| try builder.append(allocator, candidate);
+}
+
+fn isProviderFunctionName(name: []const u8) bool {
+    if (name.len == 0 or std.ascii.isDigit(name[0])) return false;
+    for (name) |byte| {
+        if (!std.ascii.isAlphanumeric(byte) and byte != '_') return false;
+    }
+    return true;
 }
 
 fn appendCandidateChannel(
@@ -1001,7 +1012,6 @@ fn providerValue(providers: ?std.json.Value, ref: std.json.Value) ?std.json.Valu
 fn findCompletionFile(allocator: std.mem.Allocator, sh: anytype, root: []const u8, extension: []const u8) !?[]const u8 {
     const file_name = try std.fmt.allocPrint(allocator, "{s}{s}", .{ root, extension });
     defer allocator.free(file_name);
-    if (try findCompletionFileUnder(allocator, sh, "share", file_name)) |path| return path;
     if (shellValue(sh, "XDG_CONFIG_HOME")) |xdg_config_home| {
         if (xdg_config_home.len != 0) {
             if (try findCompletionFileUnder(allocator, sh, xdg_config_home, file_name)) |path| return path;
@@ -1446,9 +1456,16 @@ test "completion recognizes reserved words as command prefixes" {
     try std.testing.expectEqualStrings("tr", analyzed.prefix);
 }
 
+/// Unit tests run from the repository root and use its bundled manifests,
+/// which completion never searches relative to the working directory itself.
+fn useRepositoryCompletions(sh: anytype) !void {
+    try sh.state.putVariable(.{ .name = "XDG_DATA_DIRS", .value = "share" });
+}
+
 test "completion loads manifest subcommands" {
     var sh = shell.ShellWithBuiltins(host.RealHost, extensions.rush.registry).init(std.testing.allocator, .{}, .{});
     defer sh.deinit();
+    try useRepositoryCompletions(&sh);
 
     const application = try complete(&sh, std.testing.allocator, std.testing.io, "zig ", "zig ".len);
     defer application.deinit(std.testing.allocator);
@@ -1656,6 +1673,7 @@ test "completion companion assignments do not mutate shell variables" {
 test "yay target providers retain candidates from package command output" {
     var sh = shell.ShellWithBuiltins(host.RealHost, extensions.rush.registry).init(std.testing.allocator, .{}, .{});
     defer sh.deinit();
+    try useRepositoryCompletions(&sh);
 
     const fixture: shell.source.Source = .{
         .id = 0,
@@ -1700,6 +1718,7 @@ test "yay target providers retain candidates from package command output" {
 test "zmx attach provider retains candidates from session list output" {
     var sh = shell.ShellWithBuiltins(host.RealHost, extensions.rush.registry).init(std.testing.allocator, .{}, .{});
     defer sh.deinit();
+    try useRepositoryCompletions(&sh);
 
     const fixture: shell.source.Source = .{
         .id = 0,
@@ -1743,6 +1762,7 @@ test "zmx attach provider retains candidates from session list output" {
 test "completion includes dynamic option provider candidates" {
     var sh = shell.ShellWithBuiltins(host.RealHost, extensions.rush.registry).init(std.testing.allocator, .{}, .{});
     defer sh.deinit();
+    try useRepositoryCompletions(&sh);
     try sh.state.putVariable(.{
         .name = "rush_completion_prefix",
         .value = "original",
@@ -1776,6 +1796,7 @@ test "completion includes dynamic option provider candidates" {
 test "completion provides values attached to a long option" {
     var sh = shell.ShellWithBuiltins(host.RealHost, extensions.rush.registry).init(std.testing.allocator, .{}, .{});
     defer sh.deinit();
+    try useRepositoryCompletions(&sh);
 
     const source = "zig build --color=o";
     var application = try complete(&sh, std.testing.allocator, std.testing.io, source, source.len);
@@ -1928,6 +1949,7 @@ test "z completion uses Rush frecent directory history" {
     var history_service = history.InteractiveHistoryService.init(&command_history);
     var sh = shell.ShellWithBuiltins(host.RealHost, extensions.rush.registry).init(std.testing.allocator, .{}, .{});
     defer sh.deinit();
+    try useRepositoryCompletions(&sh);
     sh.setCommandHistory(history_service.commandHistory(std.testing.io));
     try sh.state.putVariable(.{ .name = "PWD", .value = "/work/current" });
     try sh.state.putVariable(.{ .name = "HOME", .value = "/work" });
