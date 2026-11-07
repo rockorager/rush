@@ -393,7 +393,8 @@ pub fn forkProcess(self: RealHost, options: host.ForkOptions) ForkError!host.For
 
 pub fn exit(_: RealHost, status: u8) noreturn {
     switch (builtin.os.tag) {
-        .linux => std.os.linux.exit(status),
+        // exit_group ends every thread, not only the calling one.
+        .linux => std.os.linux.exit_group(status),
         .macos, .freebsd, .openbsd, .netbsd => std.c._exit(status),
         else => @compileError("unsupported host OS"),
     }
