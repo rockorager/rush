@@ -39,6 +39,8 @@
 
   <p>Cache entries are keyed by the current directory plus <var>key</var>. Duplicate refreshes for the same cache entry are coalesced. Standard error from hidden refreshes is suppressed, and refreshes do not change the interactive shell's last status.</p>
 
+  <p>A hidden refresh runs in its own process group with standard input from <code>/dev/null</code>, so it cannot read the terminal. A refresh still running after 30 seconds is killed together with the processes it started; Rush keeps the old cached value and retries once the TTL has passed.</p>
+
   <p>Colors accept the same values as Rush editor styles: <code>default</code>, ANSI color names, bright color names, 256-color indexes, and <code>#rrggbb</code> truecolor values.</p>
 
   <h2 id="exit-status"><a href="#exit-status">EXIT STATUS</a></h2>

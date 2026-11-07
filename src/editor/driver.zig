@@ -661,6 +661,9 @@ pub const TerminalSession = struct {
                                     ),
                                 });
                             }
+                            // Rendering the prompt may have started prompt work
+                            // with its own deadline.
+                            next_hook_interval_ms = try nextHookIntervalDeadlineMs(read_options, self.io);
                         }
                         if (session.takeClearScreenRequest()) {
                             if (pending_clear_screen_deadline_ms == null) {

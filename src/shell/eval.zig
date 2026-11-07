@@ -185,6 +185,36 @@ fn redirectStdinFromNull(shell: anytype) !void {
     }
 }
 
+/// Forks a child that runs shell code in the background, detached from the
+/// terminal. The child gets its own process group, `/dev/null` as stdin, the
+/// default dispositions a subshell would get plus `extra_default_signals`, no
+/// caught traps, and no job control; it exits with status 127 if that setup
+/// fails. The parent's state is unchanged.
+pub fn forkDetachedShell(shell: anytype, extra_default_signals: []const u8) !host_mod.ForkResult {
+    const scratch = try shell.beginScratchScope();
+    defer scratch.end();
+    const default_signals = try std.mem.concat(
+        shell.scratchAllocator(),
+        u8,
+        &.{ try childDefaultSignals(shell), extra_default_signals },
+    );
+    switch (try shell.host.forkProcess(.{ .default_signals = default_signals })) {
+        .parent => |pid| {
+            try setParentProcessGroup(shell, pid, pid);
+            return .{ .parent = pid };
+        },
+        .child => {
+            setChildProcessGroup(shell, 0) catch shell.host.exit(127);
+            redirectStdinFromNull(shell) catch shell.host.exit(127);
+            resetCaughtSignalTrapsForChild(shell);
+            shell.state.job_control_suppressed = true;
+            shell.state.options.monitor = false;
+            shell.state.shell_pid = null;
+            return .child;
+        },
+    }
+}
+
 fn resetCaughtSignalTrapsForChild(shell: anytype) void {
     // Host fork installed child dispositions atomically with signal unmasking.
     // Retain caught actions only for the subshell's initial trap listing.

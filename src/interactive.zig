@@ -918,6 +918,9 @@ fn runInteractiveHooks(context: *anyopaque, allocator: std.mem.Allocator, io: st
     defer allocator.free(job_output);
     try output.appendSlice(allocator, job_output);
 
+    // A child signal may come from an exited prompt async child; reap it.
+    session.sh.extensions.pumpPromptAsync();
+    session.sh.extensions.expirePromptAsync();
     const prompt_async_event_ran = try session.dispatchPromptAsyncLifecycleEvents(allocator);
     var dispatched = try session.events.runDueTimers(allocator, io);
     defer dispatched.deinit(allocator);
@@ -933,7 +936,11 @@ fn runInteractiveHooks(context: *anyopaque, allocator: std.mem.Allocator, io: st
 // ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
 fn nextInteractiveHookIntervalMs(context: *anyopaque, io: std.Io) !?u64 {
     const session: *InteractiveSession = @ptrCast(@alignCast(context));
-    return session.events.nextTimerDelayMs(io);
+    const timer_ms = session.events.nextTimerDelayMs(io);
+    const prompt_async_ms = session.sh.extensions.nextPromptAsyncDeadlineMs();
+    if (timer_ms == null) return prompt_async_ms;
+    if (prompt_async_ms == null) return timer_ms;
+    return @min(timer_ms.?, prompt_async_ms.?);
 }
 
 // ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
