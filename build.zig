@@ -712,7 +712,7 @@ fn linkSqlite(
     }
 
     const sqlite = b.dependency("sqlite", .{});
-    // Built as a separate static library so `zig build fuzz --fuzz` does not
+    // Built as a separate static library so `zig build test --fuzz` does not
     // instrument the C code; clang's sancov emits callbacks (e.g.
     // __sanitizer_cov_trace_switch) that Zig's fuzzer runtime does not provide.
     const lib = b.addLibrary(.{

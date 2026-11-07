@@ -1,6 +1,6 @@
 ---
 name: debugging-conformance
-description: "Investigates Rush shell conformance mismatches. Use when comparing Rush POSIX behavior against dash, Bash POSIX mode, and zsh sh emulation, or when fixing conformance failures."
+description: "Investigates Rush shell conformance mismatches. Use when comparing Rush POSIX behavior against dash, Bash POSIX mode, and yash POSIX mode, or when fixing conformance failures."
 ---
 
 # Debugging Conformance
@@ -23,7 +23,7 @@ For POSIX comparisons, use exactly these targets:
 ./zig-out/bin/rush --posix -c 'SCRIPT'
 dash -c 'SCRIPT'
 bash --posix -c 'SCRIPT'
-zsh --emulate sh -f -c 'SCRIPT'
+yash -o posixlycorrect -c 'SCRIPT'
 ```
 
 For multi-line scripts, write a temporary file and run:
@@ -37,13 +37,13 @@ SH
 ./zig-out/bin/rush --posix "$tmp_script"
 dash "$tmp_script"
 bash --posix "$tmp_script"
-zsh --emulate sh -f "$tmp_script"
+yash -o posixlycorrect "$tmp_script"
 
 rm -f "$tmp_script"
 ```
 
-Do not substitute macOS `/bin/sh`, macOS `/bin/bash` 3.2, default zsh, BusyBox
-ash, ksh, yash, or another shell for the primary comparison set unless the user
+Do not substitute macOS `/bin/sh`, macOS `/bin/bash` 3.2, zsh, BusyBox
+ash, ksh, or another shell for the primary comparison set unless the user
 explicitly asks for a platform-specific check.
 
 ## Default / Bash-Mode Behavior
@@ -119,7 +119,7 @@ zig build
 zig build conformance -- --mode posix tests/posix/FILE.zon
 zig build conformance -- --shell dash --mode posix tests/posix/FILE.zon
 zig build conformance -- --shell bash --shell-arg --posix --mode posix tests/posix/FILE.zon
-zig build conformance -- --shell zsh --shell-arg --emulate --shell-arg sh --shell-arg -f --mode posix tests/posix/FILE.zon
+zig build conformance -- --shell yash --mode posix tests/posix/FILE.zon
 zig build conformance -- --mode bash tests/bash/FILE.zon
 ```
 
