@@ -2109,7 +2109,9 @@ fn changeDirectoryBuiltin(
     allow_suggestion: bool,
 ) EvalError!result.EvalResult {
     const allocator = shell.scratchAllocator();
-    const old_pwd = try currentLogicalDir(shell);
+    // PWD's storage is freed when PWD is reassigned below, but the old value
+    // is still needed for the directory-change notification.
+    const old_pwd = try allocator.dupe(u8, try currentLogicalDir(shell));
     var target = initial_target;
     // POSIX cd -L canonicalizes curpath, then chdir()s that path. Using the
     // original operand would make `cd ..` follow the physical parent of a
@@ -9416,6 +9418,8 @@ test "z builtin jumps through directory history" {
         .list = JumpContext.list,
         .jump = JumpContext.jump,
     };
+    // The old directory comes from PWD, whose storage the change replaces.
+    try shell.state.putVariable(.{ .name = "PWD", .value = "/old" });
 
     try std.testing.expectEqual(@as(result.ExitStatus, 0), (try evalZBuiltin(&shell, &.{ "z", "proj" })).status);
     try std.testing.expectEqualStrings("proj", jump_context.seen_terms[0]);
