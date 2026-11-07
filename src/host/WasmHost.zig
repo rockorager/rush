@@ -322,8 +322,10 @@ pub fn spawn(_: *const WasmHost, request: host.SpawnRequest) SpawnError!host.Spa
     return error.SystemResources;
 }
 
-pub fn exec(_: *const WasmHost, request: host.SpawnRequest) SpawnError!void {
+pub fn exec(_: *const WasmHost, request: host.SpawnRequest) host.ExecError!noreturn {
     request.validate();
+    // No external programs exist in the embedded environment.
+    return error.FileNotFound;
 }
 
 pub fn wait(_: *const WasmHost, _: host.Pid) WaitError!host.WaitStatus {

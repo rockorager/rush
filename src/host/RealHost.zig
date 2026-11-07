@@ -192,6 +192,8 @@ pub const SpawnError = error{
     Unexpected,
 };
 
+pub const ExecError = host.ExecError;
+
 pub const WaitError = error{
     Unexpected,
 };
@@ -685,12 +687,77 @@ pub fn spawn(_: RealHost, request: host.SpawnRequest) SpawnError!host.SpawnResul
     };
 }
 
-pub fn exec(_: RealHost, request: host.SpawnRequest) SpawnError!void {
+/// Replaces the current process image. When the image cannot be replaced,
+/// the signal dispositions and process group changed for the new image are
+/// restored before returning, so the current shell keeps running unchanged.
+/// File descriptor actions are not undone; only a child process that exits on
+/// failure may request them.
+pub fn exec(self: RealHost, request: host.SpawnRequest) ExecError!noreturn {
     request.validate();
+    var saved_signals: SavedSignalActions = .{};
+    saved_signals.capture(request.default_signals);
+    saved_signals.capture(request.ignored_signals);
+    defer saved_signals.restore();
+    const previous_group = self.currentProcessGroup();
+    // ziglint-ignore: Z026 the shell keeps its new group if the old one has vanished
+    defer if (request.process_group != null) self.setProcessGroup(0, previous_group) catch {};
     return switch (builtin.os.tag) {
         .linux => linuxExec(request),
         .macos, .freebsd, .openbsd, .netbsd => libcExec(request),
         else => @compileError("unsupported host OS"),
+    };
+}
+
+test "failed exec leaves the current process dispositions unchanged" {
+    const usr1: u8 = @intFromEnum(std.posix.SIG.USR1);
+    var previous_action: std.posix.Sigaction = undefined;
+    std.posix.sigaction(.USR1, null, &previous_action);
+    defer std.posix.sigaction(.USR1, &previous_action, null);
+    try real_host.setSignalIgnored(usr1);
+
+    const argv = [_:null]?[*:0]const u8{"rush-missing-executable"};
+    const envp: [0:null]?[*:0]const u8 = .{};
+    const request: host.SpawnRequest = .{
+        .path = "/dev/null/rush-missing-executable",
+        .argv = &argv,
+        .envp = &envp,
+        .default_signals = &.{usr1},
+    };
+    try std.testing.expectError(error.FileNotFound, real_host.exec(request));
+    try std.testing.expect(real_host.isSignalIgnored(usr1));
+}
+
+const SavedSignalActions = struct {
+    signals: [128]u8 = undefined,
+    actions: [128]std.posix.Sigaction = undefined,
+    count: usize = 0,
+
+    fn capture(self: *SavedSignalActions, signals: []const u8) void {
+        for (signals) |signal| {
+            if (signal == @intFromEnum(std.posix.SIG.KILL) or signal == @intFromEnum(std.posix.SIG.STOP)) continue;
+            std.debug.assert(self.count < self.signals.len);
+            self.signals[self.count] = signal;
+            std.posix.sigaction(@enumFromInt(signal), null, &self.actions[self.count]);
+            self.count += 1;
+        }
+    }
+
+    /// Restores in reverse so a signal captured twice ends at its first state.
+    fn restore(self: *const SavedSignalActions) void {
+        var index = self.count;
+        while (index > 0) {
+            index -= 1;
+            std.posix.sigaction(@enumFromInt(self.signals[index]), &self.actions[index], null);
+        }
+    }
+};
+
+fn execErrorFromErrno(err: std.posix.E) ExecError {
+    return switch (err) {
+        .NOENT, .NOTDIR, .NAMETOOLONG, .LOOP => error.FileNotFound,
+        .ACCES, .PERM, .NOEXEC, .ISDIR, .TXTBSY => error.AccessDenied,
+        .NOMEM, .@"2BIG", .MFILE, .NFILE => error.SystemResources,
+        else => error.Unexpected,
     };
 }
 
@@ -1516,17 +1583,19 @@ test "Linux spawn returns waitable statuses for exec and fd-action failures" {
     try std.testing.expectEqualDeep(failure_status, try real_host.spawnAndWait(request));
 }
 
-fn linuxExec(request: host.SpawnRequest) SpawnError!void {
+fn linuxExec(request: host.SpawnRequest) ExecError {
     const linux = std.os.linux;
     if (request.process_group) |process_group| linuxSetProcessGroup(0, process_group) catch return error.Unexpected;
     applyDefaultSignals(request.default_signals) catch return error.Unexpected;
     applyIgnoredSignals(request.ignored_signals) catch return error.Unexpected;
     applyLinuxFdActions(request.fd_actions);
-    const exec_rc = linux.execve(request.path.ptr, request.argv.ptr, request.envp.ptr);
-    if (linux.errno(exec_rc) == .NOEXEC) {
-        if (request.fallback_argv) |argv| _ = linux.execve(default_shell_path.ptr, argv.ptr, request.envp.ptr);
+    const exec_errno = linux.errno(linux.execve(request.path.ptr, request.argv.ptr, request.envp.ptr));
+    if (exec_errno == .NOEXEC) {
+        if (request.fallback_argv) |argv| {
+            return execErrorFromErrno(linux.errno(linux.execve(default_shell_path.ptr, argv.ptr, request.envp.ptr)));
+        }
     }
-    return error.Unexpected;
+    return execErrorFromErrno(exec_errno);
 }
 
 fn linuxWait(pid: host.Pid) WaitError!host.WaitStatus {
@@ -1597,16 +1666,18 @@ fn libcSpawn(request: host.SpawnRequest) SpawnError!host.SpawnResult {
     return .{ .pid = pid };
 }
 
-fn libcExec(request: host.SpawnRequest) SpawnError!void {
+fn libcExec(request: host.SpawnRequest) ExecError {
     if (request.process_group) |process_group| libcSetProcessGroup(0, process_group) catch return error.Unexpected;
     applyDefaultSignals(request.default_signals) catch return error.Unexpected;
     applyIgnoredSignals(request.ignored_signals) catch return error.Unexpected;
     applyLibcFdActions(request.fd_actions);
-    const exec_rc = std.c.execve(request.path.ptr, request.argv.ptr, request.envp.ptr);
-    if (std.c.errno(exec_rc) == .NOEXEC) {
-        if (request.fallback_argv) |argv| _ = std.c.execve(default_shell_path.ptr, argv.ptr, request.envp.ptr);
+    const exec_errno = std.c.errno(std.c.execve(request.path.ptr, request.argv.ptr, request.envp.ptr));
+    if (exec_errno == .NOEXEC) {
+        if (request.fallback_argv) |argv| {
+            return execErrorFromErrno(std.c.errno(std.c.execve(default_shell_path.ptr, argv.ptr, request.envp.ptr)));
+        }
     }
-    return error.Unexpected;
+    return execErrorFromErrno(exec_errno);
 }
 
 const default_shell_path: [:0]const u8 = "/bin/sh";

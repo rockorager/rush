@@ -58,7 +58,7 @@ test "exec of an unavailable external command returns 127" {
     const src = "exec definitely-not-an-embedded-builtin";
     try std.testing.expectEqual(@as(u8, 127), c.rush_eval(instance, src.ptr, src.len));
     try std.testing.expectEqualStrings(
-        "",
+        "exec: definitely-not-an-embedded-builtin: not found\n",
         captured(c.rush_stderr_ptr(instance), c.rush_stderr_len(instance)),
     );
 }

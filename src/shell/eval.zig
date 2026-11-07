@@ -4543,8 +4543,22 @@ fn evalExecBuiltin(shell: anytype, args: []const []const u8, assignments: []cons
     const request = try makeExternalSpawnRequest(shell, args[1..], assignments, &.{});
     notifyForegroundCommand(shell, std.fs.path.basename(args[1]));
     defer notifyForegroundCommand(shell, null);
-    try shell.host.exec(request);
-    return .{ .status = 127 };
+    shell.host.exec(request) catch |err| {
+        const reason = switch (err) {
+            error.FileNotFound => "not found",
+            error.AccessDenied => "Permission denied",
+            else => "cannot execute",
+        };
+        const message = try std.fmt.allocPrint(shell.scratchAllocator(), "exec: {s}: {s}\n", .{ args[1], reason });
+        try shell.host.writeAll(.stderr, message);
+        // A failed exec is a special built-in error: a non-interactive shell exits.
+        const status = execFailureStatus(err);
+        return .{ .status = status, .flow = .{ .fatal = status } };
+    };
+}
+
+fn execFailureStatus(err: anyerror) result.ExitStatus {
+    return if (err == error.FileNotFound) 127 else 126;
 }
 
 const SavedVariable = struct {
@@ -8413,12 +8427,11 @@ fn evalExternalWithSearchPath(
     if (replace_process and shell.state.process_substitutions.items.len == 0 and
         shell.state.reap_process_substitutions.items.len == 0)
     {
-        shell.host.exec(request) catch {
+        shell.host.exec(request) catch |err| {
             restoreVariables(shell, saved);
             restored_assignments = true;
-            return .{ .status = 127 };
+            return .{ .status = execFailureStatus(err) };
         };
-        unreachable;
     }
     notifyForegroundCommand(shell, std.fs.path.basename(fields[0]));
     defer notifyForegroundCommand(shell, null);

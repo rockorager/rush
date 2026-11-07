@@ -230,6 +230,13 @@ pub const SpawnRequest = struct {
     }
 };
 
+pub const ExecError = error{
+    FileNotFound,
+    AccessDenied,
+    SystemResources,
+    Unexpected,
+};
+
 pub const SpawnResult = struct {
     pid: Pid,
 };
