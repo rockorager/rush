@@ -21,6 +21,11 @@ responsibility of the repository's configured CI.
   provider-specific boilerplate, or publishing instructions to them.
 - Let configured CI publish the release. Do not manually publish unless the
   user explicitly requests an exception.
+- `.github/workflows/release.yml` is that CI. On a `vX.Y.Z` tag it checks the
+  tag against both version declarations and the notes file, builds static
+  `rush-X.Y.Z-{x86_64,aarch64}-linux.tar.xz` tarballs laid out for a `/usr`
+  prefix, and publishes them with `SHA256SUMS` and the notes as the release
+  description.
 
 ## Safety rules
 
