@@ -47,10 +47,15 @@ pub const Arenas = struct {
         self.* = undefined;
     }
 
+    /// Memory each arena keeps for the next top-level command. One large
+    /// expansion would otherwise raise an interactive session's footprint for
+    /// good.
+    pub const retained_bytes_limit = 1024 * 1024;
+
     pub fn resetForTopLevelCommand(self: *Arenas) void {
-        for (self.scratch_scopes.items) |*scratch| scratch.resetRetainingCapacity();
+        for (self.scratch_scopes.items) |*scratch| scratch.resetRetainingLimit(retained_bytes_limit);
         self.scratch_depth = 0;
-        self.ast.resetRetainingCapacity();
+        _ = self.ast.arena.reset(.{ .retain_with_limit = retained_bytes_limit });
     }
 
     pub fn scratchAllocator(self: *Arenas) std.mem.Allocator {
@@ -100,13 +105,17 @@ pub const ScratchArena = struct {
     }
 
     pub fn deinit(self: *ScratchArena) void {
-        var current = self.chunks;
+        self.freeChunks(self.chunks);
+        self.* = undefined;
+    }
+
+    fn freeChunks(self: *ScratchArena, first: ?*Chunk) void {
+        var current = first;
         while (current) |chunk| {
             current = chunk.next;
             const allocation: [*]align(@alignOf(Chunk)) u8 = @ptrCast(chunk);
             self.parent_allocator.free(allocation[0 .. @sizeOf(Chunk) + chunk.bytes.len]);
         }
-        self.* = undefined;
     }
 
     pub fn allocator(self: *ScratchArena) std.mem.Allocator {
@@ -116,6 +125,22 @@ pub const ScratchArena = struct {
     pub fn resetRetainingCapacity(self: *ScratchArena) void {
         var current = self.chunks;
         while (current) |chunk| : (current = chunk.next) chunk.used = 0;
+        self.active = self.chunks;
+    }
+
+    /// Resets like `resetRetainingCapacity`, then frees the chunks past the
+    /// first ones whose usable bytes total at most `limit`.
+    pub fn resetRetainingLimit(self: *ScratchArena, limit: usize) void {
+        self.resetRetainingCapacity();
+        var retained: usize = 0;
+        var link: *?*Chunk = &self.chunks;
+        while (link.*) |chunk| {
+            if (retained + chunk.bytes.len > limit) break;
+            retained += chunk.bytes.len;
+            link = &chunk.next;
+        }
+        self.freeChunks(link.*);
+        link.* = null;
         self.active = self.chunks;
     }
 
@@ -258,6 +283,24 @@ test "scratch arena reuses retained chunks after reset" {
     const second = try allocator.alloc(u8, 32);
 
     try std.testing.expectEqual(first.ptr, second.ptr);
+}
+
+test "scratch arena trims retained chunks past the limit" {
+    var scratch = ScratchArena.init(std.testing.allocator);
+    defer scratch.deinit();
+    const allocator = scratch.allocator();
+
+    const small = try allocator.alloc(u8, 16);
+    const large = try allocator.alloc(u8, 64 * 1024);
+    try std.testing.expect(scratch.findChunk(small) != scratch.findChunk(large));
+
+    scratch.resetRetainingLimit(8 * 1024);
+    try std.testing.expect(scratch.chunks != null);
+    try std.testing.expectEqual(@as(?*ScratchArena.Chunk, null), scratch.chunks.?.next);
+    try std.testing.expect(scratch.chunks.?.bytes.len < 8 * 1024);
+
+    const reused = try allocator.alloc(u8, 16);
+    try std.testing.expectEqual(small.ptr, reused.ptr);
 }
 
 test "scratch arena honors allocation alignment" {
