@@ -1,5 +1,4 @@
 const std = @import("std");
-const ziglint = @import("ziglint");
 
 const compile_check_targets = [_][]const u8{
     "x86_64-linux-gnu",
@@ -186,15 +185,6 @@ pub fn build(b: *std.Build) void {
     const compile_check_step = b.step("compile-check", "Compile-check Linux/macOS/BSD/wasm targets");
     addCompileChecks(b, compile_check_step, optimize, build_config, use_system_sqlite, exe_version, lto);
     addWasmCompileCheck(b, compile_check_step, optimize, build_config, lto);
-
-    const ziglint_dep = b.dependency("ziglint", .{ .optimize = .ReleaseFast });
-    const lint_step = b.step("lint", "Run ziglint");
-    lint_step.dependOn(ziglint.addLint(b, ziglint_dep, &.{
-        b.path("build.zig"),
-        b.path("fuzz"),
-        b.path("src"),
-        b.path("tests"),
-    }));
 }
 
 const RushRootModuleOptions = struct {

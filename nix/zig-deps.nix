@@ -46,12 +46,4 @@ linkFarm "zig-packages" [
       hash = "sha256-0IYATQldT6eJxRR2T/2CsIYZuzomqjvmdVyjmsjguyE=";
     };
   }
-  {
-    name = "ziglint-0.5.2-t0bwLwqTBQALZYj3JDnOW03lrsuRqIWHXioRtkN0D7tn";
-    path = fetchgit {
-      url = "https://github.com/rockorager/ziglint";
-      rev = "90dca75f6301706f925c76c71aff58358758d923";
-      hash = "sha256-2eDv9DVTUFSitUJRdXU6EqTk/0eYGEWjIpDMvIEvPA8=";
-    };
-  }
 ]

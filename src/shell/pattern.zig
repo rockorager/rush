@@ -127,7 +127,6 @@ const AtomMatch = struct {
 };
 
 fn matchAtom(pattern: Pattern, pattern_index: usize, text: []const u8, text_index: usize) ?AtomMatch {
-    // ziglint-ignore: Z024 preserve existing readable expression shape; behavior-neutral extraction
     if (pattern.byteIsSpecial(pattern_index) and pattern.text[pattern_index] == '\\' and pattern_index + 1 < pattern.text.len) {
         if (text_index == text.len) return null;
         const pattern_len = utf8SequenceLength(pattern.text[pattern_index + 1 ..]);
@@ -285,7 +284,6 @@ fn bracketNamedExpressionMatches(named: BracketNamedExpression, character: []con
 
 fn characterClassMatches(name: []const u8, character: []const u8) bool {
     const class = std.meta.stringToEnum(CharacterClass, name) orelse return false;
-    // ziglint-ignore: Z011 deprecated API left unchanged to avoid semantic drift
     const codepoint = std.unicode.utf8Decode(character) catch return false;
     const category = uucode.get(.general_category, codepoint);
     return switch (class) {
@@ -314,7 +312,6 @@ fn characterClassMatches(name: []const u8, character: []const u8) bool {
             .separator_line,
             .separator_paragraph,
             => true,
-            // ziglint-ignore: Z024 preserve existing readable expression shape; behavior-neutral extraction
             else => codepoint == '\t' or codepoint == '\n' or codepoint == '\r' or codepoint == 0x0b or codepoint == 0x0c,
         },
         .xdigit => codepoint <= std.math.maxInt(u8) and std.ascii.isHex(@intCast(codepoint)),

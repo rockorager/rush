@@ -91,7 +91,6 @@ pub const History = struct {
         return handle;
     }
 
-    // ziglint-ignore: Z012 existing public API type exposure; preserve API
     pub fn finishCommand(
         self: *History,
         handle: CommandHandle,
@@ -114,7 +113,6 @@ pub const History = struct {
         _ = try deleteHistoryRecordById(self.db, handle);
     }
 
-    // ziglint-ignore: Z012 existing public API type exposure; preserve API
     pub fn addCommand(
         self: *History,
         io: std.Io,
@@ -129,7 +127,6 @@ pub const History = struct {
         try self.appendCommand(io, line, status, started_at, duration_ms);
     }
 
-    // ziglint-ignore: Z012 existing public API type exposure; preserve API
     pub fn appendCommand(
         self: *History,
         io: std.Io,
@@ -438,7 +435,6 @@ pub const InteractiveHistoryService = struct {
         };
     }
 
-    // ziglint-ignore: Z012 existing public API type exposure; preserve API
     pub fn addCommand(
         self: *InteractiveHistoryService,
         io: std.Io,
@@ -463,7 +459,6 @@ pub const InteractiveHistoryService = struct {
         return self.history.nextCommandNumber();
     }
 
-    // ziglint-ignore: Z012 existing public API type exposure; preserve API
     pub fn completeCommand(
         self: *InteractiveHistoryService,
         handle: ?History.CommandHandle,
@@ -536,7 +531,6 @@ pub const InteractiveHistoryService = struct {
         return self.history.rankDirectories(allocator, terms, exclude, now);
     }
 
-    // ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
     fn listFcEntries(context: *anyopaque, allocator: std.mem.Allocator) ![]HistoryEntry {
         const history_service: *InteractiveHistoryService = @ptrCast(@alignCast(context));
         return history_service.fcEntries(allocator);
@@ -555,7 +549,6 @@ pub const InteractiveHistoryService = struct {
 
     fn jumpDirectory(
         context: *anyopaque,
-        // ziglint-ignore: Z023 parameter order follows CommandHistory.jump callback shape
         allocator: std.mem.Allocator,
         terms: []const []const u8,
         exclude: []const u8,
@@ -567,7 +560,6 @@ pub const InteractiveHistoryService = struct {
 
     fn rankDirectories(
         context: *anyopaque,
-        // ziglint-ignore: Z023 parameter order follows CommandHistory.directories callback shape
         allocator: std.mem.Allocator,
         terms: []const []const u8,
         exclude: []const u8,
@@ -582,7 +574,6 @@ pub const InteractiveHistoryService = struct {
         history_service.suppressNextAppend();
     }
 
-    // ziglint-ignore: Z023 parameter order follows CommandHistory.search callback shape
     fn searchCommandEntries(context: *anyopaque, allocator: std.mem.Allocator, text: []const u8) ![]HistoryEntry {
         const history_service: *InteractiveHistoryService = @ptrCast(@alignCast(context));
         return history_service.history.searchEntries(allocator, text);
@@ -687,7 +678,7 @@ pub const InteractiveHistoryService = struct {
 
 fn previousHistoryEntry(
     context: *anyopaque,
-    allocator: std.mem.Allocator, // ziglint-ignore: Z023 (callback iface)
+    allocator: std.mem.Allocator,
     prefix: []const u8,
     before: ?i64,
 ) !?line_editor.HistoryView.HistoryEntry {
@@ -697,7 +688,7 @@ fn previousHistoryEntry(
 
 fn nextHistoryEntry(
     context: *anyopaque,
-    allocator: std.mem.Allocator, // ziglint-ignore: Z023 (callback iface)
+    allocator: std.mem.Allocator,
     prefix: []const u8,
     after: i64,
 ) !?line_editor.HistoryView.HistoryEntry {
@@ -707,7 +698,7 @@ fn nextHistoryEntry(
 
 fn numberedHistoryEntry(
     context: *anyopaque,
-    allocator: std.mem.Allocator, // ziglint-ignore: Z023 (callback iface)
+    allocator: std.mem.Allocator,
     number: usize,
 ) !?line_editor.HistoryView.HistoryEntry {
     const history_service: *InteractiveHistoryService = @ptrCast(@alignCast(context));
@@ -716,7 +707,7 @@ fn numberedHistoryEntry(
 
 fn searchHistoryEntry(
     context: *anyopaque,
-    allocator: std.mem.Allocator, // ziglint-ignore: Z023 (callback iface)
+    allocator: std.mem.Allocator,
     query: []const u8,
     filters: line_editor.HistorySearchFilters,
     before: ?i64,
@@ -727,7 +718,7 @@ fn searchHistoryEntry(
 
 fn searchNextHistoryEntry(
     context: *anyopaque,
-    allocator: std.mem.Allocator, // ziglint-ignore: Z023 (callback iface)
+    allocator: std.mem.Allocator,
     query: []const u8,
     filters: line_editor.HistorySearchFilters,
     after: ?i64,
@@ -738,7 +729,7 @@ fn searchNextHistoryEntry(
 
 fn searchHistoryPage(
     context: *anyopaque,
-    allocator: std.mem.Allocator, // ziglint-ignore: Z023 (callback iface)
+    allocator: std.mem.Allocator,
     query: []const u8,
     filters: line_editor.HistorySearchFilters,
     before: ?i64,
@@ -750,7 +741,7 @@ fn searchHistoryPage(
 
 fn searchNextHistoryPage(
     context: *anyopaque,
-    allocator: std.mem.Allocator, // ziglint-ignore: Z023 (callback iface)
+    allocator: std.mem.Allocator,
     query: []const u8,
     filters: line_editor.HistorySearchFilters,
     after: ?i64,
@@ -762,7 +753,7 @@ fn searchNextHistoryPage(
 
 fn suggestHistoryEntry(
     context: *anyopaque,
-    allocator: std.mem.Allocator, // ziglint-ignore: Z023 (callback iface)
+    allocator: std.mem.Allocator,
     prefix: []const u8,
 ) !?line_editor.HistoryView.HistoryEntry {
     const history_service: *InteractiveHistoryService = @ptrCast(@alignCast(context));

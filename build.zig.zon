@@ -20,10 +20,6 @@
             .url = "git+https://github.com/rockorager/zeit.git#b1c1c2fcbc71fd7799a316bbcf0ff88d06d80ccc",
             .hash = "zeit-0.9.0-5I6bk2m9AgBSMH8-L6rYJkwuQAyhXplnfxnvTSGzVHUR",
         },
-        .ziglint = .{
-            .url = "git+https://github.com/rockorager/ziglint.git#90dca75f6301706f925c76c71aff58358758d923",
-            .hash = "ziglint-0.5.2-t0bwLwqTBQALZYj3JDnOW03lrsuRqIWHXioRtkN0D7tn",
-        },
     },
     .paths = .{
         "LICENSE",

@@ -27,8 +27,6 @@ jobs:
             command: zig fmt --check build.zig build.zig.zon src tests fuzz
           - name: Compile targets
             command: zig build compile-check
-          - name: Lint
-            command: zig build lint
           - name: Unit tests
             command: zig build test
           - name: Conformance

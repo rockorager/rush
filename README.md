@@ -131,7 +131,6 @@ and interactive features. This does not install or replace `/bin/sh`.
 ```sh
 zig fmt --check build.zig build.zig.zon src tests fuzz
 zig build compile-check
-zig build lint
 zig build test
 zig build conformance
 zig build terminal

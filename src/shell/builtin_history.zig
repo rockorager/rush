@@ -26,7 +26,6 @@ pub fn evalFc(shell: anytype, args: []const []const u8) !result.EvalResult {
     defer freeFcEntries(allocator, entries);
 
     if (options.reexecute) return evalFcReexecute(shell, command_history, entries, args[options.operand_index..]);
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     if (options.list) return evalFcList(shell, entries, args[options.operand_index..], options.no_numbers, options.reverse);
     return evalFcEdit(shell, command_history, entries, args[options.operand_index..], options.editor, options.reverse);
 }
@@ -42,7 +41,6 @@ const FcOptions = struct {
 
 fn parseFcOptions(args: []const []const u8) ?FcOptions {
     var options: FcOptions = .{};
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     while (options.operand_index < args.len and isFcOptionArg(args[options.operand_index])) : (options.operand_index += 1) {
         const arg = args[options.operand_index];
         if (std.mem.eql(u8, arg, "--")) {
@@ -186,7 +184,6 @@ fn evalFcEdit(
         return .{ .status = 2 };
     }
 
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     const selected = fcSelectedCommands(shell.scratchAllocator(), entries, operands, reverse, .edit) catch |err| switch (err) {
         error.NoHistoryMatch => return fcNoHistoryMatch(shell),
         else => return err,
@@ -283,7 +280,7 @@ fn evalFcCommand(shell: anytype, command_history: *history_mod.CommandHistory, c
     const elapsed_ns = @max(eval.currentWallTimeNs(shell) - started_ns, 0);
     const duration_ms: i64 = @intCast(@divFloor(elapsed_ns, std.time.ns_per_ms));
     if (command_history.append) |append| {
-        // ziglint-ignore: Z026 re-executed commands stay best effort in history; the command already ran
+        // Re-executed commands stay best effort in history; the command already ran.
         append(command_history.context, command, evaluated.status, started_at, duration_ms) catch {};
     }
     return evaluated;
@@ -370,7 +367,6 @@ fn deleteFcTempFile(shell: anytype, path: []const u8) void {
     if (!host.has(HostType, .deleteFileZ)) return;
     const path_z = shell.scratchAllocator().dupeZ(u8, path) catch return;
     defer shell.scratchAllocator().free(path_z);
-    // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
     shell.host.deleteFileZ(path_z) catch {};
 }
 
@@ -438,7 +434,6 @@ fn fcResolveEditorPathZ(shell: anytype, editor: []const u8) !?[:0]u8 {
         return null;
     }
 
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     const path = if (shell.state.getVariable("PATH")) |variable| variable.value else shellEnvValue(shell, "PATH") orelse defaultUtilityPath();
     var iterator = std.mem.splitScalar(u8, path, ':');
     while (iterator.next()) |directory| {

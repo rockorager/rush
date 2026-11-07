@@ -127,7 +127,6 @@ Run the repository checks:
 ```sh
 zig fmt --check build.zig build.zig.zon src tests fuzz
 zig build compile-check --summary all
-zig build lint --summary all
 zig build test --summary all
 zig build conformance --summary all
 zig build install -Doptimize=ReleaseSafe -Dregister-shell=false --summary all

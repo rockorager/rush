@@ -354,7 +354,7 @@ pub const State = struct {
         for (self.prompt_async_entries.items) |entry| {
             if (entry.read_fd == null or now_ms < entry.started_ms +| prompt_async_timeout_ms) continue;
             // The child leads its own process group; kill helpers it started too.
-            // ziglint-ignore: Z026 the group may already be gone
+            // The group may already be gone.
             if (entry.pid) |pid| real_host.sendSignal(-pid, kill_signal) catch {};
             self.finishPromptAsyncEntry(entry, .expired);
             self.orphanPromptAsyncChild(entry);
@@ -386,7 +386,7 @@ pub const State = struct {
         entry.pid = null;
         self.prompt_async_orphans.append(self.allocator, pid) catch {
             // Without room to track it, wait for it rather than leak a zombie.
-            // ziglint-ignore: Z026 best-effort reap of a child that is already finishing
+            // Best-effort reap of a child that is already finishing.
             _ = real_host.wait(pid) catch {};
         };
     }
@@ -411,7 +411,6 @@ pub const State = struct {
         std.debug.assert(entry.refreshing);
         const read_fd = entry.read_fd.?;
         if (self.prompt_async_registry) |fd_registry| fd_registry.unregister(fd_registry.context, read_fd.raw());
-        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
         real_host.close(read_fd) catch {};
         entry.read_fd = null;
 
@@ -432,7 +431,7 @@ pub const State = struct {
         self.prompt_async_active_count -= 1;
         if (self.prompt_async_active_count == 0) self.prompt_async_pending_end_events += 1;
 
-        // ziglint-ignore: Z026 best-effort wakeup; the next input event can redraw
+        // Best-effort wakeup; the next input event can redraw.
         if (self.prompt_async_redraw_fd) |fd| real_host.writeAll(fd, "p") catch {};
     }
 };
@@ -479,17 +478,15 @@ const PromptAsyncEntry = struct {
     pid: ?host.Pid = null,
     read_fd: ?host.Fd = null,
 
-    // ziglint-ignore: Z030 deinit intentionally leaves reusable/test-local state shape
     fn deinit(self: *PromptAsyncEntry, allocator: std.mem.Allocator) void {
         if (self.read_fd) |read_fd| {
             // The event loop is already gone by the time extension state
             // deinitializes; closing the pipe is enough. The child is
             // reparented and reaped by init after the shell exits.
-            // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
             real_host.close(read_fd) catch {};
         }
         if (self.pid) |pid| {
-            // ziglint-ignore: Z026 best-effort reap; init adopts still-running children
+            // Best-effort reap; init adopts still-running children.
             _ = real_host.waitNonBlocking(pid) catch {};
         }
         self.output.deinit(allocator);
@@ -640,7 +637,6 @@ fn listEventsText(sh: anytype, handlers: []const EventHandler) !void {
         }
         try sh.host.writeAll(.stdout, "  ");
         try sh.host.writeAll(.stdout, handler.name);
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         try sh.host.writeAll(.stdout, try std.fmt.allocPrint(sh.scratchAllocator(), " priority={d}", .{handler.priority}));
         if (handler.every_ms) |every_ms| {
             try sh.host.writeAll(.stdout, try std.fmt.allocPrint(sh.scratchAllocator(), " every={d}ms", .{every_ms}));
@@ -661,10 +657,8 @@ fn listEventsJson(sh: anytype, handlers: []const EventHandler) !result.EvalResul
         try writeJsonString(sh, handler.name);
         try sh.host.writeAll(.stdout, ",\"function\":");
         try writeJsonString(sh, handler.action);
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         try sh.host.writeAll(.stdout, try std.fmt.allocPrint(sh.scratchAllocator(), ",\"priority\":{d}", .{handler.priority}));
         if (handler.every_ms) |every_ms| {
-            // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
             try sh.host.writeAll(.stdout, try std.fmt.allocPrint(sh.scratchAllocator(), ",\"every_ms\":{d}", .{every_ms}));
         }
         try sh.host.writeAll(.stdout, "}");
@@ -915,11 +909,9 @@ test "prompt async lifecycle events are drained once" {
 
     try std.testing.expect(state.promptAsyncPending());
     try std.testing.expectEqual(
-        // ziglint-ignore: Z010 explicit type retained for readability/type inference
         PromptAsyncLifecycleEvents{ .start_count = 1, .end_count = 2 },
         state.takePromptAsyncLifecycleEvents(),
     );
-    // ziglint-ignore: Z010 explicit type retained for readability/type inference
     try std.testing.expectEqual(PromptAsyncLifecycleEvents{}, state.takePromptAsyncLifecycleEvents());
 }
 
@@ -1032,17 +1024,13 @@ fn startPromptAsyncRefresh(sh: anytype, entry: *PromptAsyncEntry, command_args: 
     const editor_signals = [_]u8{ builtin.signalNumber("CHLD").?, builtin.signalNumber("WINCH").? };
     switch (try shell.eval.forkDetachedShell(sh, &editor_signals)) {
         .child => {
-            // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
             sh.host.close(pipe_desc.read) catch {};
             read_open = false;
             sh.host.duplicateTo(pipe_desc.write, .stdout) catch sh.host.exit(127);
-            // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
             sh.host.close(pipe_desc.write) catch {};
             write_open = false;
             if (sh.host.openZ("/dev/null", .{ .access = .write_only })) |null_fd| {
-                // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
                 sh.host.duplicateTo(null_fd, .stderr) catch {};
-                // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
                 sh.host.close(null_fd) catch {};
             } else |_| {}
             const src: shell.source.Source = .{
@@ -1055,16 +1043,12 @@ fn startPromptAsyncRefresh(sh: anytype, entry: *PromptAsyncEntry, command_args: 
             sh.host.exit(evaluated.status);
         },
         .parent => |pid| {
-            // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
             sh.host.close(pipe_desc.write) catch {};
             write_open = false;
             fd_registry.register(fd_registry.context, pipe_desc.read.raw()) catch |err| {
-                // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
                 sh.host.close(pipe_desc.read) catch {};
                 read_open = false;
-                // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
                 sh.host.sendSignal(-pid, kill_signal) catch {};
-                // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
                 _ = sh.host.wait(pid) catch {};
                 return err;
             };
@@ -1144,7 +1128,6 @@ fn parsePromptPwdOptions(args: []const []const u8) ?PromptPwdOptions {
     return options;
 }
 
-// ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
 fn formatPromptPwd(allocator: std.mem.Allocator, cwd: []const u8, maybe_home: ?[]const u8, options: PromptPwdOptions) ![]const u8 {
     const display = try abbreviateHomePath(allocator, cwd, maybe_home);
     const dir_length = options.dir_length orelse return display;
@@ -1369,14 +1352,12 @@ fn rushCompleteCandidate(context: *CompletionContext, sh: anytype, args: []const
     return .{};
 }
 
-// ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
 fn rushCompletePaths(context: *CompletionContext, sh: anytype, args: []const []const u8, directories_only: bool) !result.EvalResult {
     for (args[2..]) |arg| if (!std.mem.eql(u8, arg, "--append-slash")) return .{ .status = 2 };
     try appendPathCompletionCandidates(context, sh, directories_only);
     return .{};
 }
 
-// ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
 fn rushCompleteNames(context: *CompletionContext, map: anytype, kind: completion.Kind, description: []const u8) !result.EvalResult {
     var iterator = map.iterator();
     while (iterator.next()) |entry| try appendCompletionCandidate(context, entry.key_ptr.*, kind, description, 0);
@@ -1513,11 +1494,9 @@ fn completionOptionMatchesSelector(option: CompletionParsedOption, selector: Com
 }
 
 fn appendPathCompletionCandidates(context: *CompletionContext, sh: anytype, directories_only: bool) !void {
-    // ziglint-ignore: Z011 deprecated API left unchanged to avoid semantic drift in lint-only pass
     const slash = std.mem.lastIndexOfScalar(u8, context.prefix, '/');
     const dir_prefix = if (slash) |index| context.prefix[0 .. index + 1] else "";
     const entry_prefix = if (slash) |index| context.prefix[index + 1 ..] else context.prefix;
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     const unexpanded_dir_path = if (dir_prefix.len == 0) "." else if (std.mem.eql(u8, dir_prefix, "/")) "/" else std.mem.trimEnd(u8, dir_prefix, "/");
     const dir_path = if (context.expand_leading_tilde)
         try completion_path.expandLeadingTilde(context.allocator, unexpanded_dir_path, shellValue(sh, "HOME"))
@@ -1544,7 +1523,6 @@ fn appendPathCompletionCandidates(context: *CompletionContext, sh: anytype, dire
         else
             try std.fmt.allocPrint(context.allocator, "{s}{s}", .{ dir_prefix, entry.name });
         defer context.allocator.free(value);
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         try appendCompletionCandidate(context, value, if (is_directory) .directory else .file, if (is_directory) "directory" else "file", 0);
     }
 }
@@ -1837,7 +1815,6 @@ fn importShEnv(sh: anytype, input: []const u8) !result.EvalResult {
             const equals = std.mem.indexOfScalar(u8, assignment, '=') orelse return .{ .status = 1 };
             const name = assignment[0..equals];
             if (!isShellVariableName(name)) return .{ .status = 1 };
-            // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
             const value = parseShellEnvValue(sh.scratchAllocator(), assignment[equals + 1 ..]) catch return .{ .status = 1 };
             defer sh.scratchAllocator().free(value);
             if (!try putExportedEnv(sh, name, value)) return .{ .status = 1 };

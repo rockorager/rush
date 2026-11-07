@@ -71,7 +71,7 @@ pub const State = struct {
 
     pub const no_selection = std.math.maxInt(usize);
 
-    // ziglint-ignore: Z030 reset to a reusable empty state; clear()/replace() read fields after deinit
+    // Reset to a reusable empty state; clear()/replace() read fields after deinit.
     pub fn deinit(self: *State, allocator: std.mem.Allocator) void {
         if (self.candidates.len != 0) completion.freeCandidates(allocator, self.candidates);
         self.* = .{};

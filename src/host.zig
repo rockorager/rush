@@ -4,7 +4,7 @@ const std = @import("std");
 const zig_builtin = @import("builtin");
 
 pub const RealHost = if (!zig_builtin.cpu.arch.isWasm())
-    // ziglint-ignore: Z028 RealHost is omitted on wasm so posix is not analyzed
+    // RealHost is omitted on wasm so posix is not analyzed.
     @import("host/RealHost.zig")
 else
     struct {};

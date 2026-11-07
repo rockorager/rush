@@ -99,7 +99,7 @@ fn fail(comptime format: []const u8, sh: anytype, args: anytype) result.EvalResu
 
 fn diagnose(comptime format: []const u8, sh: anytype, args: anytype) void {
     const message = std.fmt.allocPrint(sh.scratchAllocator(), "program_status: " ++ format, args) catch return;
-    // ziglint-ignore: Z026 diagnostics are best effort; the exit status still reports the failure
+    // Diagnostics are best effort; the exit status still reports the failure.
     sh.host.writeAll(.stderr, message) catch {};
 }
 
@@ -111,7 +111,6 @@ const TestShell = struct {
         stdout: std.ArrayList(u8) = .empty,
         stderr: std.ArrayList(u8) = .empty,
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn writeAll(self: *@This(), fd: host.Fd, bytes: []const u8) !void {
             const target = if (fd == .stderr) &self.stderr else &self.stdout;
             try target.appendSlice(std.testing.allocator, bytes);
@@ -129,7 +128,6 @@ const TestShell = struct {
         self.* = undefined;
     }
 
-    // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
     pub fn scratchAllocator(self: *@This()) std.mem.Allocator {
         return self.arena.allocator();
     }

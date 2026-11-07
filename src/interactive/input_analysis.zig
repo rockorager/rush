@@ -164,7 +164,6 @@ pub const PathCommandCache = struct {
     cwd_key: []const u8 = "",
     commands: std.StringHashMapUnmanaged(bool) = .empty,
 
-    // ziglint-ignore: Z030 deinit intentionally leaves reusable/test-local state shape
     pub fn deinit(self: *PathCommandCache, allocator: std.mem.Allocator) void {
         allocator.free(self.path_key);
         allocator.free(self.cwd_key);

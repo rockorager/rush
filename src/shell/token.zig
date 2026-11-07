@@ -397,7 +397,6 @@ pub const Stream = struct {
         lines: std.ArrayList(Line) = .empty,
         text_overrides: std.ArrayList([]const u8) = .empty,
 
-        // ziglint-ignore: Z023 nested builder method receiver precedes allocator
         pub fn deinit(self: *Builder, allocator: std.mem.Allocator) void {
             self.items.deinit(allocator);
             self.lines.deinit(allocator);
@@ -407,7 +406,6 @@ pub const Stream = struct {
 
         /// Appends tokens in source order and borrows their text. Appending may
         /// invalidate slices; after allocation failure, discard the builder.
-        // ziglint-ignore: Z023 nested builder method receiver precedes allocator
         pub fn append(self: *Builder, allocator: std.mem.Allocator, tok: Token) !void {
             tok.validate();
             std.debug.assert(tok.span.source_id == self.src.id);
@@ -452,7 +450,6 @@ pub const Stream = struct {
         /// input at byte offset `eof`, leaving the builder unchanged. Only the token
         /// slice is allocated; line and text metadata are borrowed from the
         /// builder and are invalidated by its next append.
-        // ziglint-ignore: Z023 nested builder method receiver precedes allocator
         pub fn prefixStream(self: *const Builder, allocator: std.mem.Allocator, count: usize, eof: usize) !Stream {
             std.debug.assert(count <= self.items.items.len);
             std.debug.assert(self.lines.items.len != 0);
@@ -470,7 +467,6 @@ pub const Stream = struct {
 
         /// Transfers storage to the caller, leaving the builder empty. Line
         /// locations come from the lexer's raw spans, never normalized text.
-        // ziglint-ignore: Z023 nested builder method receiver precedes allocator
         pub fn toOwnedStream(self: *Builder, allocator: std.mem.Allocator) !Stream {
             std.debug.assert(self.lines.items.len <= self.items.items.len);
             const lines = try self.lines.toOwnedSlice(allocator);

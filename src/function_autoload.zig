@@ -126,7 +126,6 @@ fn appendPath(allocator: std.mem.Allocator, paths: *std.ArrayList([]const u8), p
     try paths.append(allocator, try std.fs.path.join(allocator, parts));
 }
 
-// ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
 fn appendUniquePaths(allocator: std.mem.Allocator, paths: *std.ArrayList([]const u8), candidates: []const []const u8) !void {
     for (candidates) |candidate| {
         if (pathListContains(paths.items, candidate)) continue;
@@ -200,11 +199,8 @@ const OutputDiscard = struct {
         self.active = false;
         try real_host.duplicateTo(self.saved_stdout, .stdout);
         try real_host.duplicateTo(self.saved_stderr, .stderr);
-        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
         real_host.close(self.saved_stdout) catch {};
-        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
         real_host.close(self.saved_stderr) catch {};
-        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
         real_host.close(self.null_fd) catch {};
     }
 };
@@ -242,7 +238,6 @@ test "autoload sources dotted function into current shell and hides load output"
     const io = std.testing.io;
     const root = try std.fmt.allocPrint(allocator, "rush-test-autoload-{d}", .{std.c.getpid()});
     defer allocator.free(root);
-    // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
     std.Io.Dir.cwd().deleteTree(io, root) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
 
@@ -322,7 +317,6 @@ test "autoload protects function definition from same-name alias" {
     const io = std.testing.io;
     const root = try std.fmt.allocPrint(allocator, "rush-test-autoload-alias-{d}", .{std.c.getpid()});
     defer allocator.free(root);
-    // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
     std.Io.Dir.cwd().deleteTree(io, root) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
 
@@ -368,7 +362,6 @@ test "autoload caches misses until function is explicitly defined" {
     const io = std.testing.io;
     const root = try std.fmt.allocPrint(allocator, "rush-test-autoload-miss-{d}", .{std.c.getpid()});
     defer allocator.free(root);
-    // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
     std.Io.Dir.cwd().deleteTree(io, root) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
 
@@ -431,7 +424,6 @@ test "autoload clears cached misses when search path variables change" {
     const io = std.testing.io;
     const root = try std.fmt.allocPrint(allocator, "rush-test-autoload-path-{d}", .{std.c.getpid()});
     defer allocator.free(root);
-    // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
     std.Io.Dir.cwd().deleteTree(io, root) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
 
@@ -475,7 +467,6 @@ test "autoload clears cached misses when search path variables change" {
     try std.testing.expectEqualStrings("changed-path", output);
 }
 
-// ziglint-ignore: Z028 inline import kept local to test/helper; avoid non-semantic refactor
 const TestRushShell = shell.ShellWithBuiltins(host.RealHost, @import("extensions.zig").rush.registry);
 
 fn testAutoload(sh: *TestRushShell, name: []const u8) !bool {

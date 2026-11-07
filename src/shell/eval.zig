@@ -181,7 +181,6 @@ fn evalBackgroundAndOr(shell: anytype, and_or: ast.AndOr) EvalError!result.EvalR
             }
             shell.state.job_control_suppressed = true;
             if (background_subshell) |subshell| {
-                // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                 const evaluated = evalSubshellInCurrentProcess(shell, subshell.body.subshell, subshell.redirections) catch shell.host.exit(2);
                 const status = runExitTrap(shell, evaluated.status) catch shell.host.exit(2);
                 shell.host.exit(status);
@@ -204,7 +203,6 @@ fn evalBackgroundAndOr(shell: anytype, and_or: ast.AndOr) EvalError!result.EvalR
             }
         },
     };
-    // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
     if (shell.state.jobControlEnabled()) setParentProcessGroup(shell, pid, pid) catch {};
     shell.state.last_background_pid = pid;
     try shell.state.addBackgroundPid(pid);
@@ -310,7 +308,6 @@ fn evalBackgroundPipeline(shell: anytype, pipeline: ast.Pipeline) EvalError!resu
     shell.state.last_background_pid = pids[pids.len - 1];
     const job_scratch = try shell.beginScratchScope();
     defer job_scratch.end();
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     try shell.state.addBackgroundJobPids(pids, pids[0], try pipelineCommandText(shell, pipeline), shell.state.jobControlEnabled());
     return .{ .status = 0 };
 }
@@ -347,13 +344,11 @@ fn simpleCommandText(shell: anytype, command: ast.SimpleCommand) ![]const u8 {
         if (needs_space) try output.append(allocator, ' ');
         try output.appendSlice(allocator, assignment.name);
         try output.append(allocator, '=');
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         if (staticLiteralWord(assignment.value)) |value| try output.appendSlice(allocator, value) else try output.appendSlice(allocator, "...");
         needs_space = true;
     }
     for (command.words) |word| {
         if (needs_space) try output.append(allocator, ' ');
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         if (staticLiteralWord(word)) |value| try output.appendSlice(allocator, value) else try output.appendSlice(allocator, "...");
         needs_space = true;
     }
@@ -414,7 +409,6 @@ fn evalExternalPipeline(shell: anytype, pipeline: ast.Pipeline) EvalError!result
     const foreground_restore_group = builtin.giveTerminalToJob(shell, pids[0]) catch {
         const scratch = try shell.beginScratchScope();
         defer scratch.end();
-        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
         _ = waitPids(shell, pids) catch {};
         return .{ .status = 1 };
     };
@@ -424,7 +418,6 @@ fn evalExternalPipeline(shell: anytype, pipeline: ast.Pipeline) EvalError!result
     const statuses = try waitForegroundPids(shell, pids);
     try setPipelineStatusArray(shell, statuses);
     if (pipelineStopped(statuses)) {
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         try shell.state.addBackgroundJobPids(pids, pids[0], try pipelineCommandText(shell, pipeline), shell.state.jobControlEnabled());
         _ = shell.state.setBackgroundJobStatusByPid(pids[0], .stopped);
         return .{ .status = stoppedPipelineStatus(statuses) };
@@ -514,9 +507,7 @@ fn spawnPipelineStages(
 
 fn closePipes(shell: anytype, pipes: []const host_mod.Pipe) void {
     for (pipes) |pipe_desc| {
-        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
         shell.host.close(pipe_desc.read) catch {};
-        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
         shell.host.close(pipe_desc.write) catch {};
     }
 }
@@ -777,7 +768,7 @@ fn commandErrorResult(shell: anytype, err: anyerror) EvalError!result.EvalResult
 fn cleanupProcessSubstitutions(shell: anytype, start: usize) void {
     const substitutions = shell.state.process_substitutions.items[start..];
     for (substitutions) |substitution| {
-        // ziglint-ignore: Z026 best-effort cleanup; command status must not depend on async process substitution
+        // Best-effort cleanup; command status must not depend on async process substitution.
         shell.host.close(substitution.fd) catch {};
     }
     for (substitutions) |substitution| {
@@ -794,7 +785,7 @@ fn reapOrDeferProcessSubstitution(shell: anytype, pid: host_mod.Pid) void {
     if (comptime host_mod.has(HostType, .waitNonBlocking)) {
         if ((shell.host.waitNonBlocking(pid) catch null) != null) return;
     }
-    // ziglint-ignore: Z026 best-effort reap queue; dropping it is preferable to failing the command
+    // Best-effort reap queue; dropping it is preferable to failing the command.
     shell.state.reap_process_substitutions.append(shell.state.allocator, .{ .pid = pid }) catch {};
 }
 
@@ -817,7 +808,7 @@ fn reapProcessSubstitutions(shell: anytype) void {
 
 fn closeInheritedProcessSubstitutionFds(shell: anytype) void {
     for (shell.state.process_substitutions.items) |substitution| {
-        // ziglint-ignore: Z026 best-effort child cleanup before replacing/evaluating the child body
+        // Best-effort child cleanup before replacing/evaluating the child body.
         shell.host.close(substitution.fd) catch {};
     }
     shell.state.process_substitutions.clearRetainingCapacity();
@@ -954,7 +945,7 @@ fn evalSubshell(shell: anytype, body: ast.List, redirections: []const ast.Redire
     };
     if (shell.state.jobControlEnabled()) try setParentProcessGroup(shell, pid, pid);
     const foreground_restore_group = builtin.giveTerminalToJob(shell, pid) catch {
-        // ziglint-ignore: Z026 reap best effort after terminal handoff has already failed
+        // Reap best effort after terminal handoff has already failed.
         _ = shell.host.wait(pid) catch {};
         return .{ .status = 1 };
     };
@@ -1751,7 +1742,6 @@ fn wordIsQuotedAt(word: ast.Word) bool {
         .literal => false,
         .parts => |parts| parts.len == 1 and switch (parts[0]) {
             .double_quoted => |quoted| quoted.len == 1 and switch (quoted[0]) {
-                // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                 .parameter => |parameter| !parameter.length and parameter.op == null and parameter.parameter == .special and
                     parameter.parameter.special == .at,
                 else => false,
@@ -1767,7 +1757,6 @@ fn wordIsQuotedStar(word: ast.Word) bool {
         .literal => false,
         .parts => |parts| parts.len == 1 and switch (parts[0]) {
             .double_quoted => |quoted| quoted.len == 1 and switch (quoted[0]) {
-                // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                 .parameter => |parameter| !parameter.length and parameter.op == null and parameter.parameter == .special and
                     parameter.parameter.special == .star,
                 else => false,
@@ -1785,7 +1774,6 @@ fn wordIsAtParameter(word: ast.Word) bool {
             .parameter => |parameter| !parameter.length and parameter.op == null and parameter.parameter == .special and
                 parameter.parameter.special == .at,
             .double_quoted => |quoted| quoted.len == 1 and switch (quoted[0]) {
-                // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                 .parameter => |parameter| !parameter.length and parameter.op == null and parameter.parameter == .special and
                     parameter.parameter.special == .at,
                 else => false,
@@ -1862,13 +1850,11 @@ fn bashFatalExpansionStatus(shell: anytype) result.ExitStatus {
 }
 
 fn redirectionFailure(shell: anytype, fatal: bool) result.EvalResult {
-    // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
     shell.host.writeAll(.stderr, "redirection failed\n") catch {};
     return .{ .status = 1, .flow = if (fatal) .{ .fatal = 1 } else .normal };
 }
 
 fn writeReadonlyDiagnostic(shell: anytype, name: []const u8) !void {
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     try shell.host.writeAll(.stderr, try std.fmt.allocPrint(shell.scratchAllocator(), "{s}: readonly variable\n", .{name}));
 }
 
@@ -1970,10 +1956,8 @@ fn evalSimpleScoped(shell: anytype, command: ast.SimpleCommand, process: Command
         }
     }
     if (name.len == 0) return .{ .status = 127 };
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     if (shell.state.getFunction(name)) |function| return evalFunction(shell, function, command.assignments, fields[1..]);
     if (try shell.tryAutoloadFunction(name)) {
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         if (shell.state.getFunction(name)) |function| return evalFunction(shell, function, command.assignments, fields[1..]);
     }
     if (builtin_definition) |definition| {
@@ -2012,7 +1996,6 @@ const ExpandedAssignment = struct {
     status: ?result.ExitStatus = null,
 };
 
-// ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
 fn traceSimpleCommand(shell: anytype, assignments: []const ExpandedAssignment, fields: []const []const u8) EvalError!void {
     if (!shell.state.options.xtrace) return;
     if (assignments.len == 0 and fields.len == 0) return;
@@ -2352,12 +2335,10 @@ fn evalDotBuiltin(shell: anytype, args: []const []const u8) EvalError!result.Eva
     if (args.len == 1) return .{ .status = 2 };
 
     const path = try resolveDotPath(shell, args[1]) orelse {
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         try shell.host.writeAll(.stderr, try std.fmt.allocPrint(shell.scratchAllocator(), ".: {s}: not found\n", .{args[1]}));
         return .{ .status = 2, .flow = .{ .fatal = 2 } };
     };
     const script = readDotScript(shell, path) catch {
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         try shell.host.writeAll(.stderr, try std.fmt.allocPrint(shell.scratchAllocator(), ".: {s}: cannot open\n", .{path}));
         return .{ .status = 1, .flow = .{ .fatal = 1 } };
     };
@@ -2545,7 +2526,6 @@ fn evalCommandBuiltin(
                 return evalExecBuiltin(shell, args[index..], assignments);
             },
             .declare, .export_, .readonly, .typeset => {
-                // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                 const evaluated = try evalDeclarationBuiltin(shell, definition.id, commandFieldsAsWords(shell, args[index + 1 ..]) catch return error.OutOfMemory);
                 restoreVariables(shell, saved);
                 restored_assignments = true;
@@ -2582,7 +2562,6 @@ fn evalCommandBuiltin(
                 return evaluated;
             },
             .command => {
-                // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                 const evaluated = try evalCommandBuiltin(shell, args[index..], &.{}, redirections, restore_redirections);
                 restoreVariables(shell, saved);
                 restored_assignments = true;
@@ -2740,7 +2719,6 @@ fn evalThreeArgumentTest(shell: anytype, left: []const u8, operator: []const u8,
     return error.Syntax;
 }
 
-// ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
 fn evalIntegerComparison(shell: anytype, left: []const u8, operator: []const u8, right: []const u8) TestEvalError!?bool {
     if (!isIntegerComparisonOperator(operator)) return null;
     const lhs_text = testIntegerOperand(shell, left);
@@ -2870,7 +2848,6 @@ fn commandLookupText(shell: anytype, name: []const u8, mode: CommandLookupMode, 
         return if (mode == .verbose) try std.fmt.allocPrint(allocator, "{s} is a shell function", .{name}) else name;
     }
     if (isCommandLookupReservedWord(name)) {
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         return if (mode == .verbose) try std.fmt.allocPrint(allocator, "{s} is a shell reserved word", .{name}) else name;
     }
     if (lookupBuiltin(shell, name) != null) {
@@ -2980,7 +2957,6 @@ fn typeLookup(shell: anytype, name: []const u8, options: TypeOptions) !bool {
             try shell.host.writeAll(.stdout, path);
             try shell.host.writeAll(.stdout, "\n");
         } else {
-            // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
             try shell.host.writeAll(.stdout, try std.fmt.allocPrint(shell.scratchAllocator(), "{s} is {s}\n", .{ name, path }));
         }
         found = true;
@@ -3140,7 +3116,6 @@ fn parseWaitPid(arg: []const u8) ?host_mod.Pid {
     return std.fmt.parseInt(host_mod.Pid, arg, 10) catch null;
 }
 
-// ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
 fn evalReadBuiltin(shell: anytype, args: []const []const u8, assignments: []const ast.Assignment) EvalError!result.EvalResult {
     std.debug.assert(args.len != 0);
     var options: ReadOptions = .{};
@@ -3365,7 +3340,6 @@ fn readBuiltinLine(shell: anytype, options: ReadOptions) !ReadLineResult {
             .stop_status = first.stop,
         };
         const byte = first.byte;
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         if (!options.exact_count and byte == options.delimiter) {
             return .{ .line = try line.toOwnedSlice(shell.scratchAllocator()), .found_delimiter = true };
         }
@@ -3705,7 +3679,6 @@ fn logicalPath(shell: anytype, old_pwd: []const u8, target: []const u8) ![]const
 }
 
 fn normalizeAbsolutePath(shell: anytype, path: []const u8) ![]const u8 {
-    // ziglint-ignore: Z016 compound assert documents a single invariant; preserve readability
     std.debug.assert(path.len != 0 and path[0] == '/');
     const allocator = shell.scratchAllocator();
     var components: std.ArrayList([]const u8) = .empty;
@@ -4325,7 +4298,6 @@ fn applyDeclaredArrayName(
 fn writeInvalidIdentifierDiagnostic(shell: anytype, id: builtin.Id, name: []const u8) !void {
     try shell.host.writeAll(
         .stderr,
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         try std.fmt.allocPrint(shell.scratchAllocator(), "{s}: `{s}': not a valid identifier\n", .{ declarationName(id), name }),
     );
 }
@@ -4633,7 +4605,6 @@ fn evalEvalBuiltin(shell: anytype, args: []const []const u8) EvalError!result.Ev
     };
 }
 
-// ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
 fn evalExecBuiltin(shell: anytype, args: []const []const u8, assignments: []const ast.Assignment) EvalError!result.EvalResult {
     std.debug.assert(args.len > 1);
     const request = try makeExternalSpawnRequest(shell, args[1..], assignments, &.{});
@@ -4695,7 +4666,7 @@ fn evalFunction(
     try applyExportedAssignments(shell, assignments);
     try pushFunctionLocalFrame(shell, assignments);
     var local_frame_popped = false;
-    // ziglint-ignore: Z026 best-effort restore; the enclosing error already aborts the function call
+    // Best-effort restore; the enclosing error already aborts the function call.
     defer if (!local_frame_popped) shell.state.popLocalFrame() catch {};
     const evaluated = blk: {
         var positional_frame = shell.state.pushPositionalFrame(positionals);
@@ -4819,7 +4790,6 @@ fn restoreVariables(shell: anytype, saved: []const SavedVariable) void {
         switch (entry.value) {
             .missing => shell.state.removeVariable(entry.name),
             .scalar => |variable| {
-                // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
                 shell.state.putVariable(variable) catch {};
             },
             .array => |array| {
@@ -4829,12 +4799,10 @@ fn restoreVariables(shell: anytype, saved: []const SavedVariable) void {
                     .readonly = array.readonly,
                     .integer = array.integer,
                 };
-                // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
                 shell.state.putArrayElementsWithAttributes(array.name, array.elements, attributes) catch {};
             },
             .attributes => |attributes| {
                 shell.state.removeVariable(entry.name);
-                // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
                 shell.state.putVariableAttributes(attributes) catch {};
             },
         }
@@ -4859,7 +4827,6 @@ const AppliedRedirections = struct {
         for (self.frames) |frame| {
             if (frame.saved) |saved| try shell.host.close(saved);
         }
-        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
         for (self.here_doc_writers) |pid| _ = shell.host.wait(pid) catch {};
     }
 
@@ -4878,7 +4845,6 @@ const AppliedRedirections = struct {
                 };
             }
         }
-        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
         for (self.here_doc_writers) |pid| _ = shell.host.wait(pid) catch {};
     }
 };
@@ -6262,7 +6228,6 @@ fn appendSplitFields(
 
         index += utf8SequenceLength(text[index..]);
     }
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     if (field_start < text.len) try appendMaybePathnameExpandedField(shell, fields, text[field_start..], pathname_expansion);
 }
 
@@ -6410,7 +6375,6 @@ fn appendFinalPathnameExpansion(shell: anytype, fields: *std.ArrayList([]const u
 }
 
 fn finalPathnamePattern(pattern: PathnamePattern) ?FinalPathnamePattern {
-    // ziglint-ignore: Z011 deprecated API left unchanged to avoid semantic drift in lint-only pass
     const slash_index = std.mem.lastIndexOfScalar(u8, pattern.text, '/');
     if (slash_index) |index| {
         if (index == pattern.text.len - 1) return null;
@@ -6425,13 +6389,11 @@ fn finalPathnamePattern(pattern: PathnamePattern) ?FinalPathnamePattern {
 
 fn expandPathnamePattern(
     shell: anytype,
-    // ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
     allocator: std.mem.Allocator,
     matches: *std.ArrayList([]const u8),
     prefix: []const u8,
     remaining: PathnamePattern,
 ) error{OutOfMemory}!void {
-    // ziglint-ignore: Z011 deprecated API left unchanged to avoid semantic drift in lint-only pass
     const slash_index = std.mem.indexOfScalar(u8, remaining.text, '/');
     const component = if (slash_index) |index| remaining.slice(0, index) else remaining;
     const rest = if (slash_index) |index|
@@ -6443,7 +6405,6 @@ fn expandPathnamePattern(
         if (prefix.len == 0 and slash_index == 0 and rest.text.len != 0) {
             try expandPathnamePattern(shell, allocator, matches, "/", rest);
         } else if (slash_index != null and rest.text.len != 0) {
-            // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
             try expandPathnamePattern(shell, allocator, matches, try std.fmt.allocPrint(allocator, "{s}/", .{prefix}), rest);
         }
         return;
@@ -6537,7 +6498,6 @@ fn appendMatchingEntryNames(
 
 fn appendSyntheticDotPathnameMatch(
     shell: anytype,
-    // ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
     allocator: std.mem.Allocator,
     matches: *std.ArrayList([]const u8),
     prefix: []const u8,
@@ -6770,7 +6730,6 @@ fn homeValue(shell: anytype) ?[]const u8 {
     return parameterValue(shell, "HOME");
 }
 
-// ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
 fn expandWordParts(shell: anytype, parts: []const ast.WordPart, substitution_status: ?*?result.ExitStatus) EvalError![]const u8 {
     if (parts.len == 0) return "";
     if (parts.len == 1) return expandWordPart(shell, &parts[0], substitution_status);
@@ -6947,7 +6906,6 @@ fn expandArithmeticText(shell: anytype, text: []const u8, status: ?*?result.Exit
                 }
                 if (text[index + 1] == '(') {
                     const substitution_end = try scanArithmeticCommandSubstitution(text, index + 1);
-                    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                     const substitution: ast.CommandSubstitution = .{ .source_text = text[index + 2 .. substitution_end] };
                     try output.appendSlice(allocator, try expandCommandSubstitution(shell, substitution, status));
                     index = substitution_end + 1;
@@ -6979,7 +6937,6 @@ fn expandArithmeticParameter(
     index: *usize,
     status: ?*?result.ExitStatus,
 ) ![]const u8 {
-    // ziglint-ignore: Z016 compound assert documents a single invariant; preserve readability
     std.debug.assert(index.* < text.len and text[index.*] == '$');
     const parameter_start = index.* + 1;
     if (parameter_start >= text.len) {
@@ -7049,7 +7006,6 @@ fn arithmeticSpecialParameter(byte: u8) ?ast.SpecialParameter {
 }
 
 fn scanArithmeticCommandSubstitution(text: []const u8, open_index: usize) !usize {
-    // ziglint-ignore: Z016 compound assert documents a single invariant; preserve readability
     std.debug.assert(open_index < text.len and text[open_index] == '(');
     var index = open_index + 1;
     var depth: usize = 1;
@@ -7147,7 +7103,6 @@ fn ArithmeticParser(comptime ShellType: type) type {
             }
         }
 
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         fn applyAssignmentOperator(self: *Self, name: []const u8, operator: AssignmentOperator, rhs: i64) ArithmeticError!i64 {
             if (operator == .assign) return rhs;
             const lhs = try self.variableValue(name);
@@ -7561,7 +7516,6 @@ fn evalCommandSubstitutionInChild(
             const evaluated = if (shell.state.options.xtrace) evaluated: {
                 break :evaluated evalProgram(@TypeOf(shell.host), shell, program) catch shell.host.exit(2);
             } else evaluated: {
-                // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                 const external_request = commandSubstitutionExternalProgramRequest(shell, program) catch shell.host.exit(2);
                 if (external_request) |request| {
                     shell.host.exec(request) catch shell.host.exit(127);
@@ -7576,9 +7530,7 @@ fn evalCommandSubstitutionInChild(
 
     try shell.host.close(pipe_desc.write);
     const output = readCommandSubstitutionOutput(shell, pipe_desc.read) catch |err| {
-        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
         shell.host.close(pipe_desc.read) catch {};
-        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
         _ = shell.host.wait(pid) catch {};
         return err;
     };
@@ -7779,7 +7731,6 @@ fn expandParameter(
         },
         .positional => |position| positionalValue(shell, position) orelse {
             if (shell.state.options.nounset) {
-                // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                 try writeExpansionDiagnostic(shell, parameter.*, parameterDiagnosticName(parameter.parameter), "parameter not set");
                 return if (shell.state.options.mode == .bash) error.FatalExpansionError else error.ExpansionError;
             }
@@ -7864,7 +7815,6 @@ fn joinPositionals(shell: anytype, separator: []const u8) ![]const u8 {
 fn joinValues(shell: anytype, values: []const []const u8, separator: []const u8) ![]const u8 {
     if (values.len == 0) return "";
     var total_len = std.math.mul(usize, values.len - 1, separator.len) catch return error.OutOfMemory;
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     for (values) |value| total_len = std.math.add(usize, total_len, value.len) catch return error.OutOfMemory;
 
     const output = try shell.scratchAllocator().alloc(u8, total_len);
@@ -7883,7 +7833,6 @@ fn joinValues(shell: anytype, values: []const []const u8, separator: []const u8)
 fn joinArrayElements(shell: anytype, elements: []const state_mod.ArrayElement, separator: []const u8) ![]const u8 {
     if (elements.len == 0) return "";
     var total_len = std.math.mul(usize, elements.len - 1, separator.len) catch return error.OutOfMemory;
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     for (elements) |element| total_len = std.math.add(usize, total_len, element.value.len) catch return error.OutOfMemory;
 
     const output = try shell.scratchAllocator().alloc(u8, total_len);
@@ -7913,7 +7862,6 @@ fn expandParameterLength(shell: anytype, parameter: ast.ParameterExpansion) Eval
     };
     const value = (try parameterCurrentValue(shell, parameter.parameter)) orelse {
         if (shell.state.options.nounset and parameterSubjectToNounset(parameter.parameter)) {
-            // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
             try writeExpansionDiagnostic(shell, parameter, parameterDiagnosticName(parameter.parameter), "parameter not set");
             return if (shell.state.options.mode == .bash) error.FatalExpansionError else error.ExpansionError;
         }
@@ -8040,7 +7988,6 @@ fn parameterCurrentValue(shell: anytype, parameter: ast.Parameter) !?[]const u8 
         .positional => |position| positionalValue(shell, position),
         .special => |special| switch (special) {
             .at => if (shell.state.positionals.len == 0) null else try joinPositionals(shell, " "),
-            // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
             .star => if (shell.state.positionals.len == 0) null else try joinPositionals(shell, ifsFirstCharacter(shell)),
             .hash => try std.fmt.allocPrint(shell.scratchAllocator(), "{}", .{shell.state.positionals.len}),
             .question => try formatExitStatus(shell, shell.state.last_status),
@@ -8340,7 +8287,6 @@ fn expandPatternParts(shell: anytype, parts: []const ast.WordPart, status: ?*?re
         .literal => |bytes| try output.appendSlice(allocator, bytes),
         .escaped => |bytes| try appendPatternLiteral(allocator, &output, bytes),
         .single_quoted => |bytes| try appendPatternLiteral(allocator, &output, bytes),
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         .double_quoted => |nested| try appendPatternLiteral(allocator, &output, try expandWordParts(shell, nested, status)),
         .parameter, .command_substitution, .process_substitution, .arithmetic => {
             try output.appendSlice(allocator, try expandWordPart(shell, part, status));
@@ -8546,20 +8492,17 @@ fn evalExternalWithSearchPath(
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
     };
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     const status = if (host_mod.has(HostType, .spawn) and host_mod.has(HostType, .wait) and shell.state.jobControlEnabled()) status: {
         request.process_group = 0;
         const pid = (try shell.host.spawn(request)).pid;
         try setParentProcessGroup(shell, pid, pid);
         const foreground_restore_group = builtin.giveTerminalToJob(shell, pid) catch {
-            // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
             _ = shell.host.wait(pid) catch {};
             restoreVariables(shell, saved);
             restored_assignments = true;
             return .{ .status = 1 };
         };
         defer if (foreground_restore_group) |process_group| builtin.restoreTerminalToShell(shell, process_group);
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         const waited = if (host_mod.has(HostType, .waitJobEvent)) try shell.host.waitJobEvent(pid) else try shell.host.wait(pid);
         noteForegroundStatus(shell, waited);
         switch (waited) {
@@ -9480,7 +9423,6 @@ test "z builtin jumps through directory history" {
 
         fn list(
             _: *anyopaque,
-            // ziglint-ignore: Z023 parameter order follows CommandHistory.list callback shape
             allocator: std.mem.Allocator,
         ) ![]command_history_mod.HistoryEntry {
             return allocator.alloc(command_history_mod.HistoryEntry, 0);
@@ -9488,7 +9430,6 @@ test "z builtin jumps through directory history" {
 
         fn jump(
             context: *anyopaque,
-            // ziglint-ignore: Z023 parameter order follows CommandHistory.jump callback shape
             allocator: std.mem.Allocator,
             terms: []const []const u8,
             exclude: []const u8,

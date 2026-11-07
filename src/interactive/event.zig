@@ -264,7 +264,6 @@ test "event commands quote context and capture redirections" {
 test "timer delay initializes and advances hook deadlines" {
     const extensions = @import("../extensions.zig");
     const TestHost = struct {
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn writeAll(_: *@This(), _: host.Fd, _: []const u8) !void {}
     };
     const TestShell = shell.ShellWithBuiltins(TestHost, extensions.rush.registry);
@@ -279,7 +278,6 @@ test "timer delay initializes and advances hook deadlines" {
 }
 
 test "event dispatch captures output while preserving visible status" {
-    // ziglint-ignore: Z007 duplicate import kept local to test scope
     const extensions = @import("../extensions.zig");
     const TestShell = shell.ShellWithBuiltins(host.RealHost, extensions.rush.registry);
 
@@ -312,7 +310,6 @@ test "event dispatch captures output while preserving visible status" {
 }
 
 test "event hook result refreshes only when work ran" {
-    // ziglint-ignore: Z007 duplicate import kept local to test scope
     const extensions = @import("../extensions.zig");
     const TestShell = shell.ShellWithBuiltins(host.RealHost, extensions.rush.registry);
 

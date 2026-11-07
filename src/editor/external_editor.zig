@@ -8,7 +8,7 @@ const ExternalEditorTempFile = struct {
     path: []const u8,
 
     fn deinit(self: ExternalEditorTempFile, allocator: std.mem.Allocator, io: std.Io) void {
-        // ziglint-ignore: Z026 best-effort temporary file cleanup
+        // Best-effort temporary file cleanup.
         self.dir.deleteFile(io, self.sub_path) catch {};
         self.dir.close(io);
         allocator.free(self.path);

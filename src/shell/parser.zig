@@ -27,7 +27,6 @@ const ParserError = std.mem.Allocator.Error || ParseError;
 
 /// Parses a complete token stream into allocator-backed AST storage. The AST
 /// borrows source and token text, but does not retain the token slice itself.
-// ziglint-ignore: Z015 existing public API error set exposure; preserve API
 pub fn parse(
     allocator: std.mem.Allocator,
     src: source_mod.Source,
@@ -39,7 +38,6 @@ pub fn parse(
 /// Succeeds when the token stream is a complete program. Words, including any
 /// nested substitutions, are not split into parts, so the cost is linear in
 /// the token count; this lets the lexer delimit `$(...)` by parsing its body.
-// ziglint-ignore: Z015 existing public API error set exposure; preserve API
 pub fn checkGrammar(allocator: std.mem.Allocator, src: source_mod.Source, tokens: token.Stream) ParserError!void {
     src.validate();
     assertStreamSource(src, tokens);
@@ -55,7 +53,6 @@ pub fn checkGrammar(allocator: std.mem.Allocator, src: source_mod.Source, tokens
 
 /// Parses a complete token stream with alias-aware nested parsing. Ownership
 /// and input lifetimes match `parse`.
-// ziglint-ignore: Z015 existing public API error set exposure; preserve API
 pub fn parseWithAliases(
     allocator: std.mem.Allocator,
     src: source_mod.Source,
@@ -66,7 +63,6 @@ pub fn parseWithAliases(
 }
 
 /// Matches `parseWithAliases` ownership while rejecting incomplete here-docs.
-// ziglint-ignore: Z015 existing public API error set exposure; preserve API
 pub fn parseWithAliasesRequiringCompleteHereDocs(
     allocator: std.mem.Allocator,
     src: source_mod.Source,
@@ -78,7 +74,6 @@ pub fn parseWithAliasesRequiringCompleteHereDocs(
 
 /// Returns an allocator-backed expansion whose textual parts may borrow
 /// `raw_content`.
-// ziglint-ignore: Z015 existing public API error set exposure; preserve API
 pub fn parseBracedParameterExpansion(
     allocator: std.mem.Allocator,
     raw_content: []const u8,
@@ -90,7 +85,6 @@ pub fn parseBracedParameterExpansion(
 }
 
 /// Returns an allocator-backed word whose textual parts may borrow `text`.
-// ziglint-ignore: Z015 existing public API error set exposure; preserve API
 pub fn parseWordExpansionText(
     allocator: std.mem.Allocator,
     text: []const u8,
@@ -105,7 +99,6 @@ pub fn parseWordExpansionText(
 /// double-quoted word. Quote characters remain literal, while parameter,
 /// command, arithmetic, and the applicable backslash expansions stay active.
 /// The returned word may borrow `text`.
-// ziglint-ignore: Z015 existing public API error set exposure; preserve API
 pub fn parseDoubleQuotedExpansionText(
     allocator: std.mem.Allocator,
     text: []const u8,
@@ -140,7 +133,6 @@ pub fn parseDoubleQuotedExpansionText(
 /// semantics. Other expansion forms are skipped as complete units so callers
 /// can preserve them literally. The returned slice is allocator-backed and its
 /// expansion text may borrow `text`.
-// ziglint-ignore: Z015 matches the existing public parse API error set exposure
 pub fn parseParameterExpansionText(
     allocator: std.mem.Allocator,
     text: []const u8,
@@ -261,7 +253,6 @@ pub fn isParseError(err: anyerror) bool {
 
 /// Alias-aware whole-program parse that also reports failure locations through
 /// `ParseOptions.failure`; output ownership and lifetimes match `parse`.
-// ziglint-ignore: Z015 matches the existing public parse API error set exposure
 pub fn parseWithAliasesAndOptions(
     allocator: std.mem.Allocator,
     src: source_mod.Source,
@@ -342,7 +333,6 @@ pub const Incremental = struct {
     /// remain. Its textual data follows the source/token-text lifetime of `init`.
     /// No parse allocations are retained between calls: once the returned AST
     /// is consumed, its allocator may be reset independently of source/tokens.
-    // ziglint-ignore: Z015 matches the existing public parse API error set exposure
     pub fn next(self: *Incremental) ParserError!?ast.Program {
         defer {
             self.parser.pending_here_docs.deinit(self.parser.allocator);
@@ -547,7 +537,6 @@ const Parser = struct {
         const name_token = self.tokens.get(self.index);
         if (name_token.quoted or !isFunctionName(name_token.text, self.mode())) return null;
         if (self.index + 2 >= self.tokens.items.len) return null;
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         if (self.tokens.items[self.index + 1].kind != .left_paren or
             self.tokens.items[self.index + 2].kind != .right_paren) return null;
         if (name_token.reserved != null) return error.UnexpectedToken;
@@ -716,7 +705,6 @@ const Parser = struct {
             var word_list: std.ArrayList(ast.Word) = .empty;
             errdefer word_list.deinit(self.allocator);
             while (!self.at(.eof) and !self.at(.semicolon) and !self.at(.newline)) {
-                // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                 try word_list.append(self.allocator, try self.parseWordToken(self.eatNonReservedWord() orelse return error.UnexpectedToken));
             }
             words = .{ .words = try word_list.toOwnedSlice(self.allocator) };
@@ -922,7 +910,6 @@ const Parser = struct {
         var patterns: std.ArrayList(ast.Word) = .empty;
         errdefer patterns.deinit(self.allocator);
         while (true) {
-            // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
             try patterns.append(self.allocator, try self.parseWordToken(self.eatNonReservedWord() orelse return error.UnexpectedToken));
             if (self.eat(.pipe) == null) break;
         }
@@ -1252,7 +1239,6 @@ const Parser = struct {
         while (index < end) {
             switch (text[index]) {
                 '\'' => if (context == .plain) {
-                    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                     if (literal_start < index) try parts.append(self.allocator, .{ .literal = text[literal_start..index] });
                     const quote_start = index + 1;
                     index = quote_start;
@@ -1264,7 +1250,6 @@ const Parser = struct {
                     continue;
                 },
                 '"' => if (context == .plain or context == .parameter_double) {
-                    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                     if (literal_start < index) try parts.append(self.allocator, .{ .literal = text[literal_start..index] });
                     const quote_start = index + 1;
                     index = try parse_scan.scanDoubleQuoteEnd(self.allocator, text, quote_start, end);
@@ -1290,7 +1275,6 @@ const Parser = struct {
                         index += 1;
                         continue;
                     }
-                    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                     if (literal_start < index) try parts.append(self.allocator, .{ .literal = text[literal_start..index] });
                     index += 1;
                     if (index >= end) {
@@ -1305,14 +1289,12 @@ const Parser = struct {
                     continue;
                 },
                 '`' => {
-                    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                     if (literal_start < index) try parts.append(self.allocator, .{ .literal = text[literal_start..index] });
                     const substitution_end = try parse_scan.scanBackquoteSubstitution(text, index, end);
                     const source_text = try self.backquoteSourceText(text[index + 1 .. substitution_end]);
                     const line_offset = self.commandSubstitutionLineOffset(span, text, index + 1);
                     const parsed = try self.parseCommandSubstitution(source_text, line_offset);
                     try parts.append(self.allocator, .{
-                        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                         .command_substitution = .{ .source_text = source_text, .parsed = parsed, .line_offset = line_offset },
                     });
                     index = substitution_end + 1;
@@ -1321,7 +1303,6 @@ const Parser = struct {
                 },
                 '<', '>' => |operator| if (context == .plain and index + 1 < end and text[index + 1] == '(') {
                     if (self.mode() == .posix) return error.UnexpectedToken;
-                    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                     if (literal_start < index) try parts.append(self.allocator, .{ .literal = text[literal_start..index] });
                     const substitution_end =
                         try parse_scan.scanCommandSubstitution(self.allocator, text, index + 1, end);
@@ -1343,7 +1324,6 @@ const Parser = struct {
                 '$' => {
                     const name_start = index + 1;
                     if (context == .plain and name_start < end and text[name_start] == '\'') {
-                        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                         if (literal_start < index) try parts.append(self.allocator, .{ .literal = text[literal_start..index] });
                         const quote_start = name_start + 1;
                         const quote_end = try parse_scan.scanDollarSingleQuoteEnd(text, quote_start, end);
@@ -1355,7 +1335,6 @@ const Parser = struct {
                         continue;
                     }
                     if (name_start + 1 < end and text[name_start] == '(' and text[name_start + 1] == '(') {
-                        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                         if (literal_start < index) try parts.append(self.allocator, .{ .literal = text[literal_start..index] });
                         const arithmetic_end = try parse_scan.scanArithmeticExpansion(text, index, end);
                         try parts.append(self.allocator, .{ .arithmetic = text[name_start + 2 .. arithmetic_end] });
@@ -1364,7 +1343,6 @@ const Parser = struct {
                         continue;
                     }
                     if (name_start < end and text[name_start] == '(') {
-                        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                         if (literal_start < index) try parts.append(self.allocator, .{ .literal = text[literal_start..index] });
                         const substitution_end =
                             try parse_scan.scanCommandSubstitution(self.allocator, text, name_start, end);
@@ -1372,7 +1350,6 @@ const Parser = struct {
                         const line_offset = self.commandSubstitutionLineOffset(span, text, name_start + 1);
                         const parsed = try self.parseCommandSubstitution(source_text, line_offset);
                         try parts.append(self.allocator, .{
-                            // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                             .command_substitution = .{ .source_text = source_text, .parsed = parsed, .line_offset = line_offset },
                         });
                         index = substitution_end + 1;
@@ -1386,13 +1363,11 @@ const Parser = struct {
                                 continue;
                             };
                         const expansion_span = spanFromRelativeOffsets(span, text, index, expansion_end + 1);
-                        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                         if (try self.parseBracedParameter(
                             text[name_start + 1 .. expansion_end],
                             expansion_span,
                             context,
                         )) |parameter| {
-                            // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                             if (literal_start < index) try parts.append(self.allocator, .{ .literal = text[literal_start..index] });
                             try self.appendParameterPart(parts, parameter);
                             index = expansion_end + 1;
@@ -1403,7 +1378,6 @@ const Parser = struct {
                     }
                     if (name_start < end) {
                         if (parseSingleParameter(text[name_start])) |parameter| {
-                            // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                             if (literal_start < index) try parts.append(self.allocator, .{ .literal = text[literal_start..index] });
                             try self.appendParameterPart(parts, .{
                                 .parameter = parameter,
@@ -1415,7 +1389,6 @@ const Parser = struct {
                         }
                     }
                     if (name_start < end and text[name_start] == '?') {
-                        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                         if (literal_start < index) try parts.append(self.allocator, .{ .literal = text[literal_start..index] });
                         try self.appendParameterPart(parts, .{
                             .parameter = .{ .special = .question },
@@ -1430,7 +1403,6 @@ const Parser = struct {
                         index += 1;
                         continue;
                     }
-                    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                     if (literal_start < index) try parts.append(self.allocator, .{ .literal = text[literal_start..index] });
                     try self.appendParameterPart(parts, .{
                         .parameter = .{ .variable = text[name_start..name_end] },
@@ -1967,7 +1939,6 @@ const Parser = struct {
 
         for (self.pending_here_docs.items) |pending| {
             const body_token = self.eatHereDocBody() orelse return error.IncompleteHereDoc;
-            // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
             if (body_token.kind == .here_doc_body_unterminated and self.require_complete_here_docs) return error.IncompleteHereDoc;
             pending.redirection.here_doc = .{
                 .body = body_token.text,
@@ -2301,7 +2272,6 @@ test "parser builds simple colon command" {
     const allocator = arena.allocator();
 
     const src: source_mod.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = ":" };
-    // ziglint-ignore: Z028 inline import kept local to test/helper; avoid non-semantic refactor
     const tokens = try @import("lexer.zig").lex(allocator, src);
     const program = try parse(allocator, src, tokens);
 
@@ -2313,9 +2283,7 @@ test "parser builds AND-OR lists" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     const src: source_mod.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = "true && ! false || false" };
-    // ziglint-ignore: Z028 inline import kept local to test/helper; avoid non-semantic refactor
     const tokens = try @import("lexer.zig").lex(allocator, src);
     const program = try parse(allocator, src, tokens);
 
@@ -2333,7 +2301,6 @@ test "parser builds pipeline stages" {
     const allocator = arena.allocator();
 
     const src: source_mod.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = "printf x | cat" };
-    // ziglint-ignore: Z028 inline import kept local to test/helper; avoid non-semantic refactor
     const tokens = try @import("lexer.zig").lex(allocator, src);
     const program = try parse(allocator, src, tokens);
     const pipeline = program.body.entries[0].and_or.pipelines[0].pipeline;
@@ -2349,7 +2316,6 @@ test "parser splits single quoted word parts" {
     const allocator = arena.allocator();
 
     const src: source_mod.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = "printf '%s\\n' hello" };
-    // ziglint-ignore: Z028 inline import kept local to test/helper; avoid non-semantic refactor
     const tokens = try @import("lexer.zig").lex(allocator, src);
     const program = try parse(allocator, src, tokens);
     const words = program.body.entries[0].and_or.pipelines[0].pipeline.stages[0].simple.words;
@@ -2366,7 +2332,6 @@ test "parser removes unquoted backslash escapes from word text" {
     const allocator = arena.allocator();
 
     const src: source_mod.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = "printf \\'3 a\\ b" };
-    // ziglint-ignore: Z028 inline import kept local to test/helper; avoid non-semantic refactor
     const tokens = try @import("lexer.zig").lex(allocator, src);
     const program = try parse(allocator, src, tokens);
     const words = program.body.entries[0].and_or.pipelines[0].pipeline.stages[0].simple.words;
@@ -2390,7 +2355,6 @@ test "parser preserves non-escaper backslashes inside double quotes" {
         .name = "-c",
         .text = "printf \"a\\ b\" \"ok\\n\"",
     };
-    // ziglint-ignore: Z028 inline import kept local to test/helper; avoid non-semantic refactor
     const tokens = try @import("lexer.zig").lex(allocator, src);
     const program = try parse(allocator, src, tokens);
     const words = program.body.entries[0].and_or.pipelines[0].pipeline.stages[0].simple.words;
@@ -2404,9 +2368,7 @@ test "parser decodes dollar single quoted words as quoted literals" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     const src: source_mod.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = "printf $'a\\nb' $'\\101' $'$x'" };
-    // ziglint-ignore: Z028 inline import kept local to test/helper; avoid non-semantic refactor
     const tokens = try @import("lexer.zig").lex(allocator, src);
     const program = try parse(allocator, src, tokens);
     const words = program.body.entries[0].and_or.pipelines[0].pipeline.stages[0].simple.words;
@@ -2422,7 +2384,6 @@ test "parser recognizes leading assignment words" {
     const allocator = arena.allocator();
 
     const src: source_mod.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = "x=hello printf x=arg" };
-    // ziglint-ignore: Z028 inline import kept local to test/helper; avoid non-semantic refactor
     const tokens = try @import("lexer.zig").lex(allocator, src);
     const program = try parse(allocator, src, tokens);
     const command = program.body.entries[0].and_or.pipelines[0].pipeline.stages[0].simple;
@@ -2440,7 +2401,6 @@ test "parser recognizes bash redirection shorthand" {
     const allocator = arena.allocator();
 
     const src: source_mod.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = "a &>out |& b" };
-    // ziglint-ignore: Z028 inline import kept local to test/helper; avoid non-semantic refactor
     const tokens = try @import("lexer.zig").lex(allocator, src);
     const program = try parse(allocator, src, tokens);
     const pipeline = program.body.entries[0].and_or.pipelines[0].pipeline;
@@ -2465,7 +2425,6 @@ test "parser recognizes bash append assignment words" {
         .name = "-c",
         .text = "x+=hello printf x+=arg",
     };
-    // ziglint-ignore: Z028 inline import kept local to test/helper; avoid non-semantic refactor
     const tokens = try @import("lexer.zig").lex(allocator, src);
     const program = try parse(allocator, src, tokens);
     const command = program.body.entries[0].and_or.pipelines[0].pipeline.stages[0].simple;
@@ -2489,7 +2448,6 @@ test "parser treats append words as commands with redirections in POSIX mode" {
         .name = "-c",
         .text = "x+=hello 2>/dev/null",
     };
-    // ziglint-ignore: Z028 inline import kept local to test/helper; avoid non-semantic refactor
     const tokens = try @import("lexer.zig").lex(allocator, src);
     var shell_state = state_mod.State.init(std.testing.allocator, .{ .mode = .posix });
     defer shell_state.deinit();
@@ -2510,7 +2468,6 @@ test "parser builds parameter parts inside double quotes" {
     const allocator = arena.allocator();
 
     const src: source_mod.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = "printf \"$x\"" };
-    // ziglint-ignore: Z028 inline import kept local to test/helper; avoid non-semantic refactor
     const tokens = try @import("lexer.zig").lex(allocator, src);
     const program = try parse(allocator, src, tokens);
     const word = program.body.entries[0].and_or.pipelines[0].pipeline.stages[0].simple.words[1];
@@ -2525,7 +2482,6 @@ test "parser builds command substitution word parts" {
     const allocator = arena.allocator();
 
     const src: source_mod.Source = .{ .id = 1, .kind = .command_string, .name = "-c", .text = "x=$(exit 7)" };
-    // ziglint-ignore: Z028 inline import kept local to test/helper; avoid non-semantic refactor
     const tokens = try @import("lexer.zig").lex(allocator, src);
     const program = try parse(allocator, src, tokens);
     const assignment = program.body.entries[0].and_or.pipelines[0].pipeline.stages[0].simple.assignments[0];

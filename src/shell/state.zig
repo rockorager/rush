@@ -1343,7 +1343,6 @@ pub const State = struct {
     pub fn popPendingTrap(self: *State) ?[]const u8 {
         if (self.pending_traps.items.len == 0) return null;
         const name = self.pending_traps.items[0];
-        // ziglint-ignore: Z011 Z024 deprecated API left unchanged to avoid semantic drift in lint-only pass; preserve existing readable expression shape; lint-only cleanup
         std.mem.copyForwards([]const u8, self.pending_traps.items[0 .. self.pending_traps.items.len - 1], self.pending_traps.items[1..]);
         self.pending_traps.items.len -= 1;
         return name;
@@ -1375,7 +1374,6 @@ pub const State = struct {
         std.debug.assert(process_group != 0);
         const owned_command = try self.allocator.dupe(u8, command);
         errdefer self.allocator.free(owned_command);
-        // ziglint-ignore: Z011 deprecated API left unchanged to avoid semantic drift in lint-only pass
         var owned_pids: std.ArrayListUnmanaged(host.Pid) = .empty;
         errdefer owned_pids.deinit(self.allocator);
         try owned_pids.appendSlice(self.allocator, pids);

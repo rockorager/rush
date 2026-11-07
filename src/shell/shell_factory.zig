@@ -428,7 +428,7 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
                         std.fmt.allocPrint(allocator, "{}: syntax error: unexpected end of input\n", .{line}),
                 } catch return;
             };
-            // ziglint-ignore: Z026 best-effort diagnostic; the parse error still propagates
+            // Best-effort diagnostic; the parse error still propagates.
             self.host.writeAll(.stderr, message) catch {};
         }
 

@@ -68,7 +68,7 @@ fn runExitOnce(self: *WasmSession, status: u8) u8 {
 
 fn reportEvalError(self: *WasmSession, err: anyerror) u8 {
     if (!shell_mod.parser.isParseError(err)) {
-        // ziglint-ignore: Z026 diagnostic write is best-effort; the status is already 2
+        // Diagnostic write is best-effort; the status is already 2.
         self.shell.host.writeAll(.stderr, shell_error_message) catch {};
     }
     return 2;

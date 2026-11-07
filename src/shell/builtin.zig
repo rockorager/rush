@@ -167,7 +167,6 @@ pub const EmptyExtensionState = struct {
         return .{};
     }
 
-    // ziglint-ignore: Z030 deinit intentionally leaves reusable/test-local state shape
     pub fn deinit(_: *EmptyExtensionState) void {}
 
     pub fn enterChildProcess(_: *EmptyExtensionState) void {}
@@ -619,7 +618,6 @@ fn findHashPath(shell: anytype, utility: []const u8) !?[]const u8 {
         return if (shell.host.isExecutableZ(utility_z)) utility else null;
     }
 
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     const path = if (shell.state.getVariable("PATH")) |variable| variable.value else shellEnvValue(shell, "PATH") orelse defaultUtilityPath();
     var candidate_buffer: std.ArrayList(u8) = .empty;
     var iterator = std.mem.splitScalar(u8, path, ':');
@@ -684,7 +682,6 @@ fn evalGetopts(shell: anytype, args: []const []const u8) !result.EvalResult {
     }
 
     const option = operand[shell.state.getopts_char_index];
-    // ziglint-ignore: Z011 deprecated API left unchanged to avoid semantic drift in lint-only pass
     const option_index = std.mem.indexOfScalar(u8, optstring, option);
     if (option_index == null or option == ':') {
         try shell.state.putVariable(.{ .name = name, .value = "?" });
@@ -1130,7 +1127,6 @@ pub fn restoreTerminalToShell(shell: anytype, process_group: host.Pid) void {
     const tty_fd = shell.state.controlling_tty orelse
         (shell.host.openZ("/dev/tty", .{ .access = .read_write }) catch return);
     defer if (shell.state.controlling_tty == null) shell.host.close(tty_fd) catch {};
-    // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
     shell.host.setTerminalProcessGroup(tty_fd, process_group) catch {};
 }
 
@@ -1327,7 +1323,6 @@ fn evalUlimit(shell: anytype, args: []const []const u8) !result.EvalResult {
     };
 
     const set_both = !sawHardOrSoft(args[1..index]);
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     const effective_limit: host.ResourceLimit = if (set_both) .{ .soft = native_value, .hard = native_value } else new_limit;
     shell.host.setResourceLimit(selected_resource.kind, effective_limit) catch return ulimitResourceError(shell);
     return .{};
@@ -1363,7 +1358,6 @@ fn printAllResourceLimits(shell: anytype, selection: UlimitSelection) !result.Ev
         const limit = shell.host.getResourceLimit(resource.kind) catch return ulimitResourceError(shell);
         try shell.host.writeAll(.stdout, resource.label);
         try shell.host.writeAll(.stdout, " ");
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         try shell.host.writeAll(.stdout, try std.fmt.allocPrint(shell.scratchAllocator(), "(-{c}) ", .{resource.option}));
         try writeUlimitValue(shell, selectedLimitValue(limit, selection), resource.units);
     }
@@ -1391,7 +1385,6 @@ fn selectedLimitValue(limit: host.ResourceLimit, selection: UlimitSelection) ?u6
 
 fn writeUlimitValue(shell: anytype, value: ?u64, units: u64) !void {
     if (value) |native_value| {
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         try shell.host.writeAll(.stdout, try std.fmt.allocPrint(shell.scratchAllocator(), "{}\n", .{native_value / units}));
     } else {
         try shell.host.writeAll(.stdout, "unlimited\n");
@@ -1420,7 +1413,6 @@ fn evalUmask(shell: anytype, args: []const []const u8) !result.EvalResult {
         return .{};
     }
 
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     const new_mask = parseOctalUmask(args[1]) orelse parseSymbolicUmask(current, args[1]) orelse return .{ .status = 2 };
     _ = shell.host.setFileCreationMask(new_mask);
     return .{};
@@ -1731,7 +1723,6 @@ fn writeEchoByte(shell: anytype, byte: u8) !void {
 }
 
 fn echoWriteFailed(shell: anytype) result.EvalResult {
-    // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
     shell.host.writeAll(.stderr, "echo: write failed\n") catch {};
     return .{ .status = 1 };
 }
@@ -1799,7 +1790,6 @@ fn evalLocal(shell: anytype, args: []const []const u8) !result.EvalResult {
 
     var status: result.ExitStatus = 0;
     for (args[first_operand..]) |arg| {
-        // ziglint-ignore: Z011 deprecated API left unchanged to avoid semantic drift in lint-only pass
         const equal_index = std.mem.indexOfScalar(u8, arg, '=');
         const name = if (equal_index) |index| arg[0..index] else arg;
         if (!isAssignmentName(name)) {
@@ -1833,11 +1823,9 @@ fn evalLocal(shell: anytype, args: []const []const u8) !result.EvalResult {
 fn evalReadonly(shell: anytype, args: []const []const u8) !result.EvalResult {
     if (args.len == 1) return .{};
     for (args[1..]) |arg| {
-        // ziglint-ignore: Z011 deprecated API left unchanged to avoid semantic drift in lint-only pass
         const equal_index = std.mem.indexOfScalar(u8, arg, '=');
         const name = if (equal_index) |index| arg[0..index] else arg;
         if (!isAssignmentName(name)) return .{ .status = 2 };
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         const value = if (equal_index) |index| arg[index + 1 ..] else if (shell.state.getVariable(name)) |variable| variable.value else "";
         try shell.state.putVariable(.{ .name = name, .value = value, .readonly = true });
     }
@@ -2127,7 +2115,6 @@ fn evalUnset(shell: anytype, args: []const []const u8) !result.EvalResult {
         } else if (array_target) |target| {
             if (shell.state.getArray(name)) |array| {
                 if (array.readonly) {
-                    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                     try shell.host.writeAll(.stderr, try std.fmt.allocPrint(shell.scratchAllocator(), "{s}: readonly variable\n", .{name}));
                     status = 1;
                 } else {
@@ -2138,7 +2125,6 @@ fn evalUnset(shell: anytype, args: []const []const u8) !result.EvalResult {
             }
         } else if (shell.state.getVariable(name)) |variable| {
             if (variable.readonly) {
-                // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                 try shell.host.writeAll(.stderr, try std.fmt.allocPrint(shell.scratchAllocator(), "{s}: readonly variable\n", .{name}));
                 status = 1;
             } else {
@@ -2146,7 +2132,6 @@ fn evalUnset(shell: anytype, args: []const []const u8) !result.EvalResult {
             }
         } else if (shell.state.getVariableAttributes(name)) |attributes| {
             if (attributes.readonly) {
-                // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                 try shell.host.writeAll(.stderr, try std.fmt.allocPrint(shell.scratchAllocator(), "{s}: readonly variable\n", .{name}));
                 status = 1;
             } else {
@@ -2154,7 +2139,6 @@ fn evalUnset(shell: anytype, args: []const []const u8) !result.EvalResult {
             }
         } else if (shell.state.getArray(name)) |array| {
             if (array.readonly) {
-                // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
                 try shell.host.writeAll(.stderr, try std.fmt.allocPrint(shell.scratchAllocator(), "{s}: readonly variable\n", .{name}));
                 status = 1;
             } else {
@@ -2310,10 +2294,8 @@ fn evalTrap(shell: anytype, args: []const []const u8) !result.EvalResult {
                 try shell.state.setSignalTrap(name, action);
                 if (signalNumber(name)) |number| {
                     if (action.len == 0) {
-                        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
                         shell.host.setSignalIgnored(number) catch {};
                     } else {
-                        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
                         shell.host.installSignalTrap(number) catch {};
                     }
                 }
@@ -2501,14 +2483,12 @@ test "fc lists and re-executes attached command history" {
         read_offset: usize = 0,
         deleted: bool = false,
 
-        // ziglint-ignore: Z020 Z030 test helper/reusable deinit; preserve behavior
         fn deinit(self: *@This()) void {
             self.stdout.deinit(std.testing.allocator);
             self.stderr.deinit(std.testing.allocator);
             self.file.deinit(std.testing.allocator);
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn writeAll(self: *@This(), fd: host.Fd, bytes: []const u8) !void {
             switch (fd) {
                 .stdout => try self.stdout.appendSlice(std.testing.allocator, bytes),
@@ -2517,7 +2497,6 @@ test "fc lists and re-executes attached command history" {
             }
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn read(self: *@This(), _: host.Fd, buffer: []u8) !usize {
             if (self.read_offset >= self.file.items.len) return 0;
             const len = @min(buffer.len, self.file.items.len - self.read_offset);
@@ -2526,7 +2505,6 @@ test "fc lists and re-executes attached command history" {
             return len;
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn openZ(self: *@This(), _: [:0]const u8, options: host.OpenOptions) !host.Fd {
             if (options.create) {
                 self.file.clearRetainingCapacity();
@@ -2535,20 +2513,16 @@ test "fc lists and re-executes attached command history" {
             return @enumFromInt(100);
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn close(_: *@This(), _: host.Fd) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn deleteFileZ(self: *@This(), _: [:0]const u8) !void {
             self.deleted = true;
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn isExecutableZ(_: *@This(), path: [:0]const u8) bool {
             return std.mem.endsWith(u8, path, "fake-ed");
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn spawn(self: *@This(), request: host.SpawnRequest) !host.SpawnResult {
             try std.testing.expectEqualStrings("/bin/fake-ed", request.path);
             try std.testing.expectEqualStrings("fake-ed", std.mem.span(request.argv[0].?));
@@ -2559,31 +2533,24 @@ test "fc lists and re-executes attached command history" {
             return .{ .pid = 123 };
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn wait(_: *@This(), _: host.Pid) !host.WaitStatus {
             return .{ .exited = 0 };
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setFileCreationMask(_: *@This(), mask: u32) u32 {
             return mask;
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn currentProcessId(_: *@This()) host.Pid {
             return 1;
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn sendSignal(_: *@This(), _: host.Pid, _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setSignalDefault(_: *@This(), _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setSignalIgnored(_: *@This(), _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn installSignalTrap(_: *@This(), _: u8) !void {}
     };
     const TestContext = struct {
@@ -2591,14 +2558,11 @@ test "fc lists and re-executes attached command history" {
         appended: std.ArrayList(u8) = .empty,
         suppress_next_append: bool = false,
 
-        // ziglint-ignore: Z020 Z030 test helper/reusable deinit; preserve behavior
         fn deinit(self: *@This()) void {
             self.appended.deinit(std.testing.allocator);
         }
 
-        // ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
         fn list(context: *anyopaque, allocator: std.mem.Allocator) ![]history_mod.HistoryEntry {
-            // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
             const self: *@This() = @ptrCast(@alignCast(context));
             const entries = try allocator.alloc(history_mod.HistoryEntry, self.entries.len);
             for (self.entries, 0..) |entry, index| {
@@ -2614,13 +2578,11 @@ test "fc lists and re-executes attached command history" {
             _: i64,
             _: i64,
         ) !void {
-            // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
             const self: *@This() = @ptrCast(@alignCast(context));
             try self.appended.appendSlice(std.testing.allocator, line);
         }
 
         fn suppress(context: *anyopaque) void {
-            // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
             const self: *@This() = @ptrCast(@alignCast(context));
             self.suppress_next_append = true;
         }
@@ -2630,18 +2592,15 @@ test "fc lists and re-executes attached command history" {
         state: state_mod.State,
         command_history: ?history_mod.CommandHistory = null,
 
-        // ziglint-ignore: Z020 Z030 test helper/reusable deinit; preserve behavior
         fn deinit(self: *@This()) void {
             self.host.deinit();
             self.state.deinit();
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn scratchAllocator(_: *@This()) std.mem.Allocator {
             return std.testing.allocator;
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn evalSourceNested(self: *@This(), src: anytype) !result.EvalResult {
             try self.host.writeAll(.stdout, "RUN:");
             try self.host.writeAll(.stdout, src.text);
@@ -2701,13 +2660,11 @@ test "history builtin lists searches deletes and clears attached history" {
         stdout: std.ArrayList(u8) = .empty,
         stderr: std.ArrayList(u8) = .empty,
 
-        // ziglint-ignore: Z020 Z030 test helper/reusable deinit; preserve behavior
         fn deinit(self: *@This()) void {
             self.stdout.deinit(std.testing.allocator);
             self.stderr.deinit(std.testing.allocator);
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn writeAll(self: *@This(), fd: host.Fd, bytes: []const u8) !void {
             switch (fd) {
                 .stdout => try self.stdout.appendSlice(std.testing.allocator, bytes),
@@ -2715,26 +2672,20 @@ test "history builtin lists searches deletes and clears attached history" {
             }
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setFileCreationMask(_: *@This(), mask: u32) u32 {
             return mask;
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn currentProcessId(_: *@This()) host.Pid {
             return 1;
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn sendSignal(_: *@This(), _: host.Pid, _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setSignalDefault(_: *@This(), _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setSignalIgnored(_: *@This(), _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn installSignalTrap(_: *@This(), _: u8) !void {}
     };
     const TestContext = struct {
@@ -2743,20 +2694,16 @@ test "history builtin lists searches deletes and clears attached history" {
         cleared: bool = false,
         suppress_next_append: bool = false,
 
-        // ziglint-ignore: Z020 Z030 test helper/reusable deinit; preserve behavior
         fn deinit(self: *@This()) void {
             self.deleted.deinit(std.testing.allocator);
         }
 
         fn suppress(context: *anyopaque) void {
-            // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
             const self: *@This() = @ptrCast(@alignCast(context));
             self.suppress_next_append = true;
         }
 
-        // ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
         fn list(context: *anyopaque, allocator: std.mem.Allocator) ![]history_mod.HistoryEntry {
-            // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
             const self: *@This() = @ptrCast(@alignCast(context));
             const entries = try allocator.alloc(history_mod.HistoryEntry, self.entries.len);
             for (self.entries, 0..) |entry, index| {
@@ -2765,9 +2712,7 @@ test "history builtin lists searches deletes and clears attached history" {
             return entries;
         }
 
-        // ziglint-ignore: Z023 parameter order follows CommandHistory.search callback shape
         fn search(context: *anyopaque, allocator: std.mem.Allocator, text: []const u8) ![]history_mod.HistoryEntry {
-            // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
             const self: *@This() = @ptrCast(@alignCast(context));
             var matches: std.ArrayList(history_mod.HistoryEntry) = .empty;
             errdefer {
@@ -2785,7 +2730,6 @@ test "history builtin lists searches deletes and clears attached history" {
         }
 
         fn delete(context: *anyopaque, id: i64) !bool {
-            // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
             const self: *@This() = @ptrCast(@alignCast(context));
             for (self.entries) |entry| {
                 if (entry.number != id) continue;
@@ -2796,7 +2740,6 @@ test "history builtin lists searches deletes and clears attached history" {
         }
 
         fn clear(context: *anyopaque) !void {
-            // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
             const self: *@This() = @ptrCast(@alignCast(context));
             self.cleared = true;
         }
@@ -2808,14 +2751,12 @@ test "history builtin lists searches deletes and clears attached history" {
         // Production scratch allocators are arenas; writeFcEntry relies on that.
         scratch: std.heap.ArenaAllocator,
 
-        // ziglint-ignore: Z020 Z030 test helper/reusable deinit; preserve behavior
         fn deinit(self: *@This()) void {
             self.host.deinit();
             self.state.deinit();
             self.scratch.deinit();
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn scratchAllocator(self: *@This()) std.mem.Allocator {
             return self.scratch.allocator();
         }
@@ -2894,36 +2835,28 @@ test "history builtin lists searches deletes and clears attached history" {
 
 test "builtin eval returns utility status" {
     const TestHost = struct {
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn writeAll(_: *@This(), _: host.Fd, _: []const u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setFileCreationMask(_: *@This(), mask: u32) u32 {
             return mask;
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn currentProcessId(_: *@This()) host.Pid {
             return 1;
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn sendSignal(_: *@This(), _: host.Pid, _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setSignalDefault(_: *@This(), _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setSignalIgnored(_: *@This(), _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn installSignalTrap(_: *@This(), _: u8) !void {}
     };
     const TestShell = struct {
         host: TestHost = .{},
         state: state_mod.State,
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn scratchAllocator(_: *@This()) std.mem.Allocator {
             return std.testing.allocator;
         }
@@ -2940,36 +2873,28 @@ test "builtin eval returns utility status" {
 
 test "set -o notify toggles notify option" {
     const TestHost = struct {
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn writeAll(_: *@This(), _: host.Fd, _: []const u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setFileCreationMask(_: *@This(), mask: u32) u32 {
             return mask;
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn currentProcessId(_: *@This()) host.Pid {
             return 1;
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn sendSignal(_: *@This(), _: host.Pid, _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setSignalDefault(_: *@This(), _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setSignalIgnored(_: *@This(), _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn installSignalTrap(_: *@This(), _: u8) !void {}
     };
     const TestShell = struct {
         host: TestHost = .{},
         state: state_mod.State,
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn scratchAllocator(_: *@This()) std.mem.Allocator {
             return std.testing.allocator;
         }
@@ -2996,12 +2921,10 @@ test "set -o monitor toggles and lists the monitor option" {
     const TestHost = struct {
         stdout: std.ArrayList(u8) = .empty,
 
-        // ziglint-ignore: Z020 Z030 test helper/reusable deinit; preserve behavior
         fn deinit(self: *@This()) void {
             self.stdout.deinit(std.testing.allocator);
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn writeAll(self: *@This(), fd: host.Fd, bytes: []const u8) !void {
             switch (fd) {
                 .stdout => try self.stdout.appendSlice(std.testing.allocator, bytes),
@@ -3009,33 +2932,26 @@ test "set -o monitor toggles and lists the monitor option" {
             }
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setFileCreationMask(_: *@This(), mask: u32) u32 {
             return mask;
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn currentProcessId(_: *@This()) host.Pid {
             return 1;
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn sendSignal(_: *@This(), _: host.Pid, _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setSignalDefault(_: *@This(), _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setSignalIgnored(_: *@This(), _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn installSignalTrap(_: *@This(), _: u8) !void {}
     };
     const TestShell = struct {
         host: TestHost = .{},
         state: state_mod.State,
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn scratchAllocator(_: *@This()) std.mem.Allocator {
             return std.testing.allocator;
         }
@@ -3080,36 +2996,28 @@ test "set -o monitor toggles and lists the monitor option" {
 
 test "set -o vi and emacs are mutually exclusive editing options" {
     const TestHost = struct {
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn writeAll(_: *@This(), _: host.Fd, _: []const u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setFileCreationMask(_: *@This(), mask: u32) u32 {
             return mask;
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn currentProcessId(_: *@This()) host.Pid {
             return 1;
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn sendSignal(_: *@This(), _: host.Pid, _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setSignalDefault(_: *@This(), _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setSignalIgnored(_: *@This(), _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn installSignalTrap(_: *@This(), _: u8) !void {}
     };
     const TestShell = struct {
         host: TestHost = .{},
         state: state_mod.State,
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn scratchAllocator(_: *@This()) std.mem.Allocator {
             return std.testing.allocator;
         }
@@ -3160,13 +3068,11 @@ test "jobs builtin filters jobs and prints pids" {
         stdout: std.ArrayList(u8) = .empty,
         stderr: std.ArrayList(u8) = .empty,
 
-        // ziglint-ignore: Z020 Z030 test helper/reusable deinit; preserve behavior
         fn deinit(self: *@This()) void {
             self.stdout.deinit(std.testing.allocator);
             self.stderr.deinit(std.testing.allocator);
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn writeAll(self: *@This(), fd: host.Fd, bytes: []const u8) !void {
             switch (fd) {
                 .stdout => try self.stdout.appendSlice(std.testing.allocator, bytes),
@@ -3175,33 +3081,26 @@ test "jobs builtin filters jobs and prints pids" {
             }
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setFileCreationMask(_: *@This(), mask: u32) u32 {
             return mask;
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn currentProcessId(_: *@This()) host.Pid {
             return 1;
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn sendSignal(_: *@This(), _: host.Pid, _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setSignalDefault(_: *@This(), _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setSignalIgnored(_: *@This(), _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn installSignalTrap(_: *@This(), _: u8) !void {}
     };
     const TestShell = struct {
         host: TestHost = .{},
         state: state_mod.State,
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn scratchAllocator(_: *@This()) std.mem.Allocator {
             return std.testing.allocator;
         }
@@ -3233,36 +3132,28 @@ test "jobs builtin filters jobs and prints pids" {
 
 test "exit builtin returns requested exit flow" {
     const TestHost = struct {
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn writeAll(_: *@This(), _: host.Fd, _: []const u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setFileCreationMask(_: *@This(), mask: u32) u32 {
             return mask;
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn currentProcessId(_: *@This()) host.Pid {
             return 1;
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn sendSignal(_: *@This(), _: host.Pid, _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setSignalDefault(_: *@This(), _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setSignalIgnored(_: *@This(), _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn installSignalTrap(_: *@This(), _: u8) !void {}
     };
     const TestShell = struct {
         host: TestHost = .{},
         state: state_mod.State,
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn scratchAllocator(_: *@This()) std.mem.Allocator {
             return std.testing.allocator;
         }
@@ -3273,7 +3164,6 @@ test "exit builtin returns requested exit flow" {
     const evaluated = try eval(&shell, lookup("exit").?, &.{ "exit", "7" });
 
     try std.testing.expectEqual(@as(result.ExitStatus, 7), evaluated.status);
-    // ziglint-ignore: Z010 explicit type retained for readability/type inference
     try std.testing.expectEqual(result.ControlFlow{ .exit = 7 }, evaluated.flow);
 }
 
@@ -3282,13 +3172,11 @@ test "printf writes formatted output once" {
         stdout: std.ArrayList(u8) = .empty,
         stderr: std.ArrayList(u8) = .empty,
 
-        // ziglint-ignore: Z020 Z030 test helper/reusable deinit; preserve behavior
         fn deinit(self: *@This()) void {
             self.stdout.deinit(std.testing.allocator);
             self.stderr.deinit(std.testing.allocator);
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn writeAll(self: *@This(), fd: host.Fd, bytes: []const u8) !void {
             switch (fd) {
                 .stdout => try self.stdout.appendSlice(std.testing.allocator, bytes),
@@ -3297,33 +3185,26 @@ test "printf writes formatted output once" {
             }
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setFileCreationMask(_: *@This(), mask: u32) u32 {
             return mask;
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn currentProcessId(_: *@This()) host.Pid {
             return 1;
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn sendSignal(_: *@This(), _: host.Pid, _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setSignalDefault(_: *@This(), _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn setSignalIgnored(_: *@This(), _: u8) !void {}
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn installSignalTrap(_: *@This(), _: u8) !void {}
     };
     const TestShell = struct {
         host: TestHost = .{},
         state: state_mod.State,
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn scratchAllocator(_: *@This()) std.mem.Allocator {
             return std.testing.allocator;
         }

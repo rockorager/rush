@@ -19,9 +19,7 @@ const max_companion_bytes = 1024 * 1024;
 
 pub fn complete(
     context: *anyopaque,
-    // ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
     allocator: std.mem.Allocator,
-    // ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
     io: std.Io,
     source: []const u8,
     cursor: usize,
@@ -461,7 +459,6 @@ fn completeFromManifest(
         if (semantic.attached_option_value_offset) |offset| {
             try selectAttachedOptionValue(allocator, analyzed, offset);
         }
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         try appendProviderCandidates(
             allocator,
             io,
@@ -479,7 +476,6 @@ fn completeFromManifest(
     }
 
     if (semantic.complete_subcommands) {
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         try appendSubcommandCandidates(allocator, builder, current, providers, analyzed.replace_start, analyzed.replace_end);
         if (jsonArrayField(current, "dynamicSubcommands")) |provider_refs| {
             for (provider_refs.items) |provider_ref| {
@@ -502,7 +498,6 @@ fn completeFromManifest(
     }
 
     if (manifest.argumentProvider(current, semantic.operand_index)) |provider| {
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         try appendProviderCandidates(
             allocator,
             io,
@@ -590,19 +585,16 @@ fn appendOptionCandidate(
     if (jsonStringField(option, "long")) |long| {
         const value = try std.fmt.allocPrint(allocator, "--{s}", .{long});
         defer allocator.free(value);
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         try builder.append(allocator, .{ .value = value, .description = description, .kind = .option, .priority = priority, .replace_start = replace_start, .replace_end = replace_end });
     }
     if (jsonStringField(option, "short")) |short| {
         const value = try std.fmt.allocPrint(allocator, "-{s}", .{short});
         defer allocator.free(value);
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         try builder.append(allocator, .{ .value = value, .description = description, .kind = .option, .priority = priority, .replace_start = replace_start, .replace_end = replace_end });
     }
     if (jsonArrayField(option, "spellings")) |spellings| {
         for (spellings.items) |spelling_value| {
             const spelling = jsonString(spelling_value) orelse continue;
-            // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
             try builder.append(allocator, .{ .value = spelling, .description = description, .kind = .option, .priority = priority, .replace_start = replace_start, .replace_end = replace_end });
         }
     }
@@ -667,12 +659,9 @@ fn appendProviderCandidates(
         return;
     }
     if (providerValue(providers, provider_ref)) |provider| {
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         if (jsonStringField(provider, "builtin")) |name| return appendBuiltinProvider(allocator, builder, sh, analyzed, name);
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         if (jsonArrayField(provider, "values")) |values| return appendStaticValues(allocator, builder, analyzed, values);
         if (jsonStringField(provider, "function")) |function_name| {
-            // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
             return appendFunctionProvider(
                 allocator,
                 io,
@@ -692,7 +681,6 @@ fn appendProviderCandidates(
     }
 }
 
-// ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
 fn appendBuiltinProvider(allocator: std.mem.Allocator, builder: *Builder, sh: anytype, analyzed: AnalyzedLine, name: []const u8) !void {
     if (std.mem.eql(u8, name, "files")) {
         const literal = analyzed.literal_prefix orelse return;
@@ -720,23 +708,16 @@ fn appendBuiltinProvider(allocator: std.mem.Allocator, builder: *Builder, sh: an
             true,
         );
     }
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     if (std.mem.eql(u8, name, "executables")) return appendPathExecutableCandidates(allocator, builder, sh, analyzed.replace_start, analyzed.replace_end);
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     if (std.mem.eql(u8, name, "variables")) return appendVariableCandidates(allocator, builder, sh, analyzed.replace_start, analyzed.replace_end);
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     if (std.mem.eql(u8, name, "aliases")) return appendAliasCandidates(allocator, builder, sh, analyzed.replace_start, analyzed.replace_end);
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     if (std.mem.eql(u8, name, "functions")) return appendFunctionCandidates(allocator, builder, sh, analyzed.replace_start, analyzed.replace_end);
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     if (std.mem.eql(u8, name, "jobs")) return appendJobCandidates(allocator, builder, sh, analyzed.replace_start, analyzed.replace_end);
 }
 
-// ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
 fn appendStaticValues(allocator: std.mem.Allocator, builder: *Builder, analyzed: AnalyzedLine, values: std.json.Array) !void {
     for (values.items) |value| {
         if (jsonString(value)) |text| {
-            // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
             try builder.append(allocator, .{ .value = text, .replace_start = analyzed.replace_start, .replace_end = analyzed.replace_end });
             continue;
         }
@@ -809,7 +790,6 @@ fn appendFunctionProvider(
     sh.state.removeVariable("rush_completion_value_position");
     try sh.state.putVariable(.{ .name = "rush_completion_prefix", .value = provider_prefix });
     try sh.state.putVariable(.{ .name = "rush_completion_argument_index", .value = argument_index });
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     try sh.state.putVariable(.{ .name = "rush_completion_options_terminated", .value = if (semantic.options_terminated) "true" else "false" });
     try sh.state.putVariable(.{ .name = "rush_completion_value_position", .value = provider_context.value_position });
 
@@ -880,7 +860,6 @@ fn parsedOptionsForProvider(
     analyzed: AnalyzedLine,
     root_command: std.json.Value,
 ) ![]extensions.rush.CompletionParsedOption {
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     const command_index = analyzed.command_word_index orelse return allocator.alloc(extensions.rush.CompletionParsedOption, 0);
     var options: std.ArrayList(extensions.rush.CompletionParsedOption) = .empty;
     errdefer options.deinit(allocator);
@@ -948,7 +927,6 @@ fn operandsForProvider(
     analyzed: AnalyzedLine,
     root_command: std.json.Value,
 ) ![]extensions.rush.CompletionParsedOperand {
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     const command_index = analyzed.command_word_index orelse return allocator.alloc(extensions.rush.CompletionParsedOperand, 0);
     var operands: std.ArrayList(extensions.rush.CompletionParsedOperand) = .empty;
     errdefer operands.deinit(allocator);
@@ -1107,16 +1085,13 @@ test "completion files use the XDG user data fallback" {
     try std.testing.expectEqualStrings("/home/alice/.local/share/rush/completions/open.json", path);
 }
 
-// ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
 fn appendCommandCandidates(allocator: std.mem.Allocator, builder: *Builder, sh: anytype, replace_start: usize, replace_end: usize) !void {
     try appendAliasCandidates(allocator, builder, sh, replace_start, replace_end);
     try appendFunctionCandidates(allocator, builder, sh, replace_start, replace_end);
     inline for (core_completion_builtin_names) |name| {
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         try builder.append(allocator, .{ .value = name, .kind = .builtin, .replace_start = replace_start, .replace_end = replace_end });
     }
     inline for (extensions.rush.definitions) |definition| {
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         try builder.append(allocator, .{ .value = definition.name, .kind = .builtin, .replace_start = replace_start, .replace_end = replace_end });
     }
     try appendPathExecutableCandidates(allocator, builder, sh, replace_start, replace_end);
@@ -1164,47 +1139,37 @@ const core_completion_builtin_names = [_][]const u8{
     "wait",
 };
 
-// ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
 fn appendAliasCandidates(allocator: std.mem.Allocator, builder: *Builder, sh: anytype, replace_start: usize, replace_end: usize) !void {
     var iterator = sh.state.aliases.iterator();
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     while (iterator.next()) |entry| try builder.append(allocator, .{ .value = entry.key_ptr.*, .kind = .command, .description = "alias", .replace_start = replace_start, .replace_end = replace_end });
 }
 
-// ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
 fn appendVariableCandidates(allocator: std.mem.Allocator, builder: *Builder, sh: anytype, replace_start: usize, replace_end: usize) !void {
     var iterator = sh.state.bindings.iterator();
     while (iterator.next()) |entry| {
         const variable = entry.value_ptr.variable() orelse continue;
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         try builder.append(allocator, .{ .value = variable.name, .kind = .variable, .replace_start = replace_start, .replace_end = replace_end, .append_space = false });
     }
 }
 
-// ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
 fn appendFunctionCandidates(allocator: std.mem.Allocator, builder: *Builder, sh: anytype, replace_start: usize, replace_end: usize) !void {
     var iterator = sh.state.functions.iterator();
     while (iterator.next()) |entry| {
         if (!sh.state.isFunctionAutoloadSuppressed(entry.key_ptr.*)) {
-            // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
             try builder.append(allocator, .{ .value = entry.key_ptr.*, .kind = .function, .description = "function", .replace_start = replace_start, .replace_end = replace_end });
         }
     }
 }
 
-// ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
 fn appendJobCandidates(allocator: std.mem.Allocator, builder: *Builder, sh: anytype, replace_start: usize, replace_end: usize) !void {
     for (sh.state.background_jobs.items) |job| {
         const value = try std.fmt.allocPrint(allocator, "%{d}", .{job.id});
         defer allocator.free(value);
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         try builder.append(allocator, .{ .value = value, .kind = .plain, .description = "job", .replace_start = replace_start, .replace_end = replace_end });
     }
 }
 
-// ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
 fn appendPathExecutableCandidates(allocator: std.mem.Allocator, builder: *Builder, sh: anytype, replace_start: usize, replace_end: usize) !void {
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     const path_value = if (sh.state.getVariable("PATH")) |variable| variable.value else shellValue(sh, "PATH") orelse return;
     var dirs = std.mem.splitScalar(u8, path_value, ':');
     while (dirs.next()) |raw_dir| {
@@ -1221,13 +1186,11 @@ fn appendPathExecutableCandidates(allocator: std.mem.Allocator, builder: *Builde
             if (!sh.host.fileAccessZ(full_path_z, .execute)) continue;
             const insert = try shell.word_quoting.escapeIfNeeded(allocator, entry.name, .{});
             defer if (insert) |owned| allocator.free(owned);
-            // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
             try builder.append(allocator, .{ .value = entry.name, .insert = insert, .kind = .command, .replace_start = replace_start, .replace_end = replace_end });
         }
     }
 }
 
-// ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
 fn appendPathCandidates(
     allocator: std.mem.Allocator,
     builder: *Builder,
@@ -1238,11 +1201,9 @@ fn appendPathCandidates(
     replace_end: usize,
     directories_only: bool,
 ) !void {
-    // ziglint-ignore: Z011 deprecated API left unchanged to avoid semantic drift in lint-only pass
     const slash = std.mem.lastIndexOfScalar(u8, prefix, '/');
     const dir_prefix = if (slash) |index| prefix[0 .. index + 1] else "";
     const entry_prefix = if (slash) |index| prefix[index + 1 ..] else prefix;
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     const unexpanded_dir_path = if (dir_prefix.len == 0) "." else if (std.mem.eql(u8, dir_prefix, "/")) "/" else std.mem.trimEnd(u8, dir_prefix, "/");
     const dir_path = if (expand_leading_tilde)
         try completion_path.expandLeadingTilde(allocator, unexpanded_dir_path, shellValue(sh, "HOME"))
@@ -1269,7 +1230,6 @@ fn appendPathCandidates(
         else
             try std.fmt.allocPrint(allocator, "{s}{s}", .{ dir_prefix, entry.name });
         defer allocator.free(value);
-        // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
         try builder.append(allocator, .{ .value = value, .display = entry.name, .kind = if (is_directory) .directory else .file, .replace_start = replace_start, .replace_end = replace_end, .append_space = !is_directory });
     }
 }
@@ -1362,11 +1322,8 @@ const OutputDiscard = struct {
         self.active = false;
         try real_host.duplicateTo(self.saved_stdout, .stdout);
         try real_host.duplicateTo(self.saved_stderr, .stderr);
-        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
         real_host.close(self.saved_stdout) catch {};
-        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
         real_host.close(self.saved_stderr) catch {};
-        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
         real_host.close(self.null_fd) catch {};
     }
 };
@@ -1506,7 +1463,6 @@ test "completion offers inherited options within nested subcommands" {
     const io = std.testing.io;
     const root = try std.fmt.allocPrint(allocator, "rush-test-inherited-options-{d}", .{std.c.getpid()});
     defer allocator.free(root);
-    // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
     std.Io.Dir.cwd().deleteTree(io, root) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
 
@@ -1569,7 +1525,6 @@ test "completion loads dynamic subcommands from manifest providers" {
     const io = std.testing.io;
     const root = try std.fmt.allocPrint(allocator, "rush-test-completion-{d}", .{std.c.getpid()});
     defer allocator.free(root);
-    // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
     std.Io.Dir.cwd().deleteTree(io, root) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
 
@@ -1622,7 +1577,6 @@ test "completion companion assignments do not mutate shell variables" {
     const io = std.testing.io;
     const root = try std.fmt.allocPrint(allocator, "rush-test-companion-state-{d}", .{std.c.getpid()});
     defer allocator.free(root);
-    // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
     std.Io.Dir.cwd().deleteTree(io, root) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
 

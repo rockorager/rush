@@ -32,7 +32,6 @@ pub const RenderOptions = render.RenderOptions;
 pub const DiagnosticSeverity = render.DiagnosticSeverity;
 pub const DiagnosticSpan = render.DiagnosticSpan;
 pub const DiagnosticRender = render.DiagnosticRender;
-// ziglint-ignore: Z006 public re-export keeps existing API spelling
 pub const semanticPromptEnd = render.semantic_prompt_end;
 pub const parseUiStyle = render.parseUiStyle;
 pub const visibleWidth = render.visibleWidth;
@@ -940,7 +939,7 @@ pub const LineSession = struct {
         if (self.editor.buffer.cursor_byte != 0) {
             self.editor.buffer.moveLeft();
         }
-        // ziglint-ignore: Z026 best-effort undo snapshot for mode transition
+        // Best-effort undo snapshot for mode transition.
         self.captureViLineUndo() catch {};
         self.completion_menu.clear(self.allocator);
     }
@@ -948,7 +947,7 @@ pub const LineSession = struct {
     fn enterViInsertModeAtCursor(self: *LineSession) void {
         self.vi_state = .insert;
         self.resetViCommandPrefix();
-        // ziglint-ignore: Z026 best-effort undo snapshot for mode transition
+        // Best-effort undo snapshot for mode transition.
         self.captureViLineUndo() catch {};
         self.completion_menu.clear(self.allocator);
     }
@@ -1579,7 +1578,7 @@ pub const LineSession = struct {
             }
         }
         self.editor.buffer.moveHome();
-        // ziglint-ignore: Z026 best-effort undo snapshot for history navigation
+        // Best-effort undo snapshot for history navigation.
         self.captureViLineUndo() catch {};
         self.completion_menu.clear(self.allocator);
     }
@@ -1610,7 +1609,7 @@ pub const LineSession = struct {
             }
         }
         self.editor.buffer.moveHome();
-        // ziglint-ignore: Z026 best-effort undo snapshot for history navigation
+        // Best-effort undo snapshot for history navigation.
         self.captureViLineUndo() catch {};
         self.completion_menu.clear(self.allocator);
     }
@@ -1626,7 +1625,7 @@ pub const LineSession = struct {
         self.history_index = @intCast(index);
         try self.editor.buffer.replace(self.history.entries[index]);
         self.editor.buffer.moveHome();
-        // ziglint-ignore: Z026 best-effort undo snapshot for history navigation
+        // Best-effort undo snapshot for history navigation.
         self.captureViLineUndo() catch {};
         self.completion_menu.clear(self.allocator);
     }
@@ -1735,7 +1734,7 @@ pub const LineSession = struct {
         self.history_index = entry.id;
         try self.editor.buffer.replace(entry.text);
         self.editor.buffer.moveHome();
-        // ziglint-ignore: Z026 best-effort undo snapshot for history search
+        // Best-effort undo snapshot for history search.
         self.captureViLineUndo() catch {};
         self.completion_menu.clear(self.allocator);
     }
@@ -3325,11 +3324,11 @@ test "completion menu styles candidates by kind" {
 test "ui style parser supports colors and attributes" {
     const spec = "fg=bright-blue,bg=#112233,ul=dashed,ul_color=red,bold,dim,italic,reverse,strike";
     const style = parseUiStyle(spec) orelse return error.MissingStyle;
-    // ziglint-ignore: Z010 expectEqual cannot infer the anonymous struct type from peer resolution
+    // ExpectEqual cannot infer the anonymous struct type from peer resolution.
     try std.testing.expectEqual(vaxis.Color{ .index = 12 }, style.fg.?);
     try std.testing.expectEqual(vaxis.Color.rgbFromUint(0x112233), style.bg.?);
     try std.testing.expectEqual(UnderlineStyle.dashed, style.ul);
-    // ziglint-ignore: Z010 expectEqual cannot infer the anonymous struct type from peer resolution
+    // ExpectEqual cannot infer the anonymous struct type from peer resolution.
     try std.testing.expectEqual(vaxis.Color{ .index = 1 }, style.ul_color.?);
     try std.testing.expect(style.bold);
     try std.testing.expect(style.dim);
@@ -4543,7 +4542,6 @@ const TestViAliasSet = struct {
     };
 };
 
-// ziglint-ignore: Z023 parameter order is fixed by the ViAliasView.lookup callback signature
 fn testLookupViAlias(context: *anyopaque, allocator: std.mem.Allocator, letter: u21) !?[]const u8 {
     const aliases: *const TestViAliasSet = @ptrCast(@alignCast(context));
     for (aliases.entries) |entry| {
@@ -5053,7 +5051,6 @@ const TestHistorySearch = struct {
 
 fn testSearchHistoryEntry(
     context: *anyopaque,
-    // ziglint-ignore: Z023 parameter order is fixed by the HistoryView.search callback signature
     allocator: std.mem.Allocator,
     query: []const u8,
     filters: HistorySearchFilters,
@@ -5074,7 +5071,6 @@ fn testSearchHistoryEntry(
 
 fn testSearchNextHistoryEntry(
     context: *anyopaque,
-    // ziglint-ignore: Z023 parameter order is fixed by the HistoryView.search_next callback signature
     allocator: std.mem.Allocator,
     query: []const u8,
     filters: HistorySearchFilters,

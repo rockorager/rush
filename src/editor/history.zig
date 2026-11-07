@@ -9,7 +9,6 @@ pub const Entry = struct {
     text: []const u8,
     when: i64 = 0,
 
-    // ziglint-ignore: Z012 Z023 method receiver must stay first; type is public as View.HistoryEntry
     pub fn deinit(self: Entry, allocator: std.mem.Allocator) void {
         allocator.free(self.text);
     }

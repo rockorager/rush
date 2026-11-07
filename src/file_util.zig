@@ -30,16 +30,16 @@ pub const AnonymousFile = struct {
                 else => return err,
             };
             const fd = file_host.duplicateAtLeast(opened_fd, 3) catch |err| {
-                // ziglint-ignore: Z026 best-effort cleanup while returning the primary error
+                // Best-effort cleanup while returning the primary error.
                 file_host.close(opened_fd) catch {};
-                // ziglint-ignore: Z026 best-effort cleanup while returning the primary error
+                // Best-effort cleanup while returning the primary error.
                 file_host.deleteFileZ(path) catch {};
                 return err;
             };
-            // ziglint-ignore: Z026 the duplicate is the descriptor callers use
+            // The duplicate is the descriptor callers use.
             file_host.close(opened_fd) catch {};
             file_host.deleteFileZ(path) catch |err| {
-                // ziglint-ignore: Z026 best-effort cleanup while returning the unlink error
+                // Best-effort cleanup while returning the unlink error.
                 file_host.close(fd) catch {};
                 return err;
             };
@@ -49,7 +49,7 @@ pub const AnonymousFile = struct {
     }
 
     pub fn deinit(self: *AnonymousFile, file_host: anytype) void {
-        // ziglint-ignore: Z026 closing a private unlinked file cannot lose data callers still need
+        // Closing a private unlinked file cannot lose data callers still need.
         file_host.close(self.fd) catch {};
         self.* = undefined;
     }

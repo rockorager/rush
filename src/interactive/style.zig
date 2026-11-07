@@ -12,9 +12,7 @@ const RushShell = shell.ShellWithBuiltins(host.RealHost, extensions.rush.registr
 
 pub fn refreshStyle(
     context: *anyopaque,
-    // ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
     allocator: std.mem.Allocator,
-    // ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
     io: std.Io,
     scheme: editor.driver.ColorScheme,
 ) !editor_render.UiTheme {
@@ -35,9 +33,7 @@ pub fn refreshStyle(
 
 pub fn refreshColorReport(
     context: *anyopaque,
-    // ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
     allocator: std.mem.Allocator,
-    // ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
     io: std.Io,
     report: editor.driver.ColorReport,
 ) !editor_render.UiTheme {
@@ -164,7 +160,6 @@ fn applyUiStyleVariable(state: shell.state.State, ui_style: *editor_render.UiSty
 }
 
 test "interactive style refresh runs rush_style with color scheme" {
-    // ziglint-ignore: Z010 explicit type retained for readability/type inference
     var sh = RushShell.init(std.testing.allocator, host.RealHost{}, .{});
     defer sh.deinit();
 
@@ -192,7 +187,6 @@ test "interactive style refresh runs rush_style with color scheme" {
 }
 
 test "interactive color reports update rush color variables without running rush_style" {
-    // ziglint-ignore: Z010 explicit type retained for readability/type inference
     var sh = RushShell.init(std.testing.allocator, host.RealHost{}, .{});
     defer sh.deinit();
 
@@ -256,7 +250,6 @@ test "interactive color reports update rush color variables without running rush
 
 test "Linux console theme replaces underline colors with foreground colors" {
     const env = [_][*:0]const u8{"TERM=linux"};
-    // ziglint-ignore: Z010 explicit type retained for readability/type inference
     var sh = RushShell.init(std.testing.allocator, host.RealHost{}, .{ .env = &env });
     defer sh.deinit();
     try sh.state.putVariable(.{ .name = "rush_style_error", .value = "ul=curly,ul_color=red" });

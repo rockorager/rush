@@ -268,22 +268,18 @@ test "decode expands Bash prompt escapes" {
     const TestHost = struct {
         pub const Self = @This();
 
-        // ziglint-ignore: Z023 parameter order follows Host method shape
         pub fn effectiveUserName(_: Self, allocator: std.mem.Allocator) ![]const u8 {
             return allocator.dupe(u8, "tester");
         }
 
-        // ziglint-ignore: Z023 parameter order follows Host method shape
         pub fn hostname(_: Self, allocator: std.mem.Allocator) ![]const u8 {
             return allocator.dupe(u8, "host.example");
         }
 
-        // ziglint-ignore: Z023 parameter order follows Host method shape
         pub fn terminalName(_: Self, allocator: std.mem.Allocator, _: host_mod.Fd) ![]const u8 {
             return allocator.dupe(u8, "/dev/ttys001");
         }
 
-        // ziglint-ignore: Z023 parameter order follows Host method shape
         pub fn formatLocalTime(_: Self, allocator: std.mem.Allocator, _: i64, format: []const u8) ![]const u8 {
             return std.fmt.allocPrint(allocator, "<{s}>", .{format});
         }
@@ -343,19 +339,16 @@ test "decode caches stable host prompt metadata" {
 
         calls: *Calls,
 
-        // ziglint-ignore: Z023 parameter order follows Host method shape
         pub fn effectiveUserName(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
             self.calls.username += 1;
             return allocator.dupe(u8, "tester");
         }
 
-        // ziglint-ignore: Z023 parameter order follows Host method shape
         pub fn hostname(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
             self.calls.hostname += 1;
             return allocator.dupe(u8, "host.example");
         }
 
-        // ziglint-ignore: Z023 parameter order follows Host method shape
         pub fn terminalName(self: *Self, allocator: std.mem.Allocator, _: host_mod.Fd) ![]const u8 {
             self.calls.terminal_name += 1;
             return allocator.dupe(u8, "/dev/ttys001");
@@ -395,7 +388,6 @@ test "decode expands Bash prompt time and control escapes" {
     const TestHost = struct {
         const Self = @This();
 
-        // ziglint-ignore: Z012 Z023 test host method; parameter order follows Host method shape
         pub fn formatLocalTime(_: Self, allocator: std.mem.Allocator, _: i64, format: []const u8) ![]const u8 {
             return std.fmt.allocPrint(allocator, "<{s}>", .{format});
         }

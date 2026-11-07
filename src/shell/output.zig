@@ -58,12 +58,10 @@ test "HostWriter buffers writes until flush" {
     const TestHost = struct {
         bytes: std.ArrayList(u8) = .empty,
 
-        // ziglint-ignore: Z020 Z030 test helper/reusable deinit; preserve behavior
         fn deinit(self: *@This()) void {
             self.bytes.deinit(std.testing.allocator);
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn writeAll(self: *@This(), fd: host_mod.Fd, bytes: []const u8) !void {
             try std.testing.expectEqual(host_mod.Fd.stdout, fd);
             try self.bytes.appendSlice(std.testing.allocator, bytes);
@@ -86,12 +84,10 @@ test "HostWriter flushes repeated bytes in buffer-sized chunks" {
         bytes: std.ArrayList(u8) = .empty,
         writes: usize = 0,
 
-        // ziglint-ignore: Z020 Z030 test helper/reusable deinit; preserve behavior
         fn deinit(self: *@This()) void {
             self.bytes.deinit(std.testing.allocator);
         }
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         pub fn writeAll(self: *@This(), fd: host_mod.Fd, bytes: []const u8) !void {
             try std.testing.expectEqual(host_mod.Fd.stdout, fd);
             try self.bytes.appendSlice(std.testing.allocator, bytes);

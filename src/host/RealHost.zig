@@ -291,7 +291,7 @@ pub fn disableTerminalEcho(self: RealHost, fd: host.Fd) ?TerminalMode {
 
 pub fn restoreTerminalMode(_: RealHost, fd: host.Fd, mode: TerminalMode) void {
     const raw_fd: std.posix.fd_t = @intCast(fd.raw());
-    // ziglint-ignore: Z026 best-effort terminal cleanup cannot report through this API
+    // Best-effort terminal cleanup cannot report through this API.
     std.posix.tcsetattr(raw_fd, .DRAIN, mode) catch {};
 }
 
@@ -678,7 +678,6 @@ pub fn isTerminalFd(_: RealHost, fd: host.Fd) bool {
     return std.c.isatty(@intCast(fd.raw())) == 1;
 }
 
-// ziglint-ignore: Z015 existing public API error set exposure; preserve API
 pub fn listDir(_: RealHost, allocator: std.mem.Allocator, path: []const u8) ListDirError!host.ListDirResult {
     std.debug.assert(path.len != 0);
     return switch (builtin.os.tag) {
@@ -697,7 +696,6 @@ pub fn changeDir(_: RealHost, path: []const u8) ChangeDirError!void {
     };
 }
 
-// ziglint-ignore: Z015 existing public API error set exposure; preserve API
 pub fn currentDir(_: RealHost, allocator: std.mem.Allocator) CurrentDirError![]const u8 {
     return switch (builtin.os.tag) {
         .linux => linuxCurrentDir(allocator),
@@ -774,7 +772,7 @@ pub fn exec(self: RealHost, request: host.SpawnRequest) ExecError!noreturn {
     saved_signals.capture(request.ignored_signals);
     defer saved_signals.restore();
     const previous_group = self.currentProcessGroup();
-    // ziglint-ignore: Z026 the shell keeps its new group if the old one has vanished
+    // The shell keeps its new group if the old one has vanished.
     defer if (request.process_group != null) self.setProcessGroup(0, previous_group) catch {};
     return switch (builtin.os.tag) {
         .linux => linuxExec(request),
@@ -1070,7 +1068,6 @@ fn libcDuplicateAtLeast(fd: host.Fd, min_fd: u31) DuplicateError!host.Fd {
             const duplicated: host.Fd = @enumFromInt(@as(i32, @intCast(rc)));
             if (comptime !@hasDecl(std.c.F, "DUPFD_CLOEXEC")) {
                 libcSetCloseOnExec(duplicated, true) catch |err| {
-                    // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
                     real_host.close(duplicated) catch {};
                     return switch (err) {
                         error.BadFd => error.BadFd,
@@ -1874,7 +1871,7 @@ fn restoreIgnoredSignals(caught: u64) void {
     var remaining = caught;
     while (remaining != 0) : (remaining &= remaining - 1) {
         const signal: u8 = @ctz(remaining);
-        // ziglint-ignore: Z026 the signal was ignored a moment ago, so it is valid
+        // The signal was ignored a moment ago, so it is valid.
         setSignalAction(signal, std.posix.SIG.IGN) catch {};
     }
 }

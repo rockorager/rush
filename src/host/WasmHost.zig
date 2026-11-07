@@ -288,7 +288,6 @@ pub fn disableTerminalEcho(_: *const WasmHost, _: host.Fd) ?TerminalMode {
 
 pub fn restoreTerminalMode(_: *const WasmHost, _: host.Fd, _: TerminalMode) void {}
 
-// ziglint-ignore: Z015 existing public API error set exposure; preserve API
 pub fn listDir(_: *const WasmHost, _: std.mem.Allocator, path: []const u8) ListDirError!host.ListDirResult {
     std.debug.assert(path.len != 0);
     return error.FileNotFound;
@@ -301,7 +300,6 @@ pub fn changeDir(self: *WasmHost, path: []const u8) ChangeDirError!void {
     self.cwd = resolved;
 }
 
-// ziglint-ignore: Z015 existing public API error set exposure; preserve API
 pub fn currentDir(self: *const WasmHost, allocator: std.mem.Allocator) CurrentDirError![]const u8 {
     return allocator.dupe(u8, self.cwd) catch error.Unexpected;
 }

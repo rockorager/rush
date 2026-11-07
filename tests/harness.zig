@@ -470,7 +470,7 @@ fn createTempRoot(
             },
             else => return err,
         };
-        // ziglint-ignore: Z026 best-effort cleanup after failed temporary-environment setup
+        // Best-effort cleanup after failed temporary-environment setup.
         errdefer cwd.deleteTree(io, path) catch {};
 
         var environ_map = try parent_environ_map.clone(allocator);
@@ -677,7 +677,7 @@ fn runCommand(
     while (multi_reader.fill(64, timeout)) |_| {} else |err| switch (err) {
         error.EndOfStream => {},
         error.Timeout => {
-            // ziglint-ignore: Z026 the group may already be gone; the case fails either way
+            // The group may already be gone; the case fails either way.
             std.posix.kill(-child.id.?, .KILL) catch {};
             return .{
                 .stdout = try allocator.dupe(u8, ""),

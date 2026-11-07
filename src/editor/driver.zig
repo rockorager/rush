@@ -408,7 +408,7 @@ pub const TerminalSession = struct {
     }
 
     pub fn requestPromptRedraw(self: *TerminalSession) void {
-        // ziglint-ignore: Z026 best-effort wakeup; the next input event can redraw
+        // Best-effort wakeup; the next input event can redraw.
         rawWriteAll(self.prompt_redraw.write.handle, "p") catch {};
     }
 
@@ -446,7 +446,7 @@ pub const TerminalSession = struct {
     }
 
     pub fn removePromptAsyncFd(self: *TerminalSession, fd: std.posix.fd_t) void {
-        // ziglint-ignore: Z026 best-effort unregistration; a closed fd drops out of the loop anyway
+        // Best-effort unregistration; a closed fd drops out of the loop anyway.
         self.loop.removeFd(fd) catch {};
     }
 
@@ -1055,7 +1055,7 @@ pub const TerminalSession = struct {
 
     fn processTrapSignal(self: *TerminalSession) void {
         var buffer: [64]u8 = undefined;
-        // ziglint-ignore: Z026 best-effort signal-pipe drain
+        // Best-effort signal-pipe drain.
         _ = rawRead(self.trap_signal.read.handle, &buffer) catch {};
     }
 };
@@ -1436,7 +1436,7 @@ const TestHistoryPage = struct {
 
     fn search(
         context: *anyopaque,
-        allocator: std.mem.Allocator, // ziglint-ignore: Z023 callback signature
+        allocator: std.mem.Allocator,
         query: []const u8,
         filters: line_editor.HistorySearchFilters,
         cursor: ?i64,
@@ -1482,7 +1482,6 @@ test "history page callback resolves a search in one provider call" {
 
 fn testExpandAbbreviation(
     context: *anyopaque,
-    // ziglint-ignore: Z023 parameter order is fixed by the expand_abbreviation callback signature
     allocator: std.mem.Allocator,
     source: []const u8,
     cursor: usize,

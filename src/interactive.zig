@@ -35,7 +35,6 @@ pub const Options = struct {
 pub fn run(
     allocator: std.mem.Allocator,
     real_host: host.RealHost,
-    // ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
     io: std.Io,
     env: []const [*:0]const u8,
     options: Options,
@@ -121,23 +120,18 @@ fn enableJobControl(sh: *RushShell, tty_fd: host.Fd) ?host.Pid {
         };
     }
     sh.host.setTerminalProcessGroup(tty_fd, shell_pid) catch {
-        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
         if (original_process_group != shell_pid) sh.host.setProcessGroup(0, original_process_group) catch {};
         sh.state.options.monitor = false;
         return null;
     };
     const foreground_group = sh.host.terminalProcessGroup(tty_fd) catch {
-        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
         sh.host.setTerminalProcessGroup(tty_fd, original_terminal_group) catch {};
-        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
         if (original_process_group != shell_pid) sh.host.setProcessGroup(0, original_process_group) catch {};
         sh.state.options.monitor = false;
         return null;
     };
     if (foreground_group != shell_pid) {
-        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
         sh.host.setTerminalProcessGroup(tty_fd, original_terminal_group) catch {};
-        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
         if (original_process_group != shell_pid) sh.host.setProcessGroup(0, original_process_group) catch {};
         sh.state.options.monitor = false;
         return null;
@@ -153,7 +147,6 @@ fn ignoreInteractiveJobControlSignals(sh: *RushShell) void {
     for ([_][]const u8{ "TSTP", "TTIN", "TTOU" }) |name| {
         if (sh.state.getSignalTrap(name) != null) continue;
         if (shell.builtin.signalNumber(name)) |signal| {
-            // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
             sh.host.setSignalIgnored(signal) catch {};
         }
     }
@@ -253,17 +246,17 @@ const InteractiveSession = struct {
         var capture = try file_util.AnonymousFile.init(allocator, self.io, sh_host, "rush-trap");
         defer capture.deinit(sh_host);
         const saved_stdout = try sh_host.duplicateAtLeast(.stdout, 10);
-        // ziglint-ignore: Z026 closing a saved descriptor after restoring it
+        // Closing a saved descriptor after restoring it.
         defer sh_host.close(saved_stdout) catch {};
         const saved_stderr = try sh_host.duplicateAtLeast(.stderr, 10);
-        // ziglint-ignore: Z026 closing a saved descriptor after restoring it
+        // Closing a saved descriptor after restoring it.
         defer sh_host.close(saved_stderr) catch {};
 
         const evaluated = evaluated: {
             defer {
-                // ziglint-ignore: Z026 the saved descriptors are valid; restoring them cannot fail
+                // The saved descriptors are valid; restoring them cannot fail.
                 sh_host.duplicateTo(saved_stdout, .stdout) catch {};
-                // ziglint-ignore: Z026 the saved descriptors are valid; restoring them cannot fail
+                // The saved descriptors are valid; restoring them cannot fail.
                 sh_host.duplicateTo(saved_stderr, .stderr) catch {};
             }
             try sh_host.duplicateTo(capture.fd, .stdout);
@@ -286,7 +279,6 @@ const InteractiveSession = struct {
     fn restoreTerminalProcessGroup(self: *InteractiveSession) void {
         if (self.restore_terminal_pgrp) |process_group| {
             const tty_fd = self.sh.state.controlling_tty orelse .stdin;
-            // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
             self.sh.host.setTerminalProcessGroup(tty_fd, process_group) catch {};
         }
     }
@@ -340,7 +332,7 @@ const InteractiveSession = struct {
         const evaluated = self.sh.evalSource(src) catch |err| {
             self.last_command_status = 2;
             self.sh.state.last_status = 2;
-            // ziglint-ignore: Z026 history updates remain best effort when evaluation fails
+            // History updates remain best effort when evaluation fails.
             self.history_service.completeCommand(history_handle, 2, 0) catch {};
             if (!shell.parser.isParseError(err)) try self.sh.host.writeAll(.stderr, "rush: shell error\n");
             pending.clearRetainingCapacity();
@@ -348,7 +340,7 @@ const InteractiveSession = struct {
         };
         pending.clearRetainingCapacity();
         const duration_ms = @max(unixTimestamp(self.io) - started_at, 0) * 1000;
-        // ziglint-ignore: Z026 history updates remain best effort after command completion
+        // History updates remain best effort after command completion.
         self.history_service.completeCommand(history_handle, evaluated.status, duration_ms) catch {};
         self.last_command_status = evaluated.status;
         switch (evaluated.flow) {
@@ -360,7 +352,6 @@ const InteractiveSession = struct {
 
     const ReadLineError = error{EditorFailure} || error{OutOfMemory};
 
-    // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     fn readLine(self: *InteractiveSession, terminal: *editor.driver.TerminalSession) ReadLineError!editor.driver.ReadLineResult {
         // Job events, PROMPT_COMMAND, and prompt functions run before the
         // editor reads keys; Ctrl-C interrupts them.
@@ -373,7 +364,6 @@ const InteractiveSession = struct {
             else => try self.allocator.dupe(u8, ""),
         };
         defer self.allocator.free(job_output);
-        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
         if (job_output.len != 0) self.sh.host.writeAll(.stderr, job_output) catch {};
 
         // Collect prompt async refreshes that completed while a foreground
@@ -399,7 +389,7 @@ const InteractiveSession = struct {
         };
 
         try self.refreshHistoryCurrentDirectory();
-        // ziglint-ignore: Z026 best-effort terminal metadata; the next directory change or prompt reports it again
+        // Best-effort terminal metadata; the next directory change or prompt reports it again.
         self.reportTerminalLocation(terminal) catch {};
         try self.command_cache.refresh(self.allocator, self.sh);
         terminal.endShellCode();
@@ -437,7 +427,6 @@ const InteractiveSession = struct {
                 "rush: editor error: {s}\n",
                 .{@errorName(err)},
             ) catch "rush: editor error\n";
-            // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
             self.sh.host.writeAll(.stderr, message) catch {};
             return error.EditorFailure;
         };
@@ -632,7 +621,7 @@ const InteractiveSession = struct {
             error.OutOfMemory => return error.OutOfMemory,
             else => {
                 if (!shell.parser.isParseError(err)) {
-                    // ziglint-ignore: Z026 preserve the original prompt-command failure when diagnostics cannot write
+                    // Preserve the original prompt-command failure when diagnostics cannot write.
                     self.sh.host.writeAll(.stderr, "rush: PROMPT_COMMAND error\n") catch {};
                 }
                 self.sh.state.last_status = 2;
@@ -693,11 +682,10 @@ const InteractiveSession = struct {
             self.last_command_duration_ms = duration_ms;
             // Consume suppression even when an earlier command ran before a
             // later parse/evaluation failure, so it cannot leak to the next line.
-            // ziglint-ignore: Z026 intentional best-effort history update; the pre-execution row remains on failure
+            // Intentional best-effort history update; the pre-execution row remains on failure.
             self.history_service.completeCommand(history_handle, 2, duration_ms) catch {};
             // Parse errors already produced a positioned syntax diagnostic.
             if (!shell.parser.isParseError(err)) try self.sh.host.writeAll(.stderr, "rush: shell error\n");
-            // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
             terminal.finishSemanticCommand(2) catch {};
             self.reportCommandStatus(terminal, line, 2, duration_ms);
             try terminal.enterEditorMode(.discard);
@@ -705,10 +693,9 @@ const InteractiveSession = struct {
         };
         const duration_ms = @max(unixTimestamp(self.io) - started_at, 0) * 1000;
         self.last_command_duration_ms = duration_ms;
-        // ziglint-ignore: Z026 intentional best-effort history update; the pre-execution row remains on failure
+        // Intentional best-effort history update; the pre-execution row remains on failure.
         self.history_service.completeCommand(history_handle, evaluated.status, duration_ms) catch {};
         self.last_command_status = evaluated.status;
-        // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
         terminal.finishSemanticCommand(evaluated.status) catch {};
         self.reportCommandStatus(terminal, line, evaluated.status, duration_ms);
         const job_event_output = try self.dispatchJobLifecycleEvents(
@@ -742,7 +729,7 @@ const InteractiveSession = struct {
         const threshold = command_status.parseThreshold(setting.value) orelse return;
         var buffer: [program_status.max_message_len]u8 = undefined;
         const report = command_status.finishedReport(&buffer, line, status, duration_ms, threshold) orelse return;
-        // ziglint-ignore: Z026 status reports are best effort and must not affect the command result
+        // Status reports are best effort and must not affect the command result.
         terminal.reportProgramStatus(report) catch return;
         self.command_status_reported = true;
     }
@@ -750,7 +737,7 @@ const InteractiveSession = struct {
     fn clearCommandStatus(self: *InteractiveSession, terminal: *editor.driver.TerminalSession) void {
         if (!self.command_status_reported) return;
         self.command_status_reported = false;
-        // ziglint-ignore: Z026 status reports are best effort and must not affect the command result
+        // Status reports are best effort and must not affect the command result.
         terminal.reportProgramStatus(.{ .state = .clear, .id = command_status.record_id }) catch {};
     }
 
@@ -861,7 +848,7 @@ const InteractiveSession = struct {
         );
         defer dispatched.deinit(self.allocator);
         if (dispatched.output.len != 0) {
-            // ziglint-ignore: Z026 event output is best effort during startup dispatch
+            // Event output is best effort during startup dispatch.
             self.sh.host.writeAll(.stderr, dispatched.output) catch {};
         }
         return dispatched.exit_status;
@@ -873,7 +860,6 @@ const InteractiveSession = struct {
 
     fn exit(self: *InteractiveSession, status: u8) u8 {
         return shell.eval.runExitTrap(self.sh, status) catch {
-            // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
             self.sh.host.writeAll(.stderr, "rush: shell error\n") catch {};
             return 2;
         };
@@ -921,9 +907,9 @@ fn onDirectoryChange(context: *anyopaque, old_pwd: []const u8, new_pwd: []const 
     const session: *InteractiveSession = @ptrCast(@alignCast(context));
     const terminal = session.terminal orelse return;
 
-    // ziglint-ignore: Z026 best-effort terminal metadata; the next prompt reports it again
+    // Best-effort terminal metadata; the next prompt reports it again.
     terminal.reportCurrentDirectory(new_pwd, session.command_history.hostname) catch {};
-    // ziglint-ignore: Z026 best-effort terminal metadata; the next prompt reports it again
+    // Best-effort terminal metadata; the next prompt reports it again.
     session.reportWindowTitle(terminal, new_pwd) catch {};
 
     if (session.dispatching_directory_change) return;
@@ -942,14 +928,14 @@ fn onDirectoryChange(context: *anyopaque, old_pwd: []const u8, new_pwd: []const 
             "rush: directory.change event failed: {s}\n",
             .{@errorName(err)},
         ) catch "rush: directory.change event failed\n";
-        // ziglint-ignore: Z026 event diagnostics are best effort during callback dispatch
+        // Event diagnostics are best effort during callback dispatch.
         session.sh.host.writeAll(.stderr, message) catch {};
         return;
     };
     defer dispatched.deinit(session.allocator);
     if (dispatched.exit_status) |status| pendingEventExit(session, status);
     if (dispatched.output.len != 0) {
-        // ziglint-ignore: Z026 event output is best effort during callback dispatch
+        // Event output is best effort during callback dispatch.
         session.sh.host.writeAll(.stderr, dispatched.output) catch {};
     }
 }
@@ -971,11 +957,10 @@ fn onForegroundCommand(context: *anyopaque, command: ?[]const u8) void {
     defer session.allocator.free(cwd);
     const title = session.formatWindowTitle(cwd, command) catch return;
     defer session.allocator.free(title);
-    // ziglint-ignore: Z026 best-effort terminal metadata; the next prompt reports it again
+    // Best-effort terminal metadata; the next prompt reports it again.
     terminal.reportWindowTitle(title) catch {};
 }
 
-// ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
 fn runInteractiveHooks(context: *anyopaque, allocator: std.mem.Allocator, io: std.Io) !editor.driver.HookResult {
     const session: *InteractiveSession = @ptrCast(@alignCast(context));
     var output: std.ArrayList(u8) = .empty;
@@ -1007,7 +992,6 @@ fn runInteractiveHooks(context: *anyopaque, allocator: std.mem.Allocator, io: st
     };
 }
 
-// ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
 fn nextInteractiveHookIntervalMs(context: *anyopaque, io: std.Io) !?u64 {
     const session: *InteractiveSession = @ptrCast(@alignCast(context));
     const timer_ms = session.events.nextTimerDelayMs(io);
@@ -1017,7 +1001,6 @@ fn nextInteractiveHookIntervalMs(context: *anyopaque, io: std.Io) !?u64 {
     return @min(timer_ms.?, prompt_async_ms.?);
 }
 
-// ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
 fn refreshInteractivePrompt(context: *anyopaque, allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
     _ = io;
     const session: *InteractiveSession = @ptrCast(@alignCast(context));
@@ -1025,7 +1008,6 @@ fn refreshInteractivePrompt(context: *anyopaque, allocator: std.mem.Allocator, i
     return session.renderPrompt() catch try prompt(allocator, session.sh);
 }
 
-// ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
 fn refreshInteractiveRightPrompt(context: *anyopaque, allocator: std.mem.Allocator, io: std.Io) !?[]const u8 {
     _ = allocator;
     _ = io;
@@ -1033,7 +1015,6 @@ fn refreshInteractiveRightPrompt(context: *anyopaque, allocator: std.mem.Allocat
     return try session.renderRightPrompt();
 }
 
-// ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
 fn refreshInteractiveTransientPrompt(context: *anyopaque, allocator: std.mem.Allocator, io: std.Io) !?[]const u8 {
     _ = allocator;
     _ = io;
@@ -1043,9 +1024,7 @@ fn refreshInteractiveTransientPrompt(context: *anyopaque, allocator: std.mem.All
 
 fn diagnoseInteractiveInput(
     context: *anyopaque,
-    // ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
     allocator: std.mem.Allocator,
-    // ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
     io: std.Io,
     text: []const u8,
 ) !?editor.render.DiagnosticRender {
@@ -1095,7 +1074,6 @@ fn appendBackgroundJobNotification(
 fn appendPrint(
     allocator: std.mem.Allocator,
     output: *std.ArrayList(u8),
-    // ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
     comptime fmt: []const u8,
     args: anytype,
 ) !void {
@@ -1281,7 +1259,6 @@ test "stdin continuation prompt expands parameters without losing status" {
 
 fn expandRushAbbreviation(
     context: *anyopaque,
-    // ziglint-ignore: Z023 parameter order follows method or callback shape; preserve API
     allocator: std.mem.Allocator,
     source: []const u8,
     cursor: usize,
@@ -1850,7 +1827,6 @@ test "interactive terminal teardown restores process group before closing tty" {
         tty_closed: bool = false,
         events: std.ArrayList(Event) = .empty,
 
-        // ziglint-ignore: Z020 test-local helper uses @This(); avoid non-semantic refactor
         fn restoreTerminalProcessGroup(self: *@This()) void {
             std.testing.expect(!self.tty_closed) catch unreachable;
             self.events.append(std.testing.allocator, .restore) catch unreachable;
@@ -1859,7 +1835,6 @@ test "interactive terminal teardown restores process group before closing tty" {
     const FakeTerminal = struct {
         session: *FakeSession,
 
-        // ziglint-ignore: Z020 Z030 test-local helper uses @This(); avoid non-semantic refactor
         fn deinit(self: *@This()) void {
             self.session.tty_closed = true;
             self.session.events.append(std.testing.allocator, .deinit) catch unreachable;

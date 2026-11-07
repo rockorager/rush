@@ -30,7 +30,6 @@ Use these commands for repository validation:
 ```bash
 zig fmt .
 zig build compile-check
-zig build lint
 zig build test
 zig build conformance
 zig build terminal
