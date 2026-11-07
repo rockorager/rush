@@ -740,7 +740,7 @@ fn evalCommand(shell: anytype, command: *const ast.Command, process: CommandProc
 
     const evaluated = switch (command.*) {
         .simple => |simple| evalSimple(shell, simple, process),
-        .compound => |*compound| evalCompound(shell, compound),
+        .compound => |*compound| evalCompound(shell, compound, process),
         .function_definition => |definition| evalFunctionDefinition(shell, definition),
     };
     return evaluated catch |err| commandErrorResult(shell, err);
@@ -823,9 +823,21 @@ fn closeInheritedProcessSubstitutionFds(shell: anytype) void {
     shell.state.process_substitutions.clearRetainingCapacity();
 }
 
-fn evalCompound(shell: anytype, command: *const ast.CompoundInvocation) EvalError!result.EvalResult {
+fn evalCompound(
+    shell: anytype,
+    command: *const ast.CompoundInvocation,
+    process: CommandProcess,
+) EvalError!result.EvalResult {
     validateAst(command);
-    if (command.body == .subshell) return evalSubshell(shell, command.body.subshell, command.redirections);
+    if (command.body == .subshell) {
+        // A pipeline stage already owns a child process. Forking again would
+        // leave a window where a signal sent to the job's group misses the
+        // new grandchild (macOS does not retry the fork), orphaning it.
+        if (process == .replaceable_child) {
+            return evalSubshellInCurrentProcess(shell, command.body.subshell, command.redirections);
+        }
+        return evalSubshell(shell, command.body.subshell, command.redirections);
+    }
 
     const scratch = try shell.beginScratchScope();
     defer scratch.end();
