@@ -294,13 +294,13 @@ fn fcEditorAvailable(comptime HostValueType: type) bool {
         .pointer => |pointer| pointer.child,
         else => HostValueType,
     };
-    return @hasDecl(HostType, "openZ") and
-        @hasDecl(HostType, "close") and
-        @hasDecl(HostType, "read") and
-        @hasDecl(HostType, "deleteFileZ") and
-        @hasDecl(HostType, "spawn") and
-        @hasDecl(HostType, "wait") and
-        @hasDecl(HostType, "isExecutableZ");
+    return host.has(HostType, .openZ) and
+        host.has(HostType, .close) and
+        host.has(HostType, .read) and
+        host.has(HostType, .deleteFileZ) and
+        host.has(HostType, .spawn) and
+        host.has(HostType, .wait) and
+        host.has(HostType, .isExecutableZ);
 }
 
 fn fcEditorName(shell: anytype, editor: ?[]const u8) []const u8 {
@@ -358,7 +358,7 @@ fn fcTempPid(shell: anytype) host.Pid {
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
     };
-    if (!@hasDecl(HostType, "currentProcessId")) return 0;
+    if (!host.has(HostType, .currentProcessId)) return 0;
     return shell.host.currentProcessId();
 }
 
@@ -367,7 +367,7 @@ fn deleteFcTempFile(shell: anytype, path: []const u8) void {
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
     };
-    if (!@hasDecl(HostType, "deleteFileZ")) return;
+    if (!host.has(HostType, .deleteFileZ)) return;
     const path_z = shell.scratchAllocator().dupeZ(u8, path) catch return;
     defer shell.scratchAllocator().free(path_z);
     // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior

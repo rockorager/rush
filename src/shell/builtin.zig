@@ -611,7 +611,7 @@ fn findHashPath(shell: anytype, utility: []const u8) !?[]const u8 {
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
     };
-    if (!@hasDecl(HostType, "isExecutableZ")) return null;
+    if (!host.has(HostType, .isExecutableZ)) return null;
 
     const allocator = shell.scratchAllocator();
     if (std.mem.indexOfScalar(u8, utility, '/') != null) {
@@ -838,7 +838,7 @@ fn backgroundProcessCompleted(shell: anytype, pid: host.Pid) !bool {
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
     };
-    if (comptime !@hasDecl(Host, "waitNonBlocking")) return false;
+    if (comptime !host.has(Host, .waitNonBlocking)) return false;
     // A terminated child can still exist as a zombie. Reap it before kill,
     // but keep its status for wait; allocate before consuming the host event.
     try shell.state.completed_background.ensureUnusedCapacity(shell.state.allocator, 1);
@@ -990,7 +990,7 @@ fn foregroundJob(shell: anytype, job: state_mod.BackgroundJob) !result.EvalResul
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
     };
-    if (!@hasDecl(HostType, "waitInterruptible")) return .{ .status = 1 };
+    if (!host.has(HostType, .waitInterruptible)) return .{ .status = 1 };
     const pids = try shell.scratchAllocator().dupe(host.Pid, job.pids.items);
     defer shell.scratchAllocator().free(pids);
     var status: result.ExitStatus = 0;
@@ -1031,7 +1031,7 @@ pub fn waitBackgroundPid(shell: anytype, pid: host.Pid, job_events: bool) !host.
         else => @TypeOf(shell.host),
     };
     const waited: host.InterruptibleWait = wait: {
-        if (job_events and @hasDecl(HostType, "waitJobEventInterruptible")) {
+        if (job_events and host.has(HostType, .waitJobEventInterruptible)) {
             break :wait shell.host.waitJobEventInterruptible(pid) catch .{ .status = .{ .exited = 127 } };
         }
         break :wait shell.host.waitInterruptible(pid) catch .{ .status = .{ .exited = 127 } };
@@ -1104,8 +1104,8 @@ pub fn giveTerminalToJob(shell: anytype, process_group: host.Pid) !?host.Pid {
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
     };
-    if (!@hasDecl(HostType, "terminalProcessGroup") or
-        !@hasDecl(HostType, "setTerminalProcessGroup")) return null;
+    if (!host.has(HostType, .terminalProcessGroup) or
+        !host.has(HostType, .setTerminalProcessGroup)) return null;
     // Script input and builtin redirections need not refer to the controlling tty.
     const tty_fd = shell.state.controlling_tty orelse
         (shell.host.openZ("/dev/tty", .{ .access = .read_write }) catch return null);
@@ -1126,7 +1126,7 @@ pub fn restoreTerminalToShell(shell: anytype, process_group: host.Pid) void {
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
     };
-    if (!@hasDecl(HostType, "setTerminalProcessGroup")) return;
+    if (!host.has(HostType, .setTerminalProcessGroup)) return;
     const tty_fd = shell.state.controlling_tty orelse
         (shell.host.openZ("/dev/tty", .{ .access = .read_write }) catch return);
     defer if (shell.state.controlling_tty == null) shell.host.close(tty_fd) catch {};
@@ -1292,7 +1292,7 @@ fn evalUlimit(shell: anytype, args: []const []const u8) !result.EvalResult {
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
     };
-    if (!@hasDecl(HostType, "getResourceLimit") or !@hasDecl(HostType, "setResourceLimit")) {
+    if (!host.has(HostType, .getResourceLimit) or !host.has(HostType, .setResourceLimit)) {
         try shell.host.writeAll(.stderr, "ulimit: resource limits unavailable\n");
         return .{ .status = 2 };
     }

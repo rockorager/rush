@@ -65,7 +65,7 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
             } else if (options.initial_pwd_unavailable) {
                 shell.state.putVariableAttributes(.{ .name = "PWD" }) catch unreachable;
             }
-            if (comptime @hasDecl(Host, "wallTimeNs")) shell.state.resetStartTime(shell.host.wallTimeNs());
+            if (comptime host_mod.has(Host, .wallTimeNs)) shell.state.resetStartTime(shell.host.wallTimeNs());
             shell.state.arg_zero = options.arg_zero;
             shell.state.positionals = options.positionals;
             return shell;
@@ -155,7 +155,7 @@ pub fn ShellWithBuiltins(comptime Host: type, comptime builtin_registry: builtin
 
         fn isCurrentShellProcess(self: *Self) bool {
             const shell_pid = self.state.shell_pid orelse return true;
-            if (comptime !@hasDecl(Host, "currentProcessId")) return true;
+            if (comptime !host_mod.has(Host, .currentProcessId)) return true;
             return self.host.currentProcessId() == shell_pid;
         }
 

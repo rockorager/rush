@@ -772,7 +772,7 @@ const InteractiveSession = struct {
             .pointer => |pointer| pointer.child,
             else => @TypeOf(self.sh.host),
         };
-        if (!@hasDecl(HostType, "waitNonBlocking")) return allocator.dupe(u8, "");
+        if (!host.has(HostType, .waitNonBlocking)) return allocator.dupe(u8, "");
 
         const background_jobs_before = self.sh.state.background_jobs.items.len;
         var output: std.ArrayList(u8) = .empty;

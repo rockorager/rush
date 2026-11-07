@@ -541,7 +541,7 @@ fn waitForegroundPids(shell: anytype, pids: []const host_mod.Pid) ![]const host_
         else => @TypeOf(shell.host),
     };
     for (pids, 0..) |pid, index| {
-        statuses[index] = if (@hasDecl(HostType, "waitJobEvent") and shell.state.jobControlEnabled())
+        statuses[index] = if (host_mod.has(HostType, .waitJobEvent) and shell.state.jobControlEnabled())
             try shell.host.waitJobEvent(pid)
         else
             try shell.host.wait(pid);
@@ -635,7 +635,7 @@ fn setParentProcessGroup(shell: anytype, pid: host_mod.Pid, process_group: host_
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
     };
-    if (!@hasDecl(HostType, "setProcessGroup")) return;
+    if (!host_mod.has(HostType, .setProcessGroup)) return;
     shell.host.setProcessGroup(pid, process_group) catch |err| switch (err) {
         error.AccessDenied => return,
         else => return err,
@@ -647,7 +647,7 @@ fn setChildProcessGroup(shell: anytype, process_group: host_mod.Pid) !void {
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
     };
-    if (!@hasDecl(HostType, "setProcessGroup")) return;
+    if (!host_mod.has(HostType, .setProcessGroup)) return;
     try shell.host.setProcessGroup(0, process_group);
 }
 
@@ -798,7 +798,7 @@ fn reapOrDeferProcessSubstitution(shell: anytype, pid: host_mod.Pid) void {
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
     };
-    if (comptime @hasDecl(HostType, "waitNonBlocking")) {
+    if (comptime host_mod.has(HostType, .waitNonBlocking)) {
         if ((shell.host.waitNonBlocking(pid) catch null) != null) return;
     }
     // ziglint-ignore: Z026 best-effort reap queue; dropping it is preferable to failing the command
@@ -810,7 +810,7 @@ fn reapProcessSubstitutions(shell: anytype) void {
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
     };
-    if (comptime !@hasDecl(HostType, "waitNonBlocking")) return;
+    if (comptime !host_mod.has(HostType, .waitNonBlocking)) return;
 
     var write_index: usize = 0;
     for (shell.state.reap_process_substitutions.items) |substitution| {
@@ -2138,7 +2138,7 @@ fn evalZBuiltin(shell: anytype, args: []const []const u8) EvalError!result.EvalR
             .pointer => |pointer| pointer.child,
             else => @TypeOf(shell.host),
         };
-        if (comptime @hasDecl(HostType, "listDir")) {
+        if (comptime host_mod.has(HostType, .listDir)) {
             if (try pathIsDirectory(shell, args[index], .other)) {
                 return changeDirectoryBuiltin(shell, "z", args[index], false, false, false);
             }
@@ -2293,7 +2293,7 @@ fn cdCanReadInteractiveKey(shell: anytype) bool {
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
     };
-    return comptime @hasDecl(HostType, "readInteractiveKey");
+    return comptime host_mod.has(HostType, .readInteractiveKey);
 }
 
 fn readCdConfirmationKey(shell: anytype) ?u8 {
@@ -2301,7 +2301,7 @@ fn readCdConfirmationKey(shell: anytype) ?u8 {
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
     };
-    if (comptime !@hasDecl(HostType, "readInteractiveKey")) return null;
+    if (comptime !host_mod.has(HostType, .readInteractiveKey)) return null;
     return shell.host.readInteractiveKey(cd_suggestion_confirm_timeout_ms);
 }
 
@@ -3410,7 +3410,7 @@ fn readBuiltinByte(shell: anytype, timeout_ms: ?u64) !?ReadByteResult {
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
     };
-    if (comptime !@hasDecl(HostType, "readInterruptible")) {
+    if (comptime !host_mod.has(HostType, .readInterruptible)) {
         const read_len = try shell.host.read(.stdin, &byte);
         return if (read_len == 0) null else .{ .byte = byte[0] };
     }
@@ -3624,7 +3624,7 @@ fn collectCdSuggestion(shell: anytype, target: []const u8) !?[]const u8 {
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
     };
-    if (comptime !@hasDecl(HostType, "listDir")) return null;
+    if (comptime !host_mod.has(HostType, .listDir)) return null;
 
     const allocator = shell.scratchAllocator();
     const trimmed = trimTrailingPathSeparators(target);
@@ -3761,7 +3761,7 @@ test "logical cd validates and chdirs the canonicalized path" {
             self.* = undefined;
         }
 
-        fn currentDir(_: *Self, allocator: std.mem.Allocator) ![]const u8 {
+        pub fn currentDir(_: *Self, allocator: std.mem.Allocator) ![]const u8 {
             return allocator.dupe(u8, "/logical/link");
         }
 
@@ -7686,7 +7686,7 @@ test "command substitution capture filters nulls and trims newlines across reads
         chunks: []const []const u8,
         index: usize = 0,
 
-        fn read(self: *Self, _: host_mod.Fd, buffer: []u8) !usize {
+        pub fn read(self: *Self, _: host_mod.Fd, buffer: []u8) !usize {
             if (self.index == self.chunks.len) return 0;
             const chunk = self.chunks[self.index];
             std.debug.assert(chunk.len != 0);
@@ -8444,7 +8444,7 @@ fn parameterValue(shell: anytype, name: []const u8) ?[]const u8 {
         .{parentProcessId(shell)},
     ) catch null;
     if (std.mem.eql(u8, name, "PWD")) {
-        if (comptime @hasDecl(@TypeOf(shell.host), "currentDir")) {
+        if (comptime host_mod.has(@TypeOf(shell.host), .currentDir)) {
             if (shell.host.currentDir(shell.scratchAllocator()) catch null) |pwd| return pwd;
         }
     }
@@ -8490,7 +8490,7 @@ pub fn currentWallTimeNs(shell: anytype) i128 {
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
     };
-    if (comptime @hasDecl(HostType, "wallTimeNs")) return shell.host.wallTimeNs();
+    if (comptime host_mod.has(HostType, .wallTimeNs)) return shell.host.wallTimeNs();
     return shell.state.start_time_ns;
 }
 
@@ -8554,7 +8554,7 @@ fn evalExternalWithSearchPath(
         else => @TypeOf(shell.host),
     };
     // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
-    const status = if (@hasDecl(HostType, "spawn") and @hasDecl(HostType, "wait") and shell.state.jobControlEnabled()) status: {
+    const status = if (host_mod.has(HostType, .spawn) and host_mod.has(HostType, .wait) and shell.state.jobControlEnabled()) status: {
         request.process_group = 0;
         const pid = (try shell.host.spawn(request)).pid;
         try setParentProcessGroup(shell, pid, pid);
@@ -8567,7 +8567,7 @@ fn evalExternalWithSearchPath(
         };
         defer if (foreground_restore_group) |process_group| builtin.restoreTerminalToShell(shell, process_group);
         // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
-        const waited = if (@hasDecl(HostType, "waitJobEvent")) try shell.host.waitJobEvent(pid) else try shell.host.wait(pid);
+        const waited = if (host_mod.has(HostType, .waitJobEvent)) try shell.host.waitJobEvent(pid) else try shell.host.wait(pid);
         noteForegroundStatus(shell, waited);
         switch (waited) {
             .stopped => {
@@ -8686,7 +8686,7 @@ fn collectPathCommandSuggestions(
         .pointer => |pointer| pointer.child,
         else => @TypeOf(shell.host),
     };
-    if (comptime !@hasDecl(HostType, "listDir") or !@hasDecl(HostType, "fileAccessZ")) return;
+    if (comptime !host_mod.has(HostType, .listDir) or !host_mod.has(HostType, .fileAccessZ)) return;
 
     const path = search_path orelse shellPath(shell);
     var candidate_buffer: std.ArrayList(u8) = .empty;
@@ -9165,12 +9165,12 @@ test "missing commands in interactive startup files do not scan PATH for suggest
             if (fd == .stderr) try self.stderr.appendSlice(std.testing.allocator, bytes);
         }
 
-        fn listDir(self: *Self, _: std.mem.Allocator, _: []const u8) !host_mod.ListDirResult {
+        pub fn listDir(self: *Self, _: std.mem.Allocator, _: []const u8) !host_mod.ListDirResult {
             self.list_dir_calls += 1;
             return error.FileNotFound;
         }
 
-        fn fileAccessZ(_: *Self, _: [:0]const u8, _: host_mod.FileAccess) bool {
+        pub fn fileAccessZ(_: *Self, _: [:0]const u8, _: host_mod.FileAccess) bool {
             return true;
         }
     };
@@ -9238,7 +9238,7 @@ test "PATH command suggestions check executability only for close names" {
 
         file_access_calls: usize = 0,
 
-        fn listDir(_: *Self, allocator: std.mem.Allocator, path: []const u8) !host_mod.ListDirResult {
+        pub fn listDir(_: *Self, allocator: std.mem.Allocator, path: []const u8) !host_mod.ListDirResult {
             try std.testing.expectEqualStrings("/commands", path);
             const source = [_]host_mod.DirectoryEntry{
                 .{ .name = "cat", .kind = .file },
@@ -9261,7 +9261,7 @@ test "PATH command suggestions check executability only for close names" {
             return .{ .allocator = allocator, .entries = entries };
         }
 
-        fn fileAccessZ(self: *Self, path: [:0]const u8, access: host_mod.FileAccess) bool {
+        pub fn fileAccessZ(self: *Self, path: [:0]const u8, access: host_mod.FileAccess) bool {
             std.debug.assert(access == .execute);
             self.file_access_calls += 1;
             return std.mem.endsWith(u8, path, "/git");
@@ -9316,7 +9316,7 @@ test "external command search traverses PATH once" {
         existence_checks: usize = 0,
         directory_checks: usize = 0,
 
-        fn isExecutableZ(self: *Self, path: [:0]const u8) bool {
+        pub fn isExecutableZ(self: *Self, path: [:0]const u8) bool {
             self.executable_checks += 1;
             return std.mem.eql(u8, path, "/two/cmd");
         }
@@ -9326,7 +9326,7 @@ test "external command search traverses PATH once" {
             return std.mem.eql(u8, path, "/one/cmd");
         }
 
-        fn listDir(self: *Self, _: std.mem.Allocator, _: []const u8) !host_mod.ListDirResult {
+        pub fn listDir(self: *Self, _: std.mem.Allocator, _: []const u8) !host_mod.ListDirResult {
             self.directory_checks += 1;
             return error.NotDir;
         }
@@ -9454,7 +9454,7 @@ test "z builtin jumps through directory history" {
             self.* = undefined;
         }
 
-        fn currentDir(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
+        pub fn currentDir(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
             return allocator.dupe(u8, self.cwd);
         }
 
@@ -9604,7 +9604,11 @@ const CdSuggestionTestHost = struct {
     interactive_key: ?u8 = null,
     interactive_key_timeout_ms: ?u64 = null,
 
-    fn listDir(self: *CdSuggestionTestHost, allocator: std.mem.Allocator, path: []const u8) !host_mod.ListDirResult {
+    pub fn listDir(
+        self: *CdSuggestionTestHost,
+        allocator: std.mem.Allocator,
+        path: []const u8,
+    ) !host_mod.ListDirResult {
         if (!std.mem.eql(u8, path, self.parent)) return error.FileNotFound;
         const entries = try allocator.alloc(host_mod.DirectoryEntry, self.entries.len);
         errdefer allocator.free(entries);
@@ -9622,7 +9626,7 @@ const CdSuggestionTestHost = struct {
         try self.stderr.appendSlice(std.testing.allocator, bytes);
     }
 
-    fn readInteractiveKey(self: *CdSuggestionTestHost, timeout_ms: u64) ?u8 {
+    pub fn readInteractiveKey(self: *CdSuggestionTestHost, timeout_ms: u64) ?u8 {
         self.interactive_key_timeout_ms = timeout_ms;
         return self.interactive_key;
     }

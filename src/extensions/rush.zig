@@ -822,7 +822,7 @@ fn promptAsyncCachedOutput(state: *State, parsed: PromptAsyncOptions, sh: anytyp
             .pointer => |pointer| pointer.child,
             else => @TypeOf(sh.host),
         };
-        if (@hasDecl(HostType, "forkProcess")) {
+        if (host.has(HostType, .forkProcess)) {
             startPromptAsyncRefresh(sh, entry, parsed.command) catch |err| {
                 promptAsyncRefreshFailed(&sh.extensions, entry);
                 if (err == error.OutOfMemory) return error.OutOfMemory;
@@ -1085,7 +1085,7 @@ fn evalPromptPwd(sh: anytype, args: []const []const u8) !result.EvalResult {
         .pointer => |pointer| pointer.child,
         else => @TypeOf(sh.host),
     };
-    if (!@hasDecl(HostType, "currentDir")) return .{ .status = 1 };
+    if (!host.has(HostType, .currentDir)) return .{ .status = 1 };
     const cwd = try promptDirectory(sh);
     const display = try formatPromptPwdForShell(sh.scratchAllocator(), sh, cwd, options);
     try sh.host.writeAll(.stdout, display);

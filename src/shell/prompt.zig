@@ -124,7 +124,7 @@ fn appendInteger(allocator: std.mem.Allocator, output: *std.ArrayList(u8), value
 fn username(shell: anytype) ![]const u8 {
     if (shell.state.promptMetadata(.username)) |cached| return cached;
     const host_type = HostType(@TypeOf(shell.host));
-    if (comptime @hasDecl(host_type, "effectiveUserName")) {
+    if (comptime host_mod.has(host_type, .effectiveUserName)) {
         const resolved = shell.host.effectiveUserName(shell.scratchAllocator()) catch return fallbackUsername(shell);
         return shell.state.cachePromptMetadata(.username, resolved);
     }
@@ -138,7 +138,7 @@ fn fallbackUsername(shell: anytype) []const u8 {
 fn hostname(shell: anytype) ![]const u8 {
     if (shell.state.promptMetadata(.hostname)) |cached| return cached;
     const host_type = HostType(@TypeOf(shell.host));
-    if (comptime @hasDecl(host_type, "hostname")) {
+    if (comptime host_mod.has(host_type, .hostname)) {
         const resolved = shell.host.hostname(shell.scratchAllocator()) catch return fallbackHostname(shell);
         return shell.state.cachePromptMetadata(.hostname, resolved);
     }
@@ -157,7 +157,7 @@ fn shortHostname(name: []const u8) []const u8 {
 fn terminalName(shell: anytype) ![]const u8 {
     if (shell.state.promptMetadata(.terminal_name)) |cached| return cached;
     const host_type = HostType(@TypeOf(shell.host));
-    if (comptime @hasDecl(host_type, "terminalName")) {
+    if (comptime host_mod.has(host_type, .terminalName)) {
         const fd = shell.state.controlling_tty orelse host_mod.Fd.stdin;
         const path = shell.host.terminalName(shell.scratchAllocator(), fd) catch return "";
         return shell.state.cachePromptMetadata(.terminal_name, std.fs.path.basename(path));
@@ -167,7 +167,7 @@ fn terminalName(shell: anytype) ![]const u8 {
 
 fn formatLocalTime(shell: anytype, format: []const u8) ![]const u8 {
     const host_type = HostType(@TypeOf(shell.host));
-    if (comptime @hasDecl(host_type, "formatLocalTime")) {
+    if (comptime host_mod.has(host_type, .formatLocalTime)) {
         const seconds = @divFloor(currentWallTimeNs(shell), std.time.ns_per_s);
         return shell.host.formatLocalTime(shell.scratchAllocator(), @intCast(seconds), format);
     }
@@ -176,13 +176,13 @@ fn formatLocalTime(shell: anytype, format: []const u8) ![]const u8 {
 
 fn currentWallTimeNs(shell: anytype) i128 {
     const host_type = HostType(@TypeOf(shell.host));
-    if (comptime @hasDecl(host_type, "wallTimeNs")) return shell.host.wallTimeNs();
+    if (comptime host_mod.has(host_type, .wallTimeNs)) return shell.host.wallTimeNs();
     return shell.state.start_time_ns;
 }
 
 fn effectiveUserId(shell: anytype) u32 {
     const host_type = HostType(@TypeOf(shell.host));
-    if (comptime @hasDecl(host_type, "effectiveUserId")) return @intCast(shell.host.effectiveUserId());
+    if (comptime host_mod.has(host_type, .effectiveUserId)) return @intCast(shell.host.effectiveUserId());
     const text = shellValue(shell, "EUID") orelse shellValue(shell, "UID") orelse return 1;
     return std.fmt.parseInt(u32, text, 10) catch 1;
 }
@@ -191,7 +191,7 @@ fn workingDirectory(shell: anytype, basename_only: bool) ![]const u8 {
     const allocator = shell.scratchAllocator();
     const pwd = shellValue(shell, "PWD") orelse pwd: {
         const host_type = HostType(@TypeOf(shell.host));
-        if (comptime @hasDecl(host_type, "currentDir")) break :pwd try shell.host.currentDir(allocator);
+        if (comptime host_mod.has(host_type, .currentDir)) break :pwd try shell.host.currentDir(allocator);
         break :pwd "";
     };
     const home = shellValue(shell, "HOME");
@@ -266,33 +266,33 @@ fn shellValue(shell: anytype, name: []const u8) ?[]const u8 {
 
 test "decode expands Bash prompt escapes" {
     const TestHost = struct {
-        const Self = @This();
+        pub const Self = @This();
 
         // ziglint-ignore: Z023 parameter order follows Host method shape
-        fn effectiveUserName(_: Self, allocator: std.mem.Allocator) ![]const u8 {
+        pub fn effectiveUserName(_: Self, allocator: std.mem.Allocator) ![]const u8 {
             return allocator.dupe(u8, "tester");
         }
 
         // ziglint-ignore: Z023 parameter order follows Host method shape
-        fn hostname(_: Self, allocator: std.mem.Allocator) ![]const u8 {
+        pub fn hostname(_: Self, allocator: std.mem.Allocator) ![]const u8 {
             return allocator.dupe(u8, "host.example");
         }
 
         // ziglint-ignore: Z023 parameter order follows Host method shape
-        fn terminalName(_: Self, allocator: std.mem.Allocator, _: host_mod.Fd) ![]const u8 {
+        pub fn terminalName(_: Self, allocator: std.mem.Allocator, _: host_mod.Fd) ![]const u8 {
             return allocator.dupe(u8, "/dev/ttys001");
         }
 
         // ziglint-ignore: Z023 parameter order follows Host method shape
-        fn formatLocalTime(_: Self, allocator: std.mem.Allocator, _: i64, format: []const u8) ![]const u8 {
+        pub fn formatLocalTime(_: Self, allocator: std.mem.Allocator, _: i64, format: []const u8) ![]const u8 {
             return std.fmt.allocPrint(allocator, "<{s}>", .{format});
         }
 
-        fn effectiveUserId(_: Self) u32 {
+        pub fn effectiveUserId(_: Self) u32 {
             return 0;
         }
 
-        fn wallTimeNs(_: Self) i128 {
+        pub fn wallTimeNs(_: Self) i128 {
             return 0;
         }
     };
@@ -344,19 +344,19 @@ test "decode caches stable host prompt metadata" {
         calls: *Calls,
 
         // ziglint-ignore: Z023 parameter order follows Host method shape
-        fn effectiveUserName(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
+        pub fn effectiveUserName(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
             self.calls.username += 1;
             return allocator.dupe(u8, "tester");
         }
 
         // ziglint-ignore: Z023 parameter order follows Host method shape
-        fn hostname(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
+        pub fn hostname(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
             self.calls.hostname += 1;
             return allocator.dupe(u8, "host.example");
         }
 
         // ziglint-ignore: Z023 parameter order follows Host method shape
-        fn terminalName(self: *Self, allocator: std.mem.Allocator, _: host_mod.Fd) ![]const u8 {
+        pub fn terminalName(self: *Self, allocator: std.mem.Allocator, _: host_mod.Fd) ![]const u8 {
             self.calls.terminal_name += 1;
             return allocator.dupe(u8, "/dev/ttys001");
         }
@@ -395,8 +395,8 @@ test "decode expands Bash prompt time and control escapes" {
     const TestHost = struct {
         const Self = @This();
 
-        // ziglint-ignore: Z023 parameter order follows Host method shape
-        fn formatLocalTime(_: Self, allocator: std.mem.Allocator, _: i64, format: []const u8) ![]const u8 {
+        // ziglint-ignore: Z012 Z023 test host method; parameter order follows Host method shape
+        pub fn formatLocalTime(_: Self, allocator: std.mem.Allocator, _: i64, format: []const u8) ![]const u8 {
             return std.fmt.allocPrint(allocator, "<{s}>", .{format});
         }
     };

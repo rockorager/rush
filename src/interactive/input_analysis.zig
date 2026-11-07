@@ -250,11 +250,11 @@ test "interactive path command cache resolves exact names lazily" {
         file_access_calls: usize = 0,
         list_dir_calls: usize = 0,
 
-        fn currentDir(_: *Self, allocator: std.mem.Allocator) ![]const u8 {
+        pub fn currentDir(_: *Self, allocator: std.mem.Allocator) ![]const u8 {
             return allocator.dupe(u8, "/work");
         }
 
-        fn fileAccessZ(self: *Self, path: [:0]const u8, _: host.FileAccess) bool {
+        pub fn fileAccessZ(self: *Self, path: [:0]const u8, _: host.FileAccess) bool {
             self.file_access_calls += 1;
             return std.mem.eql(u8, path, "/commands/tool");
         }
@@ -263,7 +263,7 @@ test "interactive path command cache resolves exact names lazily" {
             return .{ .kind = .file };
         }
 
-        fn listDir(self: *Self, _: std.mem.Allocator, _: []const u8) !host.ListDirResult {
+        pub fn listDir(self: *Self, _: std.mem.Allocator, _: []const u8) !host.ListDirResult {
             self.list_dir_calls += 1;
             return error.FileNotFound;
         }

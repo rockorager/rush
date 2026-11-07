@@ -12,6 +12,83 @@ else
 pub const WasmHost = @import("host/WasmHost.zig");
 pub const WasmSession = @import("host/WasmSession.zig");
 
+// A Host is any type the shell is instantiated with (`Shell(Host)`); the
+// evaluator reaches every process, file, signal, terminal, and clock effect
+// through it. Zig checks each call where it is compiled, so this section
+// states the contract in one place and checks the shipped hosts against it.
+
+/// Methods the evaluator calls without probing. Every host that runs scripts
+/// declares them; minimal test hosts compile only the paths they exercise.
+pub const required_methods = [_][]const u8{
+    "changeDir",           "consumePendingSignal", "currentParentProcessId", "disableTerminalEcho",
+    "duplicate",           "duplicateAtLeast",     "duplicateTo",            "exec",
+    "existsZ",             "exit",                 "fileStatusZ",            "fileTestStatusZ",
+    "installSignalTrap",   "isTerminalFd",         "pipe",                   "readReady",
+    "readWithTimeout",     "restoreTerminalMode",  "sendSignal",             "setCloseOnExec",
+    "setFileCreationMask", "setSignalDefault",     "setSignalIgnored",       "spawnAndWait",
+    "write",               "writeAll",
+};
+
+/// Optional Host methods. The evaluator calls each one only when the host
+/// declares it and otherwise falls back to reduced behavior, such as no stop
+/// detection without `waitJobEvent`. Probe them with `has` so a misspelled
+/// name fails to compile instead of silently taking the fallback.
+pub const Capability = enum {
+    close,
+    currentDir,
+    currentProcessId,
+    deleteFileZ,
+    effectiveUserId,
+    effectiveUserName,
+    fileAccessZ,
+    forkProcess,
+    formatLocalTime,
+    getResourceLimit,
+    hostname,
+    isExecutableZ,
+    listDir,
+    openZ,
+    read,
+    readInteractiveKey,
+    readInterruptible,
+    setProcessGroup,
+    setResourceLimit,
+    setTerminalProcessGroup,
+    spawn,
+    terminalName,
+    terminalProcessGroup,
+    wait,
+    waitInterruptible,
+    waitJobEvent,
+    waitJobEventInterruptible,
+    waitNonBlocking,
+    wallTimeNs,
+};
+
+/// Only `pub` methods count, as for every caller outside the host's file.
+/// Inline so the result is comptime-known and the untaken branch is not compiled.
+pub inline fn has(comptime Host: type, comptime capability: Capability) bool {
+    return @hasDecl(Host, @tagName(capability));
+}
+
+/// Fails compilation unless `Host` declares every required method and, for
+/// `.full`, every capability, so renaming a host method cannot quietly drop
+/// a feature.
+pub fn assertHost(comptime Host: type, comptime level: enum { scripts, full }) void {
+    for (required_methods) |name| {
+        if (!@hasDecl(Host, name)) @compileError(@typeName(Host) ++ " lacks required Host method " ++ name);
+    }
+    if (level != .full) return;
+    for (std.enums.values(Capability)) |capability| {
+        if (!has(Host, capability)) @compileError(@typeName(Host) ++ " lacks Host capability " ++ @tagName(capability));
+    }
+}
+
+comptime {
+    if (!zig_builtin.cpu.arch.isWasm()) assertHost(RealHost, .full);
+    assertHost(WasmHost, .scripts);
+}
+
 pub const Fd = enum(i32) {
     stdin = 0,
     stdout = 1,
