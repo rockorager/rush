@@ -45,6 +45,23 @@
             .status = 0,
         },
         .{
+            .name = "closing reserved words cannot begin a command",
+            .script =
+            \\for word in then else elif fi do done esac in; do
+            \\    (eval "$word") 2>/dev/null
+            \\    printf '<%s:%s>' "$word" "$?"
+            \\done
+            \\printf '\n'
+            \\echo before; fi; echo after
+            ,
+            .stdout =
+            \\<then:2><else:2><elif:2><fi:2><do:2><done:2><esac:2><in:2>
+            \\
+            ,
+            .stderr_match = .nonempty,
+            .status = 2,
+        },
+        .{
             .name = "quoted reserved words are not recognized as reserved words",
             .script =
             \\\'if\' true 2>/dev/null

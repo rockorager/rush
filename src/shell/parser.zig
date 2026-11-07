@@ -937,6 +937,13 @@ const Parser = struct {
         errdefer redirections.deinit(self.allocator);
         var command_span: ?source_mod.Span = null;
 
+        // A closing reserved word only ends the compound command whose list
+        // stops at it; anywhere else it cannot begin a command.
+        if (self.tokens.get(self.index).reserved) |reserved| switch (reserved) {
+            .then_kw, .else_kw, .elif_kw, .fi_kw, .do_kw, .done_kw, .esac_kw, .in_kw => return error.UnexpectedToken,
+            else => {},
+        };
+
         while (true) {
             if (try self.parseRedirection()) |redirection| {
                 try redirections.append(self.allocator, redirection);
