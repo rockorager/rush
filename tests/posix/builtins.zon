@@ -1083,6 +1083,19 @@
             .stderr_match = .any,
         },
         .{
+            // Later asynchronous lists may reap the finished child; its status
+            // must still be reported.
+            .name = "wait reports a finished child's status after later asynchronous lists",
+            .script =
+            \\(exit 7) & p=$!
+            \\sleep 1
+            \\true & true & true &
+            \\wait "$p"
+            \\printf '<%s>\n' "$?"
+            ,
+            .stdout = "<7>\n",
+        },
+        .{
             .name = "wait rejects operands that are not process ids or job specs",
             .script =
             \\wait notapid

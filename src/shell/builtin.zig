@@ -854,6 +854,15 @@ fn backgroundProcessCompleted(shell: anytype, pid: host.Pid) !bool {
     return true;
 }
 
+/// Reaps background children that have finished, keeping their statuses for
+/// `wait`, so a script that starts many jobs without waiting does not fill
+/// the process table with zombies. Interactive shells reap through their job
+/// notifications instead.
+pub fn reapFinishedBackground(shell: anytype) !void {
+    if (shell.state.options.interactive) return;
+    for (shell.state.background_pids.items) |pid| _ = try backgroundProcessCompleted(shell, pid);
+}
+
 fn killOperandPid(shell: anytype, arg: []const u8) ?host.Pid {
     _ = shell;
     if (arg.len >= 1 and arg[0] == '%') return null;

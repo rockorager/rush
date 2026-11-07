@@ -127,6 +127,7 @@ fn shouldApplyErrexit(shell: anytype, evaluated: result.EvalResult) bool {
 
 fn evalBackgroundAndOr(shell: anytype, and_or: ast.AndOr) EvalError!result.EvalResult {
     validateAst(and_or);
+    try builtin.reapFinishedBackground(shell);
     if (and_or.pipelines.len == 1 and and_or.pipelines[0].pipeline.stages.len > 1) {
         return evalBackgroundPipeline(shell, and_or.pipelines[0].pipeline);
     }
