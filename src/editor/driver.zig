@@ -234,8 +234,14 @@ pub const TerminalSession = struct {
         try std.posix.tcsetattr(self.tty.fd.handle, .DRAIN, self.tty.termios);
     }
 
-    pub fn resumeRawMode(self: *TerminalSession) !void {
-        _ = try makeRawPreserveInput(self.tty.fd.handle);
+    /// What to do with terminal settings a command changed while the editor
+    /// was suspended. A command that finishes normally keeps them, as after
+    /// `stty`; settings left by a killed program are discarded.
+    pub const CommandSettings = enum { keep, discard };
+
+    pub fn resumeRawMode(self: *TerminalSession, command_settings: CommandSettings) !void {
+        const current = try makeRawPreserveInput(self.tty.fd.handle);
+        if (command_settings == .keep) self.tty.termios = current;
     }
 
     pub fn leaveEditorMode(self: *TerminalSession) !void {
@@ -245,8 +251,8 @@ pub const TerminalSession = struct {
         try self.suspendRawMode();
     }
 
-    pub fn enterEditorMode(self: *TerminalSession) !void {
-        try self.resumeRawMode();
+    pub fn enterEditorMode(self: *TerminalSession, command_settings: CommandSettings) !void {
+        try self.resumeRawMode(command_settings);
         try self.resumeTerminalCapabilities();
         try self.writeInitialQuerySequences();
         self.query_batch_sent = true;
@@ -835,7 +841,7 @@ pub const TerminalSession = struct {
 
         try self.leaveEditorMode();
         var editor_mode_left = true;
-        defer if (editor_mode_left) self.enterEditorMode() catch {};
+        defer if (editor_mode_left) self.enterEditorMode(.discard) catch {};
 
         const edited = try external_editor.editCommand(
             self.allocator,
@@ -844,7 +850,7 @@ pub const TerminalSession = struct {
             options.external_editor_tmpdir,
             request.text,
         );
-        try self.enterEditorMode();
+        try self.enterEditorMode(.discard);
         editor_mode_left = false;
         return edited;
     }

@@ -633,7 +633,7 @@ const InteractiveSession = struct {
             // ziglint-ignore: Z026 intentional best-effort cleanup; preserve behavior
             terminal.finishSemanticCommand(2) catch {};
             self.reportCommandStatus(terminal, line, 2, duration_ms);
-            try terminal.enterEditorMode();
+            try terminal.enterEditorMode(.discard);
             return null;
         };
         const duration_ms = @max(unixTimestamp(self.io) - started_at, 0) * 1000;
@@ -655,7 +655,9 @@ const InteractiveSession = struct {
         switch (evaluated.flow) {
             .exit => |status| return self.exit(status),
             else => {
-                try terminal.enterEditorMode();
+                // Statuses above 128 report a signal, whose program may have
+                // left the terminal in an arbitrary state.
+                try terminal.enterEditorMode(if (evaluated.status > 128) .discard else .keep);
                 return null;
             },
         }
