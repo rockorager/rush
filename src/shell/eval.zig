@@ -6767,9 +6767,12 @@ fn expandProcessSubstitution(shell: anytype, substitution: ast.ProcessSubstituti
             .name = if (substitution.kind == .input) "<()" else ">()",
             .text = substitution.source_text,
         };
-        const ast_allocator = shell.astAllocator();
-        const tokens = try lexer.lexWithAliases(ast_allocator, src, shell.state);
-        break :program try parser.parseWithAliases(ast_allocator, src, tokens, shell.state);
+        // Substitutions found while expanding arithmetic or prompt text are
+        // parsed here on every evaluation; keep them in the caller's scratch
+        // scope so a loop does not grow the per-source AST arena.
+        const allocator = shell.scratchAllocator();
+        const tokens = try lexer.lexWithAliases(allocator, src, shell.state);
+        break :program try parser.parseWithAliases(allocator, src, tokens, shell.state);
     };
 
     const pipe_desc = try shell.host.pipe();
@@ -7433,9 +7436,12 @@ fn expandCommandSubstitution(
             .name = "$()",
             .text = substitution.source_text,
         };
-        const ast_allocator = shell.astAllocator();
-        const tokens = try lexer.lexWithAliases(ast_allocator, src, shell.state);
-        break :program try parser.parseWithAliases(ast_allocator, src, tokens, shell.state);
+        // Substitutions found while expanding arithmetic or prompt text are
+        // parsed here on every evaluation; keep them in the caller's scratch
+        // scope so a loop does not grow the per-source AST arena.
+        const allocator = shell.scratchAllocator();
+        const tokens = try lexer.lexWithAliases(allocator, src, shell.state);
+        break :program try parser.parseWithAliases(allocator, src, tokens, shell.state);
     };
     const capture = try evalCommandSubstitutionInChild(shell, substitution, program);
     const status = capture.status;
