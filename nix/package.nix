@@ -11,7 +11,7 @@ let
 in
 stdenv.mkDerivation {
   pname = "rush";
-  version = "0.1.0";
+  version = "0.2.0";
   src = ../.;
 
   strictDeps = true;
