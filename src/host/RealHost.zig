@@ -398,15 +398,26 @@ pub fn forkProcess(self: RealHost, options: host.ForkOptions) ForkError!host.For
     var previous: std.posix.sigset_t = undefined;
     std.posix.sigprocmask(std.posix.SIG.BLOCK, &blocked, &previous);
     defer std.posix.sigprocmask(std.posix.SIG.SETMASK, &previous, null);
-    const forked = try switch (builtin.os.tag) {
+    // Linux keeps a blocked signal pending even when it is ignored; macOS and
+    // the BSDs discard it, so a TERM sent to the new child before it restores
+    // the default would be lost. Catch those signals across the fork instead;
+    // re-ignoring them in the parent discards anything that arrived meanwhile.
+    const caught = if (builtin.os.tag == .linux) 0 else catchIgnoredSignals(options.default_signals);
+    const forked = switch (builtin.os.tag) {
         .linux => linuxForkProcess(),
         .macos, .freebsd, .openbsd, .netbsd => libcForkProcess(),
         else => @compileError("unsupported host OS"),
+    } catch |err| {
+        restoreIgnoredSignals(caught);
+        return err;
     };
-    if (forked == .child) {
-        signal_wake_fd.store(-1, .seq_cst);
-        applyDefaultSignals(options.default_signals) catch self.exit(127);
-        applyIgnoredSignals(options.ignored_signals) catch self.exit(127);
+    switch (forked) {
+        .child => {
+            signal_wake_fd.store(-1, .seq_cst);
+            applyDefaultSignals(options.default_signals) catch self.exit(127);
+            applyIgnoredSignals(options.ignored_signals) catch self.exit(127);
+        },
+        .parent => restoreIgnoredSignals(caught),
     }
     return forked;
 }
@@ -1846,6 +1857,29 @@ fn waitForChildInterruptible(pid: host.Pid, flags: u32) WaitError!host.Interrupt
 fn applyDefaultSignals(signals: []const u8) SignalDispositionError!void {
     for (signals) |signal| try real_host.setSignalDefault(signal);
 }
+
+/// Replaces SIG_IGN with a no-op handler for each signal in `signals`, and
+/// returns them as a mask for `restoreIgnoredSignals`.
+fn catchIgnoredSignals(signals: []const u8) u64 {
+    var caught: u64 = 0;
+    for (signals) |signal| {
+        if (signal >= 64 or !real_host.isSignalIgnored(signal)) continue;
+        setSignalAction(signal, ignoreSignalHandler) catch continue;
+        caught |= @as(u64, 1) << @intCast(signal);
+    }
+    return caught;
+}
+
+fn restoreIgnoredSignals(caught: u64) void {
+    var remaining = caught;
+    while (remaining != 0) : (remaining &= remaining - 1) {
+        const signal: u8 = @ctz(remaining);
+        // ziglint-ignore: Z026 the signal was ignored a moment ago, so it is valid
+        setSignalAction(signal, std.posix.SIG.IGN) catch {};
+    }
+}
+
+fn ignoreSignalHandler(_: std.posix.SIG) callconv(.c) void {}
 
 fn applyIgnoredSignals(signals: []const u8) SignalDispositionError!void {
     for (signals) |signal| try real_host.setSignalIgnored(signal);
