@@ -102,9 +102,11 @@ fn runPendingTrapCheckpoint(shell: anytype) EvalError!result.EvalResult {
 /// An interactive shell without an INT trap abandons the current input line
 /// on Ctrl-C, whether the shell itself or its foreground job received it, as
 /// dash and Bash do. --posix keeps Issue 8's literal rule that SIGINT outside
-/// line editing is caught with no action.
+/// line editing is caught with no action; shell code the editor runs while
+/// reading a line is line editing.
 fn interactiveInterruptsCommands(shell: anytype) bool {
-    return untrappedInteractiveInterrupt(shell) and shell.state.options.mode != .posix;
+    return untrappedInteractiveInterrupt(shell) and
+        (shell.state.options.mode != .posix or shell.state.editing_command_line);
 }
 
 fn untrappedInteractiveInterrupt(shell: anytype) bool {

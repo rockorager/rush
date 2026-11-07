@@ -31,6 +31,10 @@ const semantic_input_end = "\x1b]133;C\x07";
 const semantic_input_cancel = "\x1b]133;D;err=CANCEL\x07";
 const clear_screen_cursor_query_timeout_ms = 200;
 const stale_cursor_query_timeout_ms = 1000;
+const kitty_keyboard_default = terminal.kitty_keyboard_default;
+const kitty_keyboard_editor = terminal.kitty_keyboard_editor;
+/// The control character value that disables a terminal special character.
+const posix_vdisable: u8 = if (builtin.os.tag == .linux) 0 else 0xff;
 
 pub const TerminalEvent = terminal.Event;
 pub const ColorScheme = terminal.ColorScheme;
@@ -165,6 +169,13 @@ pub const TerminalSession = struct {
     color_scheme: ColorScheme = .unknown,
     winsize: vaxis.Winsize,
     events: std.ArrayList(TerminalEvent) = .empty,
+    /// `beginShellCode` calls not yet ended.
+    shell_code_depth: u32 = 0,
+    /// Raw settings to restore when the outermost shell code ends; null when
+    /// the terminal could not be changed.
+    shell_code_raw: ?std.posix.termios = null,
+    /// The kitty keyboard protocol was turned off for shell code.
+    shell_code_kitty_handoff: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) !TerminalSession {
         const tty_buffer = try allocator.alloc(u8, 4096);
@@ -237,6 +248,49 @@ pub const TerminalSession = struct {
     pub fn resumeRawMode(self: *TerminalSession, command_settings: CommandSettings) !void {
         const current = try makeRawPreserveInput(self.tty.fd.handle);
         if (command_settings == .keep) self.tty.termios = current;
+    }
+
+    /// Lets Ctrl-C interrupt shell code that runs while the editor owns the
+    /// terminal, such as prompts, completion providers, traps, and hooks: the
+    /// interrupt character sends SIGINT again, which the shell turns into an
+    /// interrupt at its next checkpoint. The suspend and quit characters stay
+    /// off so a provider's child is never stopped or dumped mid-edit. Calls
+    /// nest; pair each with `endShellCode`.
+    pub fn beginShellCode(self: *TerminalSession) void {
+        self.shell_code_depth += 1;
+        if (self.shell_code_depth != 1) return;
+        const fd = self.tty.fd.handle;
+        const raw = std.posix.tcgetattr(fd) catch return;
+        var interruptible = raw;
+        interruptible.lflag.ISIG = true;
+        interruptible.cc[@intFromEnum(std.posix.V.QUIT)] = posix_vdisable;
+        interruptible.cc[@intFromEnum(std.posix.V.SUSP)] = posix_vdisable;
+        if (@hasField(std.posix.V, "DSUSP")) interruptible.cc[@intFromEnum(std.posix.V.DSUSP)] = posix_vdisable;
+        std.posix.tcsetattr(fd, .NOW, interruptible) catch return;
+        self.shell_code_raw = raw;
+        // The kitty keyboard protocol would send Ctrl-C as an escape sequence
+        // instead of the interrupt character.
+        if (self.capabilities.kitty_keyboard and !self.capabilities.kitty_keyboard_handoff) {
+            self.writeTerminalSequence(kitty_keyboard_default) catch return;
+            self.shell_code_kitty_handoff = true;
+        }
+    }
+
+    pub fn endShellCode(self: *TerminalSession) void {
+        std.debug.assert(self.shell_code_depth != 0);
+        self.shell_code_depth -= 1;
+        if (self.shell_code_depth != 0) return;
+        if (self.shell_code_kitty_handoff) {
+            self.shell_code_kitty_handoff = false;
+            self.writeTerminalSequence(kitty_keyboard_editor) catch |err| {
+                log.debug("failed to restore the kitty keyboard protocol: {}", .{err});
+            };
+        }
+        const raw = self.shell_code_raw orelse return;
+        self.shell_code_raw = null;
+        std.posix.tcsetattr(self.tty.fd.handle, .NOW, raw) catch |err| {
+            log.debug("failed to restore raw mode after shell code: {}", .{err});
+        };
     }
 
     pub fn leaveEditorMode(self: *TerminalSession) !void {
@@ -569,6 +623,8 @@ pub const TerminalSession = struct {
                                 read_options.refresh_style != null and
                                 read_options.style_context != null)
                             {
+                                self.beginShellCode();
+                                defer self.endShellCode();
                                 read_options.theme = try read_options.refresh_style.?(
                                     read_options.style_context.?,
                                     self.allocator,
@@ -582,6 +638,8 @@ pub const TerminalSession = struct {
                             try self.writeColorReportQueries();
                             try self.writeQuerySequences();
                             if (read_options.refresh_style != null and read_options.style_context != null) {
+                                self.beginShellCode();
+                                defer self.endShellCode();
                                 read_options.theme = try read_options.refresh_style.?(
                                     read_options.style_context.?,
                                     self.allocator,
@@ -593,6 +651,8 @@ pub const TerminalSession = struct {
                         },
                         .color_report => |report| {
                             if (read_options.refresh_color_report != null and read_options.style_context != null) {
+                                self.beginShellCode();
+                                defer self.endShellCode();
                                 read_options.theme = try read_options.refresh_color_report.?(
                                     read_options.style_context.?,
                                     self.allocator,
@@ -628,6 +688,8 @@ pub const TerminalSession = struct {
                             read_options.refresh_prompt != null and
                             read_options.prompt_context != null)
                         {
+                            self.beginShellCode();
+                            defer self.endShellCode();
                             const prompt = try read_options.refresh_prompt.?(
                                 read_options.prompt_context.?,
                                 self.allocator,
@@ -713,6 +775,8 @@ pub const TerminalSession = struct {
                     // abbreviation expansion on Enter); paint the final text so
                     // the scrollback shows the command that actually runs.
                     if (read_options.refresh_transient_prompt != null and read_options.prompt_context != null) {
+                        self.beginShellCode();
+                        defer self.endShellCode();
                         const prompt = try read_options.refresh_transient_prompt.?(
                             read_options.prompt_context.?,
                             self.allocator,
@@ -812,6 +876,8 @@ pub const TerminalSession = struct {
         options: ReadLineOptions,
         session: *line_editor.LineSession,
     ) !void {
+        self.beginShellCode();
+        defer self.endShellCode();
         const application = try options.complete.?(
             options.completion_context.?,
             self.allocator,
@@ -858,6 +924,8 @@ pub const TerminalSession = struct {
         render_needed: *bool,
     ) !bool {
         if (options.run_hooks == null or options.hook_context == null) return false;
+        self.beginShellCode();
+        defer self.endShellCode();
         const hook_result = try options.run_hooks.?(options.hook_context.?, self.allocator, self.io);
         defer self.allocator.free(hook_result.output);
         if (hook_result.output.len != 0) try self.writeInterruptOutput(hook_result.output);

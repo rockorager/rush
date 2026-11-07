@@ -61,7 +61,13 @@ pub fn complete(
 
     if (!analyzed.completing_redirection_target) {
         if (analyzed.root) |root| {
-            if (try completeFromManifest(allocator, io, sh, &builder, &analyzed, root)) |handled| {
+            const manifest_result = completeFromManifest(allocator, io, sh, &builder, &analyzed, root) catch |err|
+                switch (err) {
+                    // Ctrl-C stopped a provider; offer nothing rather than a partial list.
+                    error.CompletionInterrupted => return .none,
+                    else => return err,
+                };
+            if (manifest_result) |handled| {
                 if (handled) return applyBuiltCandidates(allocator, source, &builder, analyzed);
             }
         }
@@ -811,6 +817,7 @@ fn appendFunctionProvider(
     defer if (discard) |*active| active.restore(&sh.host) catch {};
     const src: shell.source.Source = .{ .id = 0, .kind = .command_string, .name = "completion", .text = function_name };
     const evaluated = sh.evalSourceNested(src) catch return;
+    if (evaluated.flow == .interrupt) return error.CompletionInterrupted;
     if (evaluated.status != 0 or evaluated.flow != .normal) return;
 
     try sh.host.seekTo(candidate_channel.fd, 0);
@@ -998,7 +1005,8 @@ fn sourceCompanionIfNeeded(allocator: std.mem.Allocator, io: std.Io, sh: anytype
     const text = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(max_companion_bytes)) catch return;
     defer allocator.free(text);
     const src: shell.source.Source = .{ .id = 0, .kind = .sourced_file, .name = path, .text = text };
-    _ = sh.evalSourceNested(src) catch return;
+    const evaluated = sh.evalSourceNested(src) catch return;
+    if (evaluated.flow == .interrupt) return error.CompletionInterrupted;
 }
 
 fn providerValue(providers: ?std.json.Value, ref: std.json.Value) ?std.json.Value {

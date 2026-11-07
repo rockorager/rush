@@ -8,6 +8,8 @@ const line_editor = @import("session.zig");
 const kitty_keyboard_set = "\x1b[={d}u";
 const default_kitty_keyboard_flags: u5 = 0;
 const editor_kitty_keyboard_flags: u5 = @bitCast(vaxis.Key.KittyFlags{});
+pub const kitty_keyboard_default = std.fmt.comptimePrint(kitty_keyboard_set, .{default_kitty_keyboard_flags});
+pub const kitty_keyboard_editor = std.fmt.comptimePrint(kitty_keyboard_set, .{editor_kitty_keyboard_flags});
 const terminal_presentation_reset = vaxis.ctlseqs.sgr_reset ++
     vaxis.ctlseqs.show_cursor ++
     "\x1b[0 q";

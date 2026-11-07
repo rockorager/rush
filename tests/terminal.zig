@@ -19,6 +19,8 @@ const Case = struct {
     /// Written to $XDG_CONFIG_HOME/rush/config.rush; sourced after Rush's
     /// built-in defaults.
     config: []const u8 = default_config,
+    /// Started with --posix in addition to -i.
+    posix: bool = false,
     steps: []const Step,
 };
 
@@ -128,7 +130,7 @@ fn runCase(allocator: std.mem.Allocator, io: std.Io, rush: []const u8, case: Cas
     const config_path = try std.fs.path.join(arena, &.{ config_dir, "config.rush" });
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = config_path, .data = case.config });
 
-    var session = try Session.start(arena, rush, home);
+    var session = try Session.start(arena, rush, home, case.posix);
     defer session.stop();
 
     for (case.steps, 0..) |step, step_index| {
@@ -163,7 +165,7 @@ const Session = struct {
     /// Start of the text that `expect` and `absent` look at.
     cursor: usize = 0,
 
-    fn start(arena: std.mem.Allocator, rush: []const u8, home: []const u8) !Session {
+    fn start(arena: std.mem.Allocator, rush: []const u8, home: []const u8, posix: bool) !Session {
         const master = posix_openpt(@bitCast(std.c.O{ .ACCMODE = .RDWR, .NOCTTY = true }));
         if (master < 0) return error.PtyUnavailable;
         errdefer _ = std.c.close(master);
@@ -171,7 +173,9 @@ const Session = struct {
         const slave_path = try arena.dupeZ(u8, std.mem.span(ptsname(master) orelse return error.PtyUnavailable));
 
         const rush_z = try arena.dupeZ(u8, rush);
-        const argv = [_:null]?[*:0]const u8{ rush_z, "-i" };
+        const argv_default = [_:null]?[*:0]const u8{ rush_z, "-i" };
+        const argv_posix = [_:null]?[*:0]const u8{ rush_z, "--posix", "-i" };
+        const argv: [*:null]const ?[*:0]const u8 = if (posix) &argv_posix else &argv_default;
         const envp = [_:null]?[*:0]const u8{
             (try std.fmt.allocPrintSentinel(arena, "HOME={s}", .{home}, 0)).ptr,
             (try std.fmt.allocPrintSentinel(arena, "XDG_CONFIG_HOME={s}/.config", .{home}, 0)).ptr,
@@ -206,7 +210,7 @@ const Session = struct {
             for ([_]std.posix.SIG{ .INT, .QUIT, .TSTP, .TTIN, .TTOU, .PIPE }) |sig| {
                 std.posix.sigaction(sig, &default_action, null);
             }
-            _ = std.c.execve(rush_z, &argv, &envp);
+            _ = std.c.execve(rush_z, argv, &envp);
             std.c._exit(127);
         }
         return .{ .pid = pid, .master = master };

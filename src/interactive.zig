@@ -362,6 +362,14 @@ const InteractiveSession = struct {
 
     // ziglint-ignore: Z024 preserve existing readable expression shape; lint-only cleanup
     fn readLine(self: *InteractiveSession, terminal: *editor.driver.TerminalSession) ReadLineError!editor.driver.ReadLineResult {
+        self.sh.state.editing_command_line = true;
+        defer self.sh.state.editing_command_line = false;
+        // Job events, PROMPT_COMMAND, and prompt functions run before the
+        // editor reads keys; Ctrl-C interrupts them.
+        terminal.beginShellCode();
+        var running_shell_code = true;
+        defer if (running_shell_code) terminal.endShellCode();
+
         const job_output = self.reapBackgroundJobsAndDispatch(self.allocator) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => try self.allocator.dupe(u8, ""),
@@ -396,6 +404,8 @@ const InteractiveSession = struct {
         // ziglint-ignore: Z026 best-effort terminal metadata; the next directory change or prompt reports it again
         self.reportTerminalLocation(terminal) catch {};
         try self.command_cache.refresh(self.allocator, self.sh);
+        terminal.endShellCode();
+        running_shell_code = false;
 
         return terminal.readLine(.{
             .prompt = prompt_text,

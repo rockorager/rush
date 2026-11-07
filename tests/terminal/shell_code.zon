@@ -1,0 +1,94 @@
+// Shell code the editor runs while it reads a line.
+.{
+    .name = "Editor-time shell code",
+    .cases = .{
+        .{
+            .name = "Ctrl-C stops a hung completion provider and keeps the line",
+            .config =
+            \\completions=$XDG_CONFIG_HOME/rush/completions
+            \\mkdir -p "$completions"
+            \\printf '%s\n' '{"manifestVersion": 1, "command": {"name": "hang",' \
+            \\  '"arguments": {"states": [{"name": "item", "index": 0, "provider": "hang.items"}]},' \
+            \\  '"providers": {"hang.items": {"function": "__hang_items"}}}}' >"$completions/hang.json"
+            \\__hang_items() { while :; do :; done; }
+            \\hang() { printf '%s%s\n' AL IVE; }
+            \\rush_prompt() { prompt text '$ '; }
+            \\
+            ,
+            .steps = .{
+                .{ .expect = "$ " },
+                .{ .send = "hang \t" },
+                .{ .sleep_ms = 500 },
+                .{ .send = "\x03" },
+                .{ .sleep_ms = 300 },
+                .{ .send = "\r" },
+                .{ .expect = "ALIVE" },
+            },
+        },
+        .{
+            .name = "Ctrl-C stops a hung prompt function",
+            .config =
+            \\rush_prompt() {
+            \\  if [ -e "$HOME/hang" ]; then while :; do :; done; fi
+            \\  prompt text '$ '
+            \\}
+            \\
+            ,
+            .steps = .{
+                .{ .expect = "$ " },
+                .{ .send = "touch ~/hang\r" },
+                .{ .sleep_ms = 500 },
+                .{ .send = "\x03" },
+                .{ .sleep_ms = 300 },
+                .{ .send = "rm ~/hang; printf '%s%s\\n' AL IVE\r" },
+                .{ .expect = "ALIVE" },
+                .{ .expect = "$ " },
+            },
+        },
+        .{
+            .name = "Ctrl-C stops a hung prompt function under --posix",
+            .posix = true,
+            .config =
+            \\rush_prompt() {
+            \\  if [ -e "$HOME/hang" ]; then while :; do :; done; fi
+            \\  prompt text '$ '
+            \\}
+            \\
+            ,
+            .steps = .{
+                .{ .expect = "$ " },
+                .{ .send = "touch ~/hang\r" },
+                .{ .sleep_ms = 500 },
+                .{ .send = "\x03" },
+                .{ .sleep_ms = 300 },
+                .{ .send = "rm ~/hang; printf '%s%s\\n' AL IVE\r" },
+                .{ .expect = "ALIVE" },
+                .{ .expect = "$ " },
+            },
+        },
+        .{
+            .name = "Ctrl-C stops an external command run by a completion provider",
+            .config =
+            \\completions=$XDG_CONFIG_HOME/rush/completions
+            \\mkdir -p "$completions"
+            \\printf '%s\n' '{"manifestVersion": 1, "command": {"name": "hang",' \
+            \\  '"arguments": {"states": [{"name": "item", "index": 0, "provider": "hang.items"}]},' \
+            \\  '"providers": {"hang.items": {"function": "__hang_items"}}}}' >"$completions/hang.json"
+            \\__hang_items() { sleep 30; rush_complete candidate never; }
+            \\hang() { printf '%s%s\n' AL IVE; }
+            \\rush_prompt() { prompt text '$ '; }
+            \\
+            ,
+            .steps = .{
+                .{ .expect = "$ " },
+                .{ .send = "hang \t" },
+                .{ .sleep_ms = 500 },
+                .{ .send = "\x03" },
+                .{ .sleep_ms = 300 },
+                .{ .absent = "never" },
+                .{ .send = "\r" },
+                .{ .expect = "ALIVE" },
+            },
+        },
+    },
+}
