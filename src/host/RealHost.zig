@@ -6,6 +6,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const host = @import("../host.zig");
+const termios = @import("../termios.zig");
 
 const real_host: RealHost = .{};
 const lookup_max_buffer_len = 1024 * 1024;
@@ -262,15 +263,15 @@ pub fn readInteractiveKey(self: RealHost, timeout_ms: u64) ?u8 {
     const fd: host.Fd = .stdin;
     if (!self.isTerminalFd(fd)) return null;
     const raw_fd: std.posix.fd_t = @intCast(fd.raw());
-    const saved = std.posix.tcgetattr(raw_fd) catch return null;
+    const saved = termios.tcgetattr(raw_fd) catch return null;
     var raw = saved;
     raw.lflag.ECHO = false;
     raw.lflag.ECHONL = false;
     raw.lflag.ICANON = false;
     raw.cc[@backingInt(std.posix.V.MIN)] = 0;
     raw.cc[@backingInt(std.posix.V.TIME)] = 0;
-    std.posix.tcsetattr(raw_fd, .DRAIN, raw) catch return null;
-    defer std.posix.tcsetattr(raw_fd, .DRAIN, saved) catch {};
+    termios.tcsetattr(raw_fd, .DRAIN, raw) catch return null;
+    defer termios.tcsetattr(raw_fd, .DRAIN, saved) catch {};
 
     if (!self.readReady(fd, timeout_ms)) return null;
 
@@ -281,18 +282,18 @@ pub fn readInteractiveKey(self: RealHost, timeout_ms: u64) ?u8 {
 pub fn disableTerminalEcho(self: RealHost, fd: host.Fd) ?TerminalMode {
     if (!self.isTerminalFd(fd)) return null;
     const raw_fd: std.posix.fd_t = @intCast(fd.raw());
-    const saved = std.posix.tcgetattr(raw_fd) catch return null;
+    const saved = termios.tcgetattr(raw_fd) catch return null;
     var silent = saved;
     silent.lflag.ECHO = false;
     silent.lflag.ECHONL = false;
-    std.posix.tcsetattr(raw_fd, .DRAIN, silent) catch return null;
+    termios.tcsetattr(raw_fd, .DRAIN, silent) catch return null;
     return saved;
 }
 
 pub fn restoreTerminalMode(_: RealHost, fd: host.Fd, mode: TerminalMode) void {
     const raw_fd: std.posix.fd_t = @intCast(fd.raw());
     // Best-effort terminal cleanup cannot report through this API.
-    std.posix.tcsetattr(raw_fd, .DRAIN, mode) catch {};
+    termios.tcsetattr(raw_fd, .DRAIN, mode) catch {};
 }
 
 pub fn writeAll(self: RealHost, fd: host.Fd, bytes: []const u8) WriteError!void {

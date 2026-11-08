@@ -9,6 +9,7 @@ const vaxis = @import("vaxis");
 const event_loop = @import("../event_loop.zig");
 const line_editor = @import("session.zig");
 const program_status = @import("../program_status.zig");
+const termios = @import("../termios.zig");
 const completion = @import("completion.zig");
 const external_editor = @import("external_editor.zig");
 const signal = @import("signal.zig");
@@ -237,7 +238,7 @@ pub const TerminalSession = struct {
     }
 
     pub fn suspendRawMode(self: *TerminalSession) !void {
-        try std.posix.tcsetattr(self.tty.fd.handle, .DRAIN, self.tty.termios);
+        try termios.tcsetattr(self.tty.fd.handle, .DRAIN, self.tty.termios);
     }
 
     /// What to do with terminal settings a command changed while the editor
@@ -260,13 +261,13 @@ pub const TerminalSession = struct {
         self.shell_code_depth += 1;
         if (self.shell_code_depth != 1) return;
         const fd = self.tty.fd.handle;
-        const raw = std.posix.tcgetattr(fd) catch return;
+        const raw = termios.tcgetattr(fd) catch return;
         var interruptible = raw;
         interruptible.lflag.ISIG = true;
         interruptible.cc[@backingInt(std.posix.V.QUIT)] = posix_vdisable;
         interruptible.cc[@backingInt(std.posix.V.SUSP)] = posix_vdisable;
         if (@hasField(std.posix.V, "DSUSP")) interruptible.cc[@backingInt(std.posix.V.DSUSP)] = posix_vdisable;
-        std.posix.tcsetattr(fd, .NOW, interruptible) catch return;
+        termios.tcsetattr(fd, .NOW, interruptible) catch return;
         self.shell_code_raw = raw;
         // The kitty keyboard protocol would send Ctrl-C as an escape sequence
         // instead of the interrupt character.
@@ -288,7 +289,7 @@ pub const TerminalSession = struct {
         }
         const raw = self.shell_code_raw orelse return;
         self.shell_code_raw = null;
-        std.posix.tcsetattr(self.tty.fd.handle, .NOW, raw) catch |err| {
+        termios.tcsetattr(self.tty.fd.handle, .NOW, raw) catch |err| {
             log.debug("failed to restore raw mode after shell code: {}", .{err});
         };
     }
@@ -1343,10 +1344,10 @@ fn initPosixTtyPreserveInput(io: std.Io, buffer: []u8) !vaxis.tty.PosixTty {
     var file = try std.Io.Dir.openFileAbsolute(io, "/dev/tty", .{ .mode = .read_write });
     errdefer if (builtin.target.os.tag != .macos) file.close(io);
 
-    const termios = try makeRawPreserveInput(file.handle);
+    const saved = try makeRawPreserveInput(file.handle);
     const tty: vaxis.tty.PosixTty = .{
         .io = io,
-        .termios = termios,
+        .termios = saved,
         .fd = file,
         .tty_writer = file.writerStreaming(io, buffer),
     };
@@ -1355,14 +1356,14 @@ fn initPosixTtyPreserveInput(io: std.Io, buffer: []u8) !vaxis.tty.PosixTty {
 }
 
 fn deinitPosixTtyPreserveInput(tty: vaxis.tty.PosixTty) void {
-    std.posix.tcsetattr(tty.fd.handle, .DRAIN, tty.termios) catch |err| {
+    termios.tcsetattr(tty.fd.handle, .DRAIN, tty.termios) catch |err| {
         std.log.err("couldn't restore terminal: {}", .{err});
     };
     if (builtin.target.os.tag != .macos) tty.fd.close(tty.io);
 }
 
 fn makeRawPreserveInput(fd: std.posix.fd_t) !std.posix.termios {
-    const state = try std.posix.tcgetattr(fd);
+    const state = try termios.tcgetattr(fd);
     var raw = state;
     raw.iflag.IGNBRK = false;
     raw.iflag.BRKINT = false;
@@ -1386,7 +1387,7 @@ fn makeRawPreserveInput(fd: std.posix.fd_t) !std.posix.termios {
 
     raw.cc[@backingInt(std.posix.V.MIN)] = 1;
     raw.cc[@backingInt(std.posix.V.TIME)] = 0;
-    try std.posix.tcsetattr(fd, .DRAIN, raw);
+    try termios.tcsetattr(fd, .DRAIN, raw);
     return state;
 }
 
@@ -1520,11 +1521,11 @@ test "raw terminal transitions preserve queued pty input" {
     defer _ = close(master);
     defer _ = close(slave);
 
-    const saved = try std.posix.tcgetattr(slave);
-    defer std.posix.tcsetattr(slave, .DRAIN, saved) catch {};
+    const saved = try termios.tcgetattr(slave);
+    defer termios.tcsetattr(slave, .DRAIN, saved) catch {};
     var no_echo = saved;
     no_echo.lflag.ECHO = false;
-    try std.posix.tcsetattr(slave, .DRAIN, no_echo);
+    try termios.tcsetattr(slave, .DRAIN, no_echo);
     try setNonBlocking(slave);
 
     const queued = "echo queued\n";
