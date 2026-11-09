@@ -1,6 +1,6 @@
 .{
     .name = .rush,
-    .version = "0.1.1",
+    .version = "0.1.2",
     .fingerprint = 0xf533deef8806632f,
     .minimum_zig_version = "0.17.1",
     .dependencies = .{
