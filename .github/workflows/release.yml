@@ -134,7 +134,7 @@ jobs:
           if [ -s "$notes" ]; then
             cp "$notes" notes.md
           elif previous=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$GITHUB_REF_NAME^" 2>/dev/null); then
-            git log --no-merges --format='- %s' --invert-grep --grep='^release: ' \
+            git log --no-merges --format='- %s' --invert-grep -E --grep='^release: [0-9]+\.[0-9]+\.[0-9]+$' \
               "$previous..$GITHUB_REF_NAME" >notes.md
           else
             : >notes.md
