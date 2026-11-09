@@ -155,6 +155,10 @@ jobs:
     needs: [prepare, publish]
     runs-on: ubuntu-latest
     container: archlinux:base-devel
+    # Container steps default to sh.
+    defaults:
+      run:
+        shell: bash
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
       AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
@@ -196,7 +200,9 @@ jobs:
           printf '%s\n' "$AUR_SSH_PRIVATE_KEY" >~/.ssh/aur
           chmod 600 ~/.ssh/aur
           ssh-keyscan -t ed25519 aur.archlinux.org >>~/.ssh/known_hosts
-          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/aur"
+          # ssh looks in the passwd entry's home, /root, not the container's
+          # $HOME, so it is told where both files are.
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
           git clone ssh://aur@aur.archlinux.org/rush-shell-bin.git "$RUNNER_TEMP/aur"
           cp aur/rush-shell-bin/{PKGBUILD,.SRCINFO,rush-shell.install} "$RUNNER_TEMP/aur/"
           cd "$RUNNER_TEMP/aur"
