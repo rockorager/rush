@@ -43,17 +43,18 @@ zig build
 zig build install --prefix "$HOME/.local" -Doptimize=ReleaseSafe
 ```
 
-Arch Linux users can install the latest development revision from the AUR:
+Each [release](https://github.com/rockorager/rush/releases) publishes static
+x86_64 and aarch64 Linux binaries. Arch Linux users can install the newest from
+the AUR:
 
 ```sh
-git clone https://aur.archlinux.org/rush-shell-git.git
-cd rush-shell-git
+git clone https://aur.archlinux.org/rush-shell-bin.git
+cd rush-shell-bin
 makepkg -si
 ```
 
-The package is named `rush-shell-git` to distinguish it from the existing GNU
-Restricted User Shell package, which also installs `/usr/bin/rush`. A future
-tagged-release package can use the corresponding `rush-shell` name.
+The package is named `rush-shell-bin` to distinguish it from the existing GNU
+Restricted User Shell package, which also installs `/usr/bin/rush`.
 
 Common build options:
 
@@ -147,6 +148,15 @@ Use `--case NAME` (repeatable), `--rounds N`, or Linux `--cpu N` after `--` to
 narrow or stabilize a run; `--reference bash` explicitly selects Bash POSIX mode.
 
 GitHub Actions runs these checks for every pull request and push to `main`.
+`just ci` runs the Linux ones locally; `just --list` shows the other recipes.
+
+## Releases
+
+Release tags are the versions. `just release` tags `origin/main` as the next
+patch version (`just release 0.3.0` picks one) once its CI has passed, and the
+Release workflow builds and publishes it, then updates the `rush-shell-bin` AUR
+package. Builds of other commits report the next patch version as a
+prerelease, such as `0.1.1-dev.7+gcb8aa2c5`.
 
 ## Configuration
 

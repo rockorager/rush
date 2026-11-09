@@ -18,36 +18,22 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
-      notes: ${{ steps.version.outputs.notes }}
     steps:
-      # Tags tell whether this is the first release.
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
 
-      # The tag and both version declarations must agree, and every release
-      # after the first needs checked-in notes, before anything is built.
-      - name: Check version and release notes
+      # The tag is the version. build.zig.zon must record it too, for builds
+      # from the release's source archive, which has no Git metadata.
+      - name: Check version
         id: version
         run: |
           version=${GITHUB_REF_NAME#v}
-          build_version=$(sed -n 's/^const release_version: std.SemanticVersion = .{ .major = \([0-9]*\), .minor = \([0-9]*\), .patch = \([0-9]*\) };$/\1.\2.\3/p' build.zig)
           zon_version=$(sed -n 's/^ *\.version = "\(.*\)",$/\1/p' build.zig.zon)
-          if [ "$build_version" != "$version" ] || [ "$zon_version" != "$version" ]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match build.zig ($build_version) and build.zig.zon ($zon_version)"
+          if [ "$zon_version" != "$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match build.zig.zon ($zon_version)"
             exit 1
           fi
-          notes="docs/releases/$version.md"
-          if [ ! -s "$notes" ]; then
-            if git tag --list 'v[0-9]*' | grep -qvxF "$GITHUB_REF_NAME"; then
-              echo "::error::missing release notes $notes"
-              exit 1
-            fi
-            notes=
-          fi
           echo "version=$version" >>"$GITHUB_OUTPUT"
-          echo "notes=$notes" >>"$GITHUB_OUTPUT"
 
   build:
     name: Build ${{ matrix.arch }}-linux
@@ -123,10 +109,12 @@ jobs:
       contents: write
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
-      NOTES: ${{ needs.prepare.outputs.notes }}
     steps:
+      # Tags find the previous release for the notes.
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Download
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -138,13 +126,82 @@ jobs:
         working-directory: dist
         run: sha256sum -- *.tar.xz >SHA256SUMS
 
+      # Checked-in notes describe a release when it has them; otherwise the
+      # notes list the commits since the previous release.
+      - name: Write release notes
+        run: |
+          notes="docs/releases/$VERSION.md"
+          if [ -s "$notes" ]; then
+            cp "$notes" notes.md
+          elif previous=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$GITHUB_REF_NAME^" 2>/dev/null); then
+            git log --no-merges --format='- %s' --invert-grep --grep='^release: ' \
+              "$previous..$GITHUB_REF_NAME" >notes.md
+          else
+            : >notes.md
+          fi
+
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ -n "$NOTES" ]; then set -- --notes-file "$NOTES"; else set -- --notes ""; fi
           gh release create "$GITHUB_REF_NAME" \
             --verify-tag \
             --title "Rush $VERSION" \
-            "$@" \
+            --notes-file notes.md \
             dist/*.tar.xz dist/SHA256SUMS
+
+  aur:
+    name: Publish rush-shell-bin to the AUR
+    needs: [prepare, publish]
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+    steps:
+      - name: Install tools
+        run: pacman -Syu --noconfirm --needed git openssh
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The package installs the tarballs this release just published, so it
+      # takes their checksums from the release.
+      - name: Update PKGBUILD
+        run: |
+          cd aur/rush-shell-bin
+          curl -fsSL -o SHA256SUMS \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/SHA256SUMS"
+          sum() { awk -v name="rush-$VERSION-$1-linux.tar.xz" '$2 == name { print $1 }' SHA256SUMS; }
+          x86_64=$(sum x86_64)
+          aarch64=$(sum aarch64)
+          test -n "$x86_64" && test -n "$aarch64"
+          sed -i \
+            -e "s/^pkgver=.*/pkgver=$VERSION/" \
+            -e "s/^pkgrel=.*/pkgrel=1/" \
+            -e "s/^sha256sums_x86_64=.*/sha256sums_x86_64=($x86_64)/" \
+            -e "s/^sha256sums_aarch64=.*/sha256sums_aarch64=($aarch64)/" \
+            PKGBUILD
+          rm SHA256SUMS
+          # makepkg refuses to run as root.
+          useradd -m builder
+          chown -R builder .
+          su builder -c 'makepkg --printsrcinfo' >.SRCINFO
+
+      # Without the key, as in a fork, the release stops at GitHub.
+      - name: Push to the AUR
+        if: env.AUR_SSH_PRIVATE_KEY != ''
+        run: |
+          install -dm700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" >~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan -t ed25519 aur.archlinux.org >>~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/aur"
+          git clone ssh://aur@aur.archlinux.org/rush-shell-bin.git "$RUNNER_TEMP/aur"
+          cp aur/rush-shell-bin/{PKGBUILD,.SRCINFO,rush-shell.install} "$RUNNER_TEMP/aur/"
+          cd "$RUNNER_TEMP/aur"
+          git config user.name "Tim Culverhouse"
+          git config user.email "tim@timculverhouse.com"
+          git add PKGBUILD .SRCINFO rush-shell.install
+          git commit -m "Update to $VERSION"
+          git push origin HEAD:master

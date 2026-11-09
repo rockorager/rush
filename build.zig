@@ -13,7 +13,9 @@ const compile_check_targets = [_][]const u8{
 
 const rush_stack_size = 128 * 1024 * 1024;
 const default_config_path = "share/rush/config.rush";
-const release_version: std.SemanticVersion = .{ .major = 0, .minor = 2, .patch = 0 };
+// Release tags are the versions. `just release` keeps this one equal to the newest
+// tag for builds from a source archive, which has no Git metadata to read it from.
+const archive_version = @import("build.zig.zon").version;
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -687,7 +689,6 @@ fn linkSqlite(
 }
 
 fn versionString(b: *std.Build) []const u8 {
-    const release = b.fmt("{f}", .{release_version});
     // Commits and worktree edits change the version without changing any file the
     // configure cache can track, so the configuration must not be reused.
     b.graph.poisonCache();
@@ -704,13 +705,15 @@ fn versionString(b: *std.Build) []const u8 {
         "--always",
         "--match",
         "v[0-9]*",
-    }, &code, .ignore) catch return release;
+    }, &code, .ignore) catch return archive_version;
     const description = std.mem.trim(u8, raw, " \r\n");
-    if (description.len == 0) return release;
+    if (description.len == 0) return archive_version;
 
     const dirty = std.mem.endsWith(u8, description, "-dirty");
     const clean = if (dirty) description[0 .. description.len - "-dirty".len] else description;
     if (!std.mem.startsWith(u8, clean, "v")) {
+        // No release tag is reachable, as in a shallow clone, so the archive version
+        // stands in for the newest release.
         const count_raw = b.runAllowFail(&.{
             "git",
             "-C",
@@ -718,10 +721,10 @@ fn versionString(b: *std.Build) []const u8 {
             "rev-list",
             "--count",
             "HEAD",
-        }, &code, .ignore) catch return release;
+        }, &code, .ignore) catch return archive_version;
         const count = std.mem.trim(u8, count_raw, " \r\n");
-        _ = std.fmt.parseInt(usize, count, 10) catch return release;
-        return developmentVersion(b, release, count, clean, dirty);
+        _ = std.fmt.parseInt(usize, count, 10) catch return archive_version;
+        return developmentVersion(b, archive_version, count, clean, dirty);
     }
 
     const hash_sep = std.mem.lastIndexOfScalar(u8, clean, '-') orelse
@@ -735,20 +738,15 @@ fn versionString(b: *std.Build) []const u8 {
     if (hash.len < 2 or hash[0] != 'g')
         std.process.fatal("unexpected git describe output: {s}", .{description});
 
-    const tagged_version = std.SemanticVersion.parse(tag[1..]) catch
-        std.process.fatal("version tag is not semantic: {s}", .{tag});
     const commit_count = std.fmt.parseInt(usize, distance, 10) catch
         std.process.fatal("unexpected git describe output: {s}", .{description});
-    if (commit_count == 0) {
-        if (release_version.order(tagged_version) != .eq)
-            std.process.fatal("release version {s} does not match tag {s}", .{ release, tag });
-        if (!dirty) return release;
-    } else if (release_version.order(tagged_version) != .gt) {
-        std.process.fatal("release version {s} must be newer than tag {s}", .{ release, tag });
-    }
-    return developmentVersion(b, release, distance, hash[1..], dirty);
+    if (commit_count == 0 and !dirty) return tag[1..];
+    return developmentVersion(b, tag[1..], distance, hash[1..], dirty);
 }
 
+/// Formats a build of a commit that is not a release. It comes after `release`
+/// and before the release that will follow it, so it is a prerelease of the next
+/// patch version.
 fn developmentVersion(
     b: *std.Build,
     release: []const u8,
@@ -756,8 +754,8 @@ fn developmentVersion(
     hash: []const u8,
     dirty: bool,
 ) []const u8 {
-    return if (dirty)
-        b.fmt("{s}-dev.{s}+g{s}.dirty", .{ release, distance, hash })
-    else
-        b.fmt("{s}-dev.{s}+g{s}", .{ release, distance, hash });
+    const released = std.SemanticVersion.parse(release) catch
+        std.process.fatal("version is not semantic: {s}", .{release});
+    const next: std.SemanticVersion = .{ .major = released.major, .minor = released.minor, .patch = released.patch + 1 };
+    return b.fmt("{f}-dev.{s}+g{s}{s}", .{ next, distance, hash, if (dirty) ".dirty" else "" });
 }
