@@ -364,14 +364,12 @@ Reusing an event/name pair replaces the existing handler.
 .SH COMMAND EVENTS
 .TP
 .B command.complete
-Runs after a nonempty interactive command line evaluates normally, after its
-output and before the next prompt.  The completed status remains available in
+Runs after each nonempty interactive command line, after its output and before
+the next prompt.  The line's status remains available in
 .BR $? ,
-and the submitted command text is in
+which is 2 when the line fails to parse, and the submitted command text is in
 .BR $1 .
-It does not run after
-.B exit
-or fatal evaluation flow.
+It does not run when the line exits the shell.
 .SH PROGRAM STATUS
 Rush can report finished long-running commands to terminals that support the
 Program Status Protocol (OSC 7501).  Set

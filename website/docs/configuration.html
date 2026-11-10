@@ -294,7 +294,7 @@ index:236
   <p>Use <code>event</code> for advanced interactive hooks. Hooks preserve the visible <code>$?</code> by default.</p>
 
   <ul>
-    <li><code>command.complete</code>: after a nonempty interactive command line evaluates normally; <code>$?</code> is its status and <code>$1</code> is its submitted text.</li>
+    <li><code>command.complete</code>: after each nonempty interactive command line that does not exit the shell; <code>$?</code> is its status and <code>$1</code> is its submitted text.</li>
     <li><code>prompt.prepare</code>: before each prompt render.</li>
     <li><code>directory.change</code>: after <code>cd</code>, and once at startup with an empty <code>$1</code>; receives old and new directories as <code>$1</code> and <code>$2</code>.</li>
     <li><code>timer.tick</code>: while the editor is idle; receives the registration name as <code>$1</code>.</li>

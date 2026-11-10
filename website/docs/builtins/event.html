@@ -47,7 +47,7 @@ timer.tick
 
   <dl>
     <dt><code>command.complete</code></dt>
-    <dd>Runs after a nonempty interactive command line evaluates normally, after its output and before the next prompt. The completed status remains available as <code>$?</code>, and <code>$1</code> is the submitted command text. It does not run after <code>exit</code> or fatal evaluation flow.</dd>
+    <dd>Runs after each nonempty interactive command line, after its output and before the next prompt. The line's status remains available as <code>$?</code>, which is 2 when the line fails to parse, and <code>$1</code> is the submitted command text. It does not run when the line exits the shell.</dd>
     <dt><code>directory.change</code></dt>
     <dd>Runs after a successful current-shell directory change. Receives old directory as <code>$1</code> and new directory as <code>$2</code>. Also runs once at interactive startup before the first prompt, with an empty <code>$1</code> and the initial directory as <code>$2</code>.</dd>
     <dt><code>prompt.prepare</code></dt>
