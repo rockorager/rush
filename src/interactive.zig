@@ -316,6 +316,8 @@ const InteractiveSession = struct {
     }
 
     fn evaluatePromptedStdinCommand(self: *InteractiveSession, pending: *std.ArrayList(u8)) !?u8 {
+        defer pending.clearRetainingCapacity();
+        const command = trimFinalLineEnding(pending.items);
         const src: shell.source.Source = .{
             .id = self.source_id.*,
             .kind = .interactive,
@@ -335,26 +337,16 @@ const InteractiveSession = struct {
             // History updates remain best effort when evaluation fails.
             self.history_service.completeCommand(history_handle, 2, 0) catch {};
             if (!shell.parser.isParseError(err)) try self.sh.host.writeAll(.stderr, "rush: shell error\n");
-            pending.clearRetainingCapacity();
-            return null;
+            return self.dispatchCommandComplete(command);
         };
         const duration_ms = @max(unixTimestamp(self.io) - started_at, 0) * 1000;
         // History updates remain best effort after command completion.
         self.history_service.completeCommand(history_handle, evaluated.status, duration_ms) catch {};
         self.last_command_status = evaluated.status;
-        if (evaluated.flow == .normal) {
-            const command = trimFinalLineEnding(pending.items);
-            if (try self.dispatchCommandComplete(command)) |status| {
-                pending.clearRetainingCapacity();
-                return self.exit(status);
-            }
-        }
-        pending.clearRetainingCapacity();
         switch (evaluated.flow) {
             .exit => |status| return self.exit(status),
-            else => {},
+            else => return self.dispatchCommandComplete(command),
         }
-        return null;
     }
 
     const ReadLineError = error{EditorFailure} || error{OutOfMemory};
@@ -695,6 +687,7 @@ const InteractiveSession = struct {
             if (!shell.parser.isParseError(err)) try self.sh.host.writeAll(.stderr, "rush: shell error\n");
             terminal.finishSemanticCommand(2) catch {};
             self.reportCommandStatus(terminal, line, 2, duration_ms);
+            if (try self.dispatchCommandComplete(line)) |status| return status;
             try terminal.enterEditorMode(.discard);
             return null;
         };
@@ -712,13 +705,11 @@ const InteractiveSession = struct {
         );
         defer self.allocator.free(job_event_output);
         if (job_event_output.len != 0) try self.sh.host.writeAll(.stderr, job_event_output);
-        if (evaluated.flow == .normal) {
-            if (try self.dispatchCommandComplete(line)) |status| return self.exit(status);
-        }
 
         switch (evaluated.flow) {
             .exit => |status| return self.exit(status),
             else => {
+                if (try self.dispatchCommandComplete(line)) |status| return status;
                 // Statuses above 128 report a signal, whose program may have
                 // left the terminal in an arbitrary state.
                 try terminal.enterEditorMode(if (evaluated.status > 128) .discard else .keep);
@@ -727,13 +718,16 @@ const InteractiveSession = struct {
         }
     }
 
-    /// Runs post-evaluation hooks while the completed command's status remains visible.
+    /// Runs post-command hooks for a submitted line the shell survives, including one that failed to
+    /// parse, while its status remains visible in `$?`. Returns the shell's final exit status when a
+    /// hook exits the shell.
     fn dispatchCommandComplete(self: *InteractiveSession, command: []const u8) !?u8 {
         if (std.mem.trim(u8, command, " \t\r\n").len == 0) return null;
         var dispatched = try self.events.runEvent(self.allocator, self.io, "command.complete", &.{command});
         defer dispatched.deinit(self.allocator);
         if (dispatched.output.len != 0) try self.sh.host.writeAll(.stderr, dispatched.output);
-        return dispatched.exit_status;
+        const status = dispatched.exit_status orelse return null;
+        return self.exit(status);
     }
 
     fn reportCommandStatus(
@@ -1893,6 +1887,15 @@ test "interactive command completion preserves status and receives the submitted
     try std.testing.expectEqualStrings("1", completion_status.value);
     const completion_command = sh.state.getVariable("completion_command") orelse return error.TestExpectedEqual;
     try std.testing.expectEqualStrings("false", completion_command.value);
+
+    // A line that fails to parse still completes, with the parse-error status.
+    try pending.appendSlice(std.testing.allocator, "foo(\n");
+    try std.testing.expectEqual(@as(?u8, null), try session.evaluatePromptedStdinCommand(&pending));
+    try std.testing.expectEqual(@as(usize, 0), pending.items.len);
+    const parse_status = sh.state.getVariable("completion_status") orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("2", parse_status.value);
+    const parse_command = sh.state.getVariable("completion_command") orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("foo(", parse_command.value);
 }
 
 test "interactive command completion skips exit flow" {
