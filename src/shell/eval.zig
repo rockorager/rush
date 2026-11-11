@@ -7630,11 +7630,30 @@ fn ArithmeticParser(comptime ShellType: type) type {
             while (self.index < self.text.len and std.ascii.isAlphanumeric(self.text[self.index])) self.index += 1;
             if (start == self.index) return error.InvalidArithmetic;
             const token = self.text[start..self.index];
+            if (self.shell.state.options.mode == .bash and self.eat('#')) return self.parseBaseConstant(token);
             if (std.mem.startsWith(u8, token, "0x") or std.mem.startsWith(u8, token, "0X")) {
                 return parseWrappingInteger(token[2..], 16);
             }
             if (token.len > 1 and token[0] == '0') return parseWrappingInteger(token[1..], 8);
             return parseWrappingInteger(token, 10);
+        }
+
+        /// Parses the digits of Bash's base#digits constant after the `#`.
+        /// Bases run from 2 to 64; digits past 9 are letters, `@`, and `_`.
+        fn parseBaseConstant(self: *Self, base_text: []const u8) ArithmeticError!i64 {
+            if (base_text[0] == '0') return error.InvalidArithmetic;
+            const base = std.fmt.parseInt(u8, base_text, 10) catch return error.InvalidArithmetic;
+            if (base < 2 or base > 64) return error.InvalidArithmetic;
+            const start = self.index;
+            while (self.index < self.text.len and baseDigitValue(self.text[self.index], 64) != null) self.index += 1;
+            if (start == self.index) return error.InvalidArithmetic;
+            var value: u64 = 0;
+            for (self.text[start..self.index]) |byte| {
+                const digit = baseDigitValue(byte, base) orelse return error.InvalidArithmetic;
+                if (digit >= base) return error.InvalidArithmetic;
+                value = value *% base +% digit;
+            }
+            return @bitCast(value);
         }
 
         fn parseName(self: *Self) ?[]const u8 {
@@ -7785,6 +7804,20 @@ fn parseWrappingInteger(digits: []const u8, base: u8) error{InvalidArithmetic}!i
         value = value *% base +% digit;
     }
     return @bitCast(value);
+}
+
+/// Maps a base#digits digit to its value. Up to base 36, letters of either
+/// case are 10 to 35; above it, lowercase letters are 10 to 35, uppercase
+/// letters 36 to 61, `@` is 62, and `_` is 63.
+fn baseDigitValue(byte: u8, base: u8) ?u8 {
+    return switch (byte) {
+        '0'...'9' => byte - '0',
+        'a'...'z' => byte - 'a' + 10,
+        'A'...'Z' => if (base <= 36) byte - 'A' + 10 else byte - 'A' + 36,
+        '@' => 62,
+        '_' => 63,
+        else => null,
+    };
 }
 
 fn arithmeticDivide(lhs: i64, rhs: i64) error{InvalidArithmetic}!i64 {

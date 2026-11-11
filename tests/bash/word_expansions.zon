@@ -189,6 +189,29 @@
             .status = 0,
         },
         .{
+            .name = "arithmetic supports bash base#digits constants",
+            .script =
+            \\day=08
+            \\printf '%s\n' $((16#ff)) $((16#FF)) $((2#101)) $((36#Z)) $((64#A)) $((64#@)) $((64#_)) $((10#$day))
+            \\echo $((2#2)) not-reached
+            \\echo "status=$?"
+            ,
+            .stdout =
+            \\255
+            \\255
+            \\5
+            \\35
+            \\36
+            \\62
+            \\63
+            \\8
+            \\status=1
+            \\
+            ,
+            .stderr_match = .nonempty,
+            .status = 0,
+        },
+        .{
             .name = "arithmetic reads and assigns array elements",
             .script =
             \\a=(5 6 7)
