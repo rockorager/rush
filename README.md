@@ -44,8 +44,11 @@ zig build install --prefix "$HOME/.local" -Doptimize=ReleaseSafe
 ```
 
 Each [release](https://github.com/rockorager/rush/releases) publishes static
-x86_64 and aarch64 Linux binaries. Arch Linux users can install the newest from
-the AUR:
+x86_64 and aarch64 Linux binaries, built for a `/usr` install, and x86_64 and
+aarch64 macOS binaries, built for `/usr/local`. The macOS binaries are not
+notarized, so a copy downloaded in a browser needs
+`xattr -d com.apple.quarantine bin/rush` before macOS will run it. Arch Linux
+users can install the newest from the AUR:
 
 ```sh
 git clone https://aur.archlinux.org/rush-shell-bin.git
