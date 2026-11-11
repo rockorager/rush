@@ -74,6 +74,47 @@
             .status = 0,
         },
         .{
+            .name = "positional substring expansion slices the parameter list",
+            .script =
+            \\set -- 'p q' '' 'r:s' t
+            \\printf '<%s>\n' "${@:2}"
+            \\printf '[%s]\n' ${@:2:2} x"${@:3}"y
+            \\printf '{%s}\n' "${*:2}" "${@: -2:1}"
+            \\IFS=:
+            \\printf '(%s)\n' ${@:2}
+            \\unset IFS
+            \\count() { printf '%s\n' "$#"; }
+            \\count "${@: -4}"
+            \\count "${@: -5}"
+            \\count "${@: -6}" "${@:5}" "${@:2:0}"
+            \\[ "${@:0:1}" = "$0" ] && echo zero
+            \\v=${@:3}
+            \\printf '%s\n' "$v"
+            ,
+            .stdout =
+            \\<>
+            \\<r:s>
+            \\<t>
+            \\[r:s]
+            \\[xr:s]
+            \\[ty]
+            \\{ r:s t}
+            \\{r:s}
+            \\()
+            \\(r)
+            \\(s)
+            \\(t)
+            \\4
+            \\5
+            \\0
+            \\zero
+            \\r:s t
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "arithmetic expansion recursively evaluates variable contents",
             .script =
             \\x='1+2'

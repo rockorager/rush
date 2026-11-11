@@ -1721,17 +1721,9 @@ fn partsHaveQuotedFieldList(parts: []const ast.WordPart) bool {
     return false;
 }
 
-fn quotedPartsHaveEmptyList(shell: anytype, parts: []const ast.WordPart) !bool {
-    for (parts) |part| {
-        if (part != .parameter or !isQuotedFieldList(part.parameter.*)) continue;
-        const values = try listParameterValues(shell, part.parameter.*) orelse return true;
-        if (values.len == 0) return true;
-    }
-    return false;
-}
-
 fn isListParameterExpansion(parameter: ast.ParameterExpansion) bool {
-    if (parameter.length or parameter.array_indices or parameter.op != null) return false;
+    if (parameter.length or parameter.array_indices) return false;
+    if (parameter.op != null and parameter.op.? != .substring) return false;
     return switch (parameter.parameter) {
         .special => |special| special == .at or special == .star,
         .array => |array| array.subscript == .all,
@@ -1739,20 +1731,51 @@ fn isListParameterExpansion(parameter: ast.ParameterExpansion) bool {
     };
 }
 
-/// Returns the values of a list parameter expansion, or null when the
-/// expansion is not a list or names a variable that is not an array.
-fn listParameterValues(shell: anytype, parameter: ast.ParameterExpansion) !?[]const []const u8 {
+/// Returns the values of a list parameter expansion, after any `${@:offset}`
+/// slice, or null when the expansion is not a list or names a variable that
+/// is not an array.
+fn listParameterValues(shell: anytype, parameter: ast.ParameterExpansion) EvalError!?[]const []const u8 {
     if (!isListParameterExpansion(parameter)) return null;
     return switch (parameter.parameter) {
-        .special => shell.state.positionals,
-        .array => |array_parameter| values: {
-            const array = shell.state.getArray(array_parameter.name) orelse return null;
-            const values = try shell.scratchAllocator().alloc([]const u8, array.elements.len);
-            for (array.elements, values) |element, *value| value.* = element.value;
+        .special => if (parameter.op == null)
+            shell.state.positionals
+        else
+            try positionalSubstringValues(shell, parameter),
+        .array => values: {
+            const elements = try arrayExpansionElements(shell, parameter) orelse return null;
+            const values = try shell.scratchAllocator().alloc([]const u8, elements.len);
+            for (elements, values) |element, *value| value.* = element.value;
             break :values values;
         },
         else => unreachable,
     };
+}
+
+/// Slices the positional parameters as Bash does: the list starts with $0 at
+/// offset 0, and a negative offset counts back from one past the last
+/// parameter, selecting nothing when it reaches before $0.
+fn positionalSubstringValues(shell: anytype, parameter: ast.ParameterExpansion) EvalError![]const []const u8 {
+    std.debug.assert(parameter.op.? == .substring);
+    const offset = try parameterArithmeticValue(shell, parameter.word.?);
+    const maybe_length = if (parameter.second_word) |word| try parameterArithmeticValue(shell, word) else null;
+    if (maybe_length) |length| if (length < 0) return error.ExpansionError;
+
+    const positionals = shell.state.positionals;
+    const count = positionals.len + 1;
+    const start: usize = if (offset >= 0)
+        @min(count, @as(u64, @intCast(offset)))
+    else if (@abs(offset) > count)
+        count
+    else
+        count - @as(usize, @intCast(@abs(offset)));
+    const selected_len = if (maybe_length) |length| @min(count - start, @as(u64, @intCast(length))) else count - start;
+    if (start != 0) return positionals[start - 1 ..][0..selected_len];
+    if (selected_len == 0) return &.{};
+
+    const values = try shell.scratchAllocator().alloc([]const u8, selected_len);
+    values[0] = shell.state.arg_zero;
+    @memcpy(values[1..], positionals[0 .. selected_len - 1]);
+    return values;
 }
 
 fn appendUnquotedPositionalFields(shell: anytype, fields: *std.ArrayList([]const u8)) !void {
@@ -5572,6 +5595,8 @@ const ParameterWordFields = struct {
     split: std.ArrayList(bool) = .empty,
     empty_fields: std.ArrayList(usize) = .empty,
     breaks: std.ArrayList(FieldBreak) = .empty,
+    /// Whether the innermost double-quoted part held a quoted list with no values.
+    empty_quoted_list: bool = false,
 
     fn append(self: *ParameterWordFields, shell: anytype, bytes: []const u8, quoted: bool, split: bool) !void {
         const allocator = shell.scratchAllocator();
@@ -5633,11 +5658,14 @@ const ParameterWordFields = struct {
             .double_quoted => |parts| {
                 const start = self.text.items.len;
                 const markers = self.empty_fields.items.len;
+                const outer_empty_list = self.empty_quoted_list;
+                self.empty_quoted_list = false;
+                defer self.empty_quoted_list = outer_empty_list;
                 for (parts) |*nested| try self.appendPart(shell, nested, true, false, status);
                 if (self.text.items.len != start) return;
                 // A quoted list with no values removes the null field its
                 // quotes would otherwise make, as in "$@" or "$empty$@".
-                if (try quotedPartsHaveEmptyList(shell, parts)) {
+                if (self.empty_quoted_list) {
                     self.empty_fields.shrinkRetainingCapacity(markers);
                 } else {
                     try self.append(shell, "", true, false);
@@ -5647,6 +5675,12 @@ const ParameterWordFields = struct {
                 if (try listParameterValues(shell, parameter.*)) |values| {
                     if (!quoted) return self.appendList(shell, values);
                     if (isQuotedFieldList(parameter.*)) return self.appendQuotedList(shell, values);
+                } else if (quoted and isQuotedFieldList(parameter.*)) {
+                    // An unset array has no values, while a Bash array that
+                    // the shell computes, such as PIPESTATUS, expands joined.
+                    const value = try expandWordPart(shell, part, status);
+                    if (value.len == 0) self.empty_quoted_list = true;
+                    return self.append(shell, value, true, false);
                 }
                 if (parameter.op == .default_value or parameter.op == .alternate_value) {
                     const value = try parameterCurrentValue(shell, parameter.parameter);
@@ -5684,6 +5718,7 @@ const ParameterWordFields = struct {
     /// Each value of a quoted "$@" or "${name[@]}" is its own field, which IFS
     /// does not split, so the values always end in field breaks.
     fn appendQuotedList(self: *ParameterWordFields, shell: anytype, values: []const []const u8) !void {
+        if (values.len == 0) self.empty_quoted_list = true;
         for (values, 0..) |value, index| {
             if (index != 0) try self.appendBreak(shell);
             try self.append(shell, value, true, false);
@@ -8377,6 +8412,11 @@ fn expandParameterSubstring(shell: anytype, parameter: ast.ParameterExpansion) E
         };
         return joinArrayElements(shell, elements, separator);
     }
+    if (parameter.parameter == .special) switch (parameter.parameter.special) {
+        .at => return joinValues(shell, try positionalSubstringValues(shell, parameter), " "),
+        .star => return joinValues(shell, try positionalSubstringValues(shell, parameter), ifsFirstCharacter(shell)),
+        else => {},
+    };
     const value = (try parameterCurrentValue(shell, parameter.parameter)) orelse "";
     const offset = try parameterArithmeticValue(shell, parameter.word.?);
     const maybe_length = if (parameter.second_word) |word| try parameterArithmeticValue(shell, word) else null;
