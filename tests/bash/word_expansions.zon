@@ -3,6 +3,30 @@
     .mode = .bash,
     .cases = .{
         .{
+            .name = "tilde expansion applies after equals and colons in assignment-like arguments",
+            .script =
+            \\HOME='/tmp/a b*'
+            \\dir=/usr
+            \\printf '<%s>\n' if=~/disk.img path=$dir:~/bin:~ list+=~
+            \\printf '<%s>\n' --prefix=~ '"a"'=~ a\=~ a==~ a=x~
+            \\env printf '<%s>\n' of=~/out | cat
+            ,
+            .stdout =
+            \\<if=/tmp/a b*/disk.img>
+            \\<path=/usr:/tmp/a b*/bin:/tmp/a b*>
+            \\<list+=/tmp/a b*>
+            \\<--prefix=~>
+            \\<"a"=~>
+            \\<a=~>
+            \\<a==~>
+            \\<a=x~>
+            \\<of=/tmp/a b*/out>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "arithmetic expansion recursively evaluates variable contents",
             .script =
             \\x='1+2'

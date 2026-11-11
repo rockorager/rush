@@ -608,7 +608,8 @@ fn staticPipelineStageFields(shell: anytype, command: ast.Command) !?[]const []c
     if (simple.assignments.len != 0 or simple.redirections.len != 0 or simple.words.len == 0) return null;
 
     const fields = try shell.scratchAllocator().alloc([]const u8, simple.words.len);
-    for (simple.words, 0..) |word, index| {
+    for (simple.words, 0..) |argument, index| {
+        const word = try expandAssignmentLikeArgumentTildes(shell, argument);
         if (wordExpandsLeadingTilde(shell, word)) return null;
         const literal = staticLiteralWord(word) orelse return null;
         if (pattern_mod.containsMeta(try staticWordPathnamePattern(shell, word))) return null;
@@ -666,7 +667,8 @@ fn staticExternalPipelineStageRequest(
     if (simple.assignments.len != 0 or simple.redirections.len != 0 or simple.words.len == 0) return null;
 
     const fields = try shell.scratchAllocator().alloc([]const u8, simple.words.len);
-    for (simple.words, 0..) |word, index| {
+    for (simple.words, 0..) |argument, index| {
+        const word = try expandAssignmentLikeArgumentTildes(shell, argument);
         if (wordExpandsLeadingTilde(shell, word)) return null;
         const literal = staticLiteralWord(word) orelse return null;
         if (pattern_mod.containsMeta(try staticWordPathnamePattern(shell, word))) return null;
@@ -5452,10 +5454,11 @@ fn expandWordFields(
 fn appendExpandedWordFields(
     shell: anytype,
     fields: *std.ArrayList([]const u8),
-    word: ast.Word,
+    argument: ast.Word,
     substitution_status: ?*?result.ExitStatus,
 ) EvalError!void {
     const allocator = shell.scratchAllocator();
+    const word = try expandAssignmentLikeArgumentTildes(shell, argument);
 
     // Fast path for plain literal words: every special-case check below only
     // matches words built from parts, and a literal has no dynamic expansion.
@@ -6652,30 +6655,76 @@ fn expandWordTracking(shell: anytype, word: ast.Word, substitution_status: ?*?re
 }
 
 fn expandAssignmentWordTracking(shell: anytype, word: ast.Word, substitution_status: ?*?result.ExitStatus) ![]const u8 {
-    if (word.quoted) return expandWordTracking(shell, word, substitution_status);
-    return switch (word.data) {
-        .literal => |literal| expandAssignmentLiteralTildes(shell, literal),
-        .parts => expandWordTracking(shell, word, substitution_status),
-        .declaration_array_assignment => unreachable,
-    };
+    return expandWordTracking(shell, try expandAssignmentTildes(shell, word, 0), substitution_status);
 }
 
-fn expandAssignmentLiteralTildes(shell: anytype, literal: []const u8) ![]const u8 {
-    var output: std.ArrayList(u8) = .empty;
+/// Bash mode also expands tildes after the `=` and each unquoted colon of an
+/// argument that looks like an assignment, such as `dd if=~/disk.img`.
+fn expandAssignmentLikeArgumentTildes(shell: anytype, word: ast.Word) !ast.Word {
+    if (shell.state.options.mode == .posix) return word;
+    const leading = switch (word.data) {
+        .literal => |literal| literal,
+        .parts => |parts| if (parts.len != 0 and parts[0] == .literal) parts[0].literal else return word,
+        .declaration_array_assignment => return word,
+    };
+    const equals_index = std.mem.indexOfScalar(u8, leading, '=') orelse return word;
+    const append = equals_index > 0 and leading[equals_index - 1] == '+';
+    if (!isAssignmentName(leading[0 .. equals_index - @intFromBool(append)])) return word;
+    return expandAssignmentTildes(shell, word, equals_index + 1);
+}
+
+/// Returns `word` with each tilde prefix that starts at byte `value_start` or
+/// follows an unquoted colon after it replaced by a quoted part holding its
+/// expansion, so later field splitting and pathname expansion leave the
+/// expanded path alone. Returns `word` itself when no prefix expands.
+fn expandAssignmentTildes(shell: anytype, word: ast.Word, value_start: usize) !ast.Word {
+    var literal_part: [1]ast.WordPart = undefined;
+    const parts: []const ast.WordPart = switch (word.data) {
+        .literal => |literal| parts: {
+            if (word.quoted) return word;
+            literal_part = .{.{ .literal = literal }};
+            break :parts &literal_part;
+        },
+        .parts => |parts| parts,
+        .declaration_array_assignment => return word,
+    };
+    std.debug.assert(value_start == 0 or (parts[0] == .literal and value_start <= parts[0].literal.len));
+
     const allocator = shell.scratchAllocator();
-    var index: usize = 0;
-    while (index < literal.len) {
-        if (index == 0 or literal[index - 1] == ':') {
-            if (tildeExpansion(shell, literal[index..], true, true)) |expansion| {
-                try output.appendSlice(allocator, expansion.value);
-                index += expansion.prefix_len;
+    var expanded: std.ArrayList(ast.WordPart) = .empty;
+    var changed = false;
+    // Whether the next unquoted byte starts the value or follows a colon.
+    var at_boundary = true;
+    for (parts, 0..) |part, index| {
+        const bytes = switch (part) {
+            .literal => |bytes| bytes,
+            else => {
+                try expanded.append(allocator, part);
+                at_boundary = false;
                 continue;
+            },
+        };
+        var copied: usize = 0;
+        var cursor: usize = if (index == 0) value_start else 0;
+        while (cursor < bytes.len) {
+            if (at_boundary) {
+                if (tildeExpansion(shell, bytes[cursor..], true, index + 1 == parts.len)) |tilde| {
+                    if (copied < cursor) try expanded.append(allocator, .{ .literal = bytes[copied..cursor] });
+                    try expanded.append(allocator, .{ .single_quoted = tilde.value });
+                    cursor += tilde.prefix_len;
+                    copied = cursor;
+                    changed = true;
+                    at_boundary = false;
+                    continue;
+                }
             }
+            at_boundary = bytes[cursor] == ':';
+            cursor += 1;
         }
-        try output.append(allocator, literal[index]);
-        index += 1;
+        if (copied < bytes.len) try expanded.append(allocator, .{ .literal = bytes[copied..] });
     }
-    return output.toOwnedSlice(allocator);
+    if (!changed) return word;
+    return .{ .data = .{ .parts = try expanded.toOwnedSlice(allocator) }, .span = word.span, .quoted = true };
 }
 
 fn expandLeadingTilde(shell: anytype, word: ast.Word, expanded: []const u8) ![]const u8 {

@@ -717,6 +717,36 @@
             .status = 0,
         },
         .{
+            .name = "tilde expansion applies after colons that follow expansions or quotes in assignments",
+            .script =
+            \\HOME='/tmp/has space'
+            \\dir=/usr
+            \\path=$dir:~/bin:"x":~
+            \\quoted=~/"a b":~
+            \\printf '<%s>\n' "$path" "$quoted"
+            ,
+            .stdout =
+            \\</usr:/tmp/has space/bin:x:/tmp/has space>
+            \\</tmp/has space/a b:/tmp/has space>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
+            .name = "tilde is literal after equals in command arguments",
+            .script =
+            \\printf '<%s>\n' if=~/disk.img path=/usr:~
+            ,
+            .stdout =
+            \\<if=~/disk.img>
+            \\<path=/usr:~>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "command substitution trims trailing newlines but preserves interior newlines",
             .script =
             \\x=$(printf 'a\n\nb\n\n')
