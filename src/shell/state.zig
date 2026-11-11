@@ -689,6 +689,13 @@ pub const State = struct {
         if (self.getVariableAttributes(name)) |attributes| if (attributes.readonly) return error.ReadonlyVariable;
         if (self.getVariable(name)) |variable| if (variable.readonly) return error.ReadonlyVariable;
         if (self.getArray(name)) |array| if (array.readonly) return error.ReadonlyVariable;
+        // A scalar becomes an array that keeps its value as element 0.
+        if (self.getArray(name) == null) if (self.getVariable(name)) |scalar| {
+            try self.putArrayWithAttributes(name, &.{scalar.value}, .{
+                .exported = scalar.exported,
+                .integer = scalar.integer,
+            });
+        };
         const attributes = self.getVariableAttributes(name);
         const variable = self.getVariable(name);
 

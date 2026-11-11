@@ -111,6 +111,33 @@
             .status = 0,
         },
         .{
+            .name = "a scalar is element 0 of an array with the same name",
+            .script =
+            \\arr=(5 6 7)
+            \\sparse=([1]=x)
+            \\printf '<%s>\n' "$arr" "${#arr}" "${arr/5/f}" "${sparse-unset}"
+            \\export scalar=3
+            \\printf '[%s]\n' "${scalar[0]}" "${scalar[1]}" "${#scalar[@]}" "${!scalar[@]}" x"${scalar[@]}"y
+            \\scalar[2]=9
+            \\declare -p scalar
+            ,
+            .stdout =
+            \\<5>
+            \\<1>
+            \\<f>
+            \\<unset>
+            \\[3]
+            \\[]
+            \\[1]
+            \\[0]
+            \\[x3y]
+            \\declare -ax scalar=([0]="3" [2]="9")
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "indexed array compound assignments preserve sparse indices and append",
             .script =
             \\arr=([2]=two three [7]=seven)

@@ -1188,22 +1188,23 @@ fn conditionalArrayParameterIsSet(shell: anytype, parameter: ast.ArrayParameter)
         };
     }
 
-    if (shell.state.getVariable(parameter.name) == null) return false;
+    const variable = shell.state.getVariable(parameter.name) orelse return false;
     return switch (parameter.subscript) {
-        .index => |word| scalar: {
-            const index = try expandArrayIndexValue(shell, word);
-            if (index < 0) {
-                const diagnostic = try shell.scratchAllocator().print(
-                    "{s}: bad array subscript\n",
-                    .{parameter.name},
-                );
-                try shell.host.writeAll(.stderr, diagnostic);
-                break :scalar false;
-            }
-            break :scalar index == 0;
-        },
+        .index => |word| try scalarElementValue(shell, parameter.name, variable.value, word) != null,
         .all => true,
     };
+}
+
+/// Reads `name[word]` where `name` is a scalar, which Bash treats as an
+/// array whose only element is at index 0. A negative index is reported as
+/// a bad subscript and reads as unset.
+fn scalarElementValue(shell: anytype, name: []const u8, value: []const u8, word: ast.Word) EvalError!?[]const u8 {
+    const index = try expandArrayIndexValue(shell, word);
+    if (index < 0) {
+        try shell.host.writeAll(.stderr, try shell.scratchAllocator().print("{s}: bad array subscript\n", .{name}));
+        return null;
+    }
+    return if (index == 0) value else null;
 }
 
 fn conditionalUnaryTestOperatorText(operator: ast.ConditionalUnaryTestOperator) []const u8 {
@@ -1674,7 +1675,7 @@ fn appendUnquotedArrayIndexFields(shell: anytype, fields: *std.ArrayList([]const
         .all => {},
         .index => return false,
     }
-    const array = shell.state.getArray(array_parameter.name) orelse return true;
+    const array = try arrayView(shell, array_parameter.name) orelse return true;
     for (array.elements) |element| {
         try fields.append(shell.scratchAllocator(), try shell.scratchAllocator().print(
             "{}",
@@ -8171,8 +8172,8 @@ fn arrayElementCount(shell: anytype, parameter: ast.ArrayParameter) ?usize {
     if (shell.state.options.mode == .bash and std.mem.eql(u8, parameter.name, "BASH_SOURCE")) {
         return shell.state.function_call_stack.items.len;
     }
-    const array = shell.state.getArray(parameter.name) orelse return null;
-    return array.elements.len;
+    if (shell.state.getArray(parameter.name)) |array| return array.elements.len;
+    return if (shell.state.getVariable(parameter.name) != null) 1 else null;
 }
 
 fn parameterSubjectToNounset(parameter: ast.Parameter) bool {
@@ -8281,7 +8282,13 @@ fn arrayParameterValue(shell: anytype, parameter: ast.ArrayParameter) !?[]const 
     if (shell.state.options.mode == .bash and std.mem.eql(u8, parameter.name, "BASH_SOURCE")) {
         return functionStackParameterValue(shell, parameter.subscript, .source_name);
     }
-    const array = shell.state.getArray(parameter.name) orelse return null;
+    const array = shell.state.getArray(parameter.name) orelse {
+        const variable = shell.state.getVariable(parameter.name) orelse return null;
+        return switch (parameter.subscript) {
+            .index => |word| scalarElementValue(shell, parameter.name, variable.value, word),
+            .all => variable.value,
+        };
+    };
     return switch (parameter.subscript) {
         .index => |word| value: {
             const index = try expandArrayIndexForArray(shell, word, array);
@@ -8295,10 +8302,21 @@ fn arrayParameterValue(shell: anytype, parameter: ast.ArrayParameter) !?[]const 
     };
 }
 
+/// Returns the array named `name`. In Bash a scalar is also an array whose
+/// only element, at index 0, is its value, so a scalar variable yields that
+/// one-element view.
+fn arrayView(shell: anytype, name: []const u8) !?state_mod.ArrayVariable {
+    if (shell.state.getArray(name)) |array| return array;
+    const variable = shell.state.getVariable(name) orelse return null;
+    const elements = try shell.scratchAllocator().alloc(state_mod.ArrayElement, 1);
+    elements[0] = .{ .index = 0, .value = variable.value };
+    return .{ .name = name, .elements = elements };
+}
+
 fn arrayExpansionElements(shell: anytype, expansion: ast.ParameterExpansion) EvalError!?[]const state_mod.ArrayElement {
     std.debug.assert(expansion.parameter == .array);
     const array_parameter = expansion.parameter.array;
-    const array = shell.state.getArray(array_parameter.name) orelse return null;
+    const array = try arrayView(shell, array_parameter.name) orelse return null;
     const elements = switch (array_parameter.subscript) {
         .all => array.elements,
         .index => return null,
@@ -8319,7 +8337,7 @@ fn arrayExpansionElements(shell: anytype, expansion: ast.ParameterExpansion) Eva
 
 fn arrayIndicesParameterValue(shell: anytype, parameter: ast.ArrayParameter) !?[]const u8 {
     return switch (parameter.subscript) {
-        .all => |special| if (shell.state.getArray(parameter.name)) |array| {
+        .all => |special| if (try arrayView(shell, parameter.name)) |array| {
             if (array.elements.len == 0) return null;
             const separator = if (special == .star) ifsFirstCharacter(shell) else " ";
             return try joinArrayElementIndices(shell, array.elements, separator);
@@ -8660,6 +8678,8 @@ fn writeExpansionDiagnostic(
 fn parameterValue(shell: anytype, name: []const u8) ?[]const u8 {
     if (dynamicParameterValue(shell, name)) |value| return value;
     if (shell.state.getVariable(name)) |variable| return variable.value;
+    // An array's name alone refers to its element 0.
+    if (shell.state.getArray(name)) |array| return array.elementValue(0);
     if (shell.state.bindings.contains(name)) return null;
     if (std.mem.eql(u8, name, "PPID")) return shell.scratchAllocator().print(
         "{}",
