@@ -143,6 +143,29 @@
             .status = 0,
         },
         .{
+            .name = "arithmetic expansion supports bash postfix increment",
+            .script =
+            \\i=3
+            \\printf '<%s> i=<%s>\n' "$((i++))" "$i"
+            \\printf '<%s> i=<%s>\n' "$((i --))" "$i"
+            \\printf '<%s> i=<%s>\n' "$((i+++1))" "$i"
+            \\printf '<%s> i=<%s>\n' "$((0 && i++))" "$i"
+            \\x=abc
+            \\i=0
+            \\printf '<%s> i=<%s>\n' "${x:i++:1}" "$i"
+            ,
+            .stdout =
+            \\<3> i=<4>
+            \\<4> i=<3>
+            \\<4> i=<4>
+            \\<0> i=<4>
+            \\<a> i=<1>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "arithmetic expansion supports indexed array lengths",
             .script =
             \\empty=()

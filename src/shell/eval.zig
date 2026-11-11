@@ -7519,9 +7519,22 @@ fn ArithmeticParser(comptime ShellType: type) type {
             }
             if (isArithmeticNameStart(self.peek())) {
                 const name = self.parseName().?;
+                if (self.shell.state.options.mode == .bash) {
+                    const rewind = self.index;
+                    self.skipWhitespace();
+                    if (self.eatString("++")) return self.applyPostfixUpdate(name, 1);
+                    if (self.eatString("--")) return self.applyPostfixUpdate(name, -1);
+                    self.index = rewind;
+                }
                 return self.variableValue(name);
             }
             return self.parseNumber();
+        }
+
+        fn applyPostfixUpdate(self: *Self, name: []const u8, delta: i64) ArithmeticError!i64 {
+            const value = try self.variableValue(name);
+            try self.assignVariable(name, value + delta);
+            return value;
         }
 
         fn parseNumber(self: *Self) ArithmeticError!i64 {
