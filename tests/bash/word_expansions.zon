@@ -52,6 +52,28 @@
             .status = 0,
         },
         .{
+            .name = "quoted array at beside other word parts keeps one field per element",
+            .script =
+            \\arr=('a b' '' c)
+            \\printf '<%s>\n' x"${arr[@]}"y "${arr[@]}"$e
+            \\arr=()
+            \\printf '[%s]\n' x"${arr[@]}" "${arr[@]}"$e "${arr[@]}"""
+            ,
+            .stdout =
+            \\<xa b>
+            \\<>
+            \\<cy>
+            \\<a b>
+            \\<>
+            \\<c>
+            \\[x]
+            \\[]
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "arithmetic expansion recursively evaluates variable contents",
             .script =
             \\x='1+2'

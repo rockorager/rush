@@ -1331,7 +1331,7 @@ fn expandForWordFields(shell: anytype, words: []const ast.Word) ![]const []const
             try appendUnquotedStarFields(shell, &fields, word) or
             try appendUnquotedArrayIndexFields(shell, &fields, word) or
             try appendSpecialQuotedFields(shell, &fields, word) or
-            try appendUnquotedListWordFields(shell, &fields, word, null) or
+            try appendListWordFields(shell, &fields, word, null) or
             try appendUnquotedParameterOperatorWordFields(shell, &fields, word, null))
         {
             continue;
@@ -1684,21 +1684,50 @@ fn appendUnquotedArrayIndexFields(shell: anytype, fields: *std.ArrayList([]const
     return true;
 }
 
-/// Expands a word with an unquoted `$@`, `$*`, `${name[@]}`, or `${name[*]}`
-/// beside other parts, such as `pre$@`, keeping its values separate fields.
-fn appendUnquotedListWordFields(
+/// Expands a word with a list parameter beside other parts, such as `pre$@`
+/// or `x"$@"`, keeping the list's values separate fields.
+fn appendListWordFields(
     shell: anytype,
     fields: *std.ArrayList([]const u8),
     word: ast.Word,
     substitution_status: ?*?result.ExitStatus,
 ) EvalError!bool {
     if (word.data != .parts) return false;
-    for (word.data.parts) |part| {
-        if (part == .parameter and isListParameterExpansion(part.parameter.*)) break;
+    for (word.data.parts) |part| switch (part) {
+        .parameter => |parameter| if (isListParameterExpansion(parameter.*)) break,
+        .double_quoted => |nested| if (partsHaveQuotedFieldList(nested)) break,
+        else => {},
     } else return false;
 
     try appendWordFieldsWithProvenance(shell, fields, word, substitution_status);
     return true;
+}
+
+/// Whether a list expansion keeps one field per value inside double quotes,
+/// like "$@", rather than joining them, like "$*".
+fn isQuotedFieldList(parameter: ast.ParameterExpansion) bool {
+    if (!isListParameterExpansion(parameter)) return false;
+    return switch (parameter.parameter) {
+        .special => |special| special == .at,
+        .array => |array| array.subscript.all == .at,
+        else => unreachable,
+    };
+}
+
+fn partsHaveQuotedFieldList(parts: []const ast.WordPart) bool {
+    for (parts) |part| {
+        if (part == .parameter and isQuotedFieldList(part.parameter.*)) return true;
+    }
+    return false;
+}
+
+fn quotedPartsHaveEmptyList(shell: anytype, parts: []const ast.WordPart) !bool {
+    for (parts) |part| {
+        if (part != .parameter or !isQuotedFieldList(part.parameter.*)) continue;
+        const values = try listParameterValues(shell, part.parameter.*) orelse return true;
+        if (values.len == 0) return true;
+    }
+    return false;
 }
 
 fn isListParameterExpansion(parameter: ast.ParameterExpansion) bool {
@@ -5470,7 +5499,7 @@ fn appendExpandedWordFields(
         try appendUnquotedStarFields(shell, fields, word) or
         try appendUnquotedArrayIndexFields(shell, fields, word) or
         try appendSpecialQuotedFields(shell, fields, word) or
-        try appendUnquotedListWordFields(shell, fields, word, substitution_status) or
+        try appendListWordFields(shell, fields, word, substitution_status) or
         try appendUnquotedParameterOperatorWordFields(shell, fields, word, substitution_status))
     {
         return;
@@ -5603,12 +5632,21 @@ const ParameterWordFields = struct {
             .escaped, .single_quoted => |bytes| try self.append(shell, bytes, true, false),
             .double_quoted => |parts| {
                 const start = self.text.items.len;
+                const markers = self.empty_fields.items.len;
                 for (parts) |*nested| try self.appendPart(shell, nested, true, false, status);
-                if (self.text.items.len == start) try self.append(shell, "", true, false);
+                if (self.text.items.len != start) return;
+                // A quoted list with no values removes the null field its
+                // quotes would otherwise make, as in "$@" or "$empty$@".
+                if (try quotedPartsHaveEmptyList(shell, parts)) {
+                    self.empty_fields.shrinkRetainingCapacity(markers);
+                } else {
+                    try self.append(shell, "", true, false);
+                }
             },
             .parameter => |parameter| {
-                if (!quoted) {
-                    if (try listParameterValues(shell, parameter.*)) |values| return self.appendList(shell, values);
+                if (try listParameterValues(shell, parameter.*)) |values| {
+                    if (!quoted) return self.appendList(shell, values);
+                    if (isQuotedFieldList(parameter.*)) return self.appendQuotedList(shell, values);
                 }
                 if (parameter.op == .default_value or parameter.op == .alternate_value) {
                     const value = try parameterCurrentValue(shell, parameter.parameter);
@@ -5636,14 +5674,27 @@ const ParameterWordFields = struct {
                 if (separator.len != 0) {
                     try self.append(shell, separator, false, true);
                 } else {
-                    try self.breaks.append(shell.scratchAllocator(), .{
-                        .offset = self.text.items.len,
-                        .empty_fields = self.empty_fields.items.len,
-                    });
+                    try self.appendBreak(shell);
                 }
             }
             try self.append(shell, value, false, true);
         }
+    }
+
+    /// Each value of a quoted "$@" or "${name[@]}" is its own field, which IFS
+    /// does not split, so the values always end in field breaks.
+    fn appendQuotedList(self: *ParameterWordFields, shell: anytype, values: []const []const u8) !void {
+        for (values, 0..) |value, index| {
+            if (index != 0) try self.appendBreak(shell);
+            try self.append(shell, value, true, false);
+        }
+    }
+
+    fn appendBreak(self: *ParameterWordFields, shell: anytype) !void {
+        try self.breaks.append(shell.scratchAllocator(), .{
+            .offset = self.text.items.len,
+            .empty_fields = self.empty_fields.items.len,
+        });
     }
 };
 
@@ -6296,22 +6347,45 @@ fn appendSplitPatternFields(
     breaks: []const FieldBreak,
 ) !void {
     std.debug.assert(pattern.text.len == split.len);
+    var start: usize = 0;
+    var markers: usize = 0;
+    for (breaks) |field_break| {
+        std.debug.assert(field_break.offset >= start and field_break.empty_fields >= markers);
+        try appendSplitPatternSegment(shell, fields, pattern, split, empty_fields[markers..field_break.empty_fields], .{
+            .start = start,
+            .end = field_break.offset,
+        });
+        start = field_break.offset;
+        markers = field_break.empty_fields;
+    }
+    try appendSplitPatternSegment(shell, fields, pattern, split, empty_fields[markers..], .{
+        .start = start,
+        .end = pattern.text.len,
+    });
+}
+
+/// Splits the bytes between two field breaks. `empty_fields` holds the
+/// segment's quoted empty markers as offsets into the whole pattern.
+fn appendSplitPatternSegment(
+    shell: anytype,
+    fields: *std.ArrayList([]const u8),
+    whole: PathnamePattern,
+    whole_split: []const bool,
+    whole_empty_fields: []const usize,
+    range: struct { start: usize, end: usize },
+) !void {
+    const pattern = whole.slice(range.start, range.end);
+    const split = whole_split[range.start..range.end];
+    const empty_fields = if (range.start == 0) whole_empty_fields else relative: {
+        const relative = try shell.scratchAllocator().alloc(usize, whole_empty_fields.len);
+        for (whole_empty_fields, relative) |position, *offset| offset.* = position - range.start;
+        break :relative relative;
+    };
+
     const splitting: PathnamePattern = .{ .text = pattern.text, .special = split };
     const ifs = parameterValue(shell, "IFS") orelse " \t\n";
     if (ifs.len == 0) {
-        var start: usize = 0;
-        var markers: usize = 0;
-        for (breaks) |field_break| {
-            std.debug.assert(field_break.offset >= start and field_break.empty_fields >= markers);
-            if (field_break.offset > start or field_break.empty_fields > markers) {
-                try appendPathnameExpandedPattern(shell, fields, pattern.slice(start, field_break.offset));
-            }
-            start = field_break.offset;
-            markers = field_break.empty_fields;
-        }
-        if (pattern.text.len > start or empty_fields.len > markers) {
-            try appendPathnameExpandedPattern(shell, fields, pattern.slice(start, pattern.text.len));
-        }
+        if (pattern.text.len != 0 or empty_fields.len != 0) try appendPathnameExpandedPattern(shell, fields, pattern);
         return;
     }
 

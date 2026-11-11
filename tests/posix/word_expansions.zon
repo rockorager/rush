@@ -1786,6 +1786,42 @@
             .status = 0,
         },
         .{
+            .name = "quoted at beside other word parts keeps one field per positional parameter",
+            .script =
+            \\set -- 'p q' r
+            \\x='b c'
+            \\printf '<%s>\n' x"$@" "$@"$x "$@""$@"
+            \\set -- '' ''
+            \\printf '[%s]\n' x"$@"
+            \\set --
+            \\empty=
+            \\printf '{%s}\n' x"$@" $empty"$@" "$@""" "$@"x"$@"
+            \\IFS=:
+            \\set -- 'p:q' r
+            \\printf '(%s)\n' "$@":$x
+            ,
+            .stdout =
+            \\<xp q>
+            \\<r>
+            \\<p q>
+            \\<rb>
+            \\<c>
+            \\<p q>
+            \\<rp q>
+            \\<r>
+            \\[x]
+            \\[]
+            \\{x}
+            \\{}
+            \\{x}
+            \\(p:q)
+            \\(r:b c)
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "field splitting applies after command substitution and arithmetic expansion",
             .script = "unset IFS\nset -- $(printf 'a b\\nc') $((1 + 2))x\nprintf '<%s>\\n' \"$#\" \"$@\"\n",
             .stdout =
