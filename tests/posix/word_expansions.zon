@@ -3,6 +3,37 @@
     .mode = .posix,
     .cases = .{
         .{
+            .name = "arithmetic wraps on overflow and masks shift amounts instead of trapping",
+            .script =
+            \\max=9223372036854775807
+            \\min=$((-max - 1))
+            \\printf '%s\n' $((max + 1)) $((min - 1)) $((max * 2)) $((-min)) $((min / -1)) $((min % -1))
+            \\printf '%s\n' $((1 << 63)) $((1 << 64)) $((1 << -1)) $((-1 >> 70))
+            \\x=$max
+            \\: $((x += 1))
+            \\printf '%s\n' "$x" $((9223372036854775808)) $((0x10000000000000001))
+            ,
+            // This matches Bash and the C arithmetic of other shells on 64-bit hosts; dash traps on min / -1.
+            .stdout =
+            \\-9223372036854775808
+            \\9223372036854775807
+            \\-2
+            \\-9223372036854775808
+            \\-9223372036854775808
+            \\0
+            \\-9223372036854775808
+            \\1
+            \\-9223372036854775808
+            \\-1
+            \\-9223372036854775808
+            \\-9223372036854775808
+            \\1
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "arithmetic equality binds less tightly than relational operators",
             .script =
             \\printf '%s\n' $((0!=2<=1)) $((0==0<0)) $((1!=0>=0)) $((0==0>1))

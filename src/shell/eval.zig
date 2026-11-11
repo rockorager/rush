@@ -7308,11 +7308,11 @@ fn ArithmeticParser(comptime ShellType: type) type {
             const lhs = try self.variableValue(name);
             return switch (operator) {
                 .assign => unreachable,
-                .add => lhs + rhs,
-                .subtract => lhs - rhs,
-                .multiply => lhs * rhs,
-                .divide => if (rhs == 0) error.InvalidArithmetic else @divTrunc(lhs, rhs),
-                .remainder => if (rhs == 0) error.InvalidArithmetic else @rem(lhs, rhs),
+                .add => lhs +% rhs,
+                .subtract => lhs -% rhs,
+                .multiply => lhs *% rhs,
+                .divide => arithmeticDivide(lhs, rhs),
+                .remainder => arithmeticRemainder(lhs, rhs),
                 .shift_left => shiftLeft(lhs, rhs),
                 .shift_right => shiftRight(lhs, rhs),
                 .bit_and => lhs & rhs,
@@ -7454,9 +7454,9 @@ fn ArithmeticParser(comptime ShellType: type) type {
             while (true) {
                 self.skipWhitespace();
                 if (self.eat('+')) {
-                    value += try self.parseMul();
+                    value +%= try self.parseMul();
                 } else if (self.eat('-')) {
-                    value -= try self.parseMul();
+                    value -%= try self.parseMul();
                 } else {
                     return value;
                 }
@@ -7468,17 +7468,15 @@ fn ArithmeticParser(comptime ShellType: type) type {
             while (true) {
                 self.skipWhitespace();
                 if (self.eat('*')) {
-                    value *= try self.parseUnary();
+                    value *%= try self.parseUnary();
                 } else if (self.eat('/')) {
                     const rhs = try self.parseUnary();
                     if (!self.evaluating) return 0;
-                    if (rhs == 0) return error.InvalidArithmetic;
-                    value = @divTrunc(value, rhs);
+                    value = try arithmeticDivide(value, rhs);
                 } else if (self.eat('%')) {
                     const rhs = try self.parseUnary();
                     if (!self.evaluating) return 0;
-                    if (rhs == 0) return error.InvalidArithmetic;
-                    value = @rem(value, rhs);
+                    value = try arithmeticRemainder(value, rhs);
                 } else {
                     return value;
                 }
@@ -7490,7 +7488,7 @@ fn ArithmeticParser(comptime ShellType: type) type {
             if (self.shell.state.options.mode == .bash and self.eatString("++")) return self.parsePrefixUpdate(1);
             if (self.shell.state.options.mode == .bash and self.eatString("--")) return self.parsePrefixUpdate(-1);
             if (self.eat('+')) return self.parseUnary();
-            if (self.eat('-')) return -(try self.parseUnary());
+            if (self.eat('-')) return 0 -% try self.parseUnary();
             if (self.eat('!')) return if (try self.parseUnary() == 0) 1 else 0;
             if (self.eat('~')) return ~(try self.parseUnary());
             return self.parsePrimary();
@@ -7499,7 +7497,7 @@ fn ArithmeticParser(comptime ShellType: type) type {
         fn parsePrefixUpdate(self: *Self, delta: i64) ArithmeticError!i64 {
             self.skipWhitespace();
             const name = self.parseName() orelse return error.InvalidArithmetic;
-            const value = try self.variableValue(name) + delta;
+            const value = try self.variableValue(name) +% delta;
             try self.assignVariable(name, value);
             return value;
         }
@@ -7533,7 +7531,7 @@ fn ArithmeticParser(comptime ShellType: type) type {
 
         fn applyPostfixUpdate(self: *Self, name: []const u8, delta: i64) ArithmeticError!i64 {
             const value = try self.variableValue(name);
-            try self.assignVariable(name, value + delta);
+            try self.assignVariable(name, value +% delta);
             return value;
         }
 
@@ -7544,12 +7542,10 @@ fn ArithmeticParser(comptime ShellType: type) type {
             if (start == self.index) return error.InvalidArithmetic;
             const token = self.text[start..self.index];
             if (std.mem.startsWith(u8, token, "0x") or std.mem.startsWith(u8, token, "0X")) {
-                return std.fmt.parseInt(i64, token[2..], 16) catch error.InvalidArithmetic;
+                return parseWrappingInteger(token[2..], 16);
             }
-            if (token.len > 1 and token[0] == '0') {
-                return std.fmt.parseInt(i64, token[1..], 8) catch error.InvalidArithmetic;
-            }
-            return std.fmt.parseInt(i64, token, 10) catch error.InvalidArithmetic;
+            if (token.len > 1 and token[0] == '0') return parseWrappingInteger(token[1..], 8);
+            return parseWrappingInteger(token, 10);
         }
 
         fn parseName(self: *Self) ?[]const u8 {
@@ -7655,14 +7651,39 @@ fn isArithmeticNameContinue(byte: u8) bool {
     return isArithmeticNameStart(byte) or std.ascii.isDigit(byte);
 }
 
+// Shell arithmetic follows the C arithmetic of other shells on 64-bit
+// hosts: results wrap on overflow and shift amounts use their low six bits,
+// rather than trapping.
+
+/// Parses an integer constant, wrapping one too large for 64 bits as Bash does.
+fn parseWrappingInteger(digits: []const u8, base: u8) error{InvalidArithmetic}!i64 {
+    if (digits.len == 0) return error.InvalidArithmetic;
+    var value: u64 = 0;
+    for (digits) |byte| {
+        const digit = std.fmt.charToDigit(byte, base) catch return error.InvalidArithmetic;
+        value = value *% base +% digit;
+    }
+    return @bitCast(value);
+}
+
+fn arithmeticDivide(lhs: i64, rhs: i64) error{InvalidArithmetic}!i64 {
+    if (rhs == 0) return error.InvalidArithmetic;
+    if (rhs == -1) return 0 -% lhs;
+    return @divTrunc(lhs, rhs);
+}
+
+fn arithmeticRemainder(lhs: i64, rhs: i64) error{InvalidArithmetic}!i64 {
+    if (rhs == 0) return error.InvalidArithmetic;
+    if (rhs == -1) return 0;
+    return @rem(lhs, rhs);
+}
+
 fn shiftLeft(value: i64, amount: i64) i64 {
-    if (amount < 0 or amount >= 63) return 0;
-    return value << @as(u6, @intCast(amount));
+    return value << @as(u6, @truncate(@as(u64, @bitCast(amount))));
 }
 
 fn shiftRight(value: i64, amount: i64) i64 {
-    if (amount < 0 or amount >= 63) return 0;
-    return value >> @as(u6, @intCast(amount));
+    return value >> @as(u6, @truncate(@as(u64, @bitCast(amount))));
 }
 
 fn expandCommandSubstitution(
