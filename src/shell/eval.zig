@@ -7246,10 +7246,22 @@ fn ArithmeticParser(comptime ShellType: type) type {
         const Self = @This();
 
         fn parse(self: *Self) ArithmeticError!i64 {
-            const value = try self.parseAssignment();
+            const value = try self.parseComma();
             self.skipWhitespace();
             if (self.index != self.text.len) return error.InvalidArithmetic;
             return value;
+        }
+
+        /// Bash's sequence operator evaluates both operands and yields the
+        /// right one; POSIX arithmetic has no comma operator.
+        fn parseComma(self: *Self) ArithmeticError!i64 {
+            var value = try self.parseAssignment();
+            if (self.shell.state.options.mode == .posix) return value;
+            while (true) {
+                self.skipWhitespace();
+                if (!self.eat(',')) return value;
+                value = try self.parseAssignment();
+            }
         }
 
         fn parseAssignment(self: *Self) ArithmeticError!i64 {
@@ -7328,7 +7340,7 @@ fn ArithmeticParser(comptime ShellType: type) type {
 
             const outer_evaluating = self.evaluating;
             self.evaluating = outer_evaluating and condition != 0;
-            const true_value = try self.parseAssignment();
+            const true_value = try self.parseComma();
             self.skipWhitespace();
             if (!self.eat(':')) return error.InvalidArithmetic;
             self.evaluating = outer_evaluating and condition == 0;
@@ -7464,23 +7476,33 @@ fn ArithmeticParser(comptime ShellType: type) type {
         }
 
         fn parseMul(self: *Self) ArithmeticError!i64 {
-            var value = try self.parseUnary();
+            var value = try self.parsePower();
             while (true) {
                 self.skipWhitespace();
-                if (self.eat('*')) {
-                    value *%= try self.parseUnary();
+                if (self.eatSingle('*')) {
+                    value *%= try self.parsePower();
                 } else if (self.eat('/')) {
-                    const rhs = try self.parseUnary();
+                    const rhs = try self.parsePower();
                     if (!self.evaluating) return 0;
                     value = try arithmeticDivide(value, rhs);
                 } else if (self.eat('%')) {
-                    const rhs = try self.parseUnary();
+                    const rhs = try self.parsePower();
                     if (!self.evaluating) return 0;
                     value = try arithmeticRemainder(value, rhs);
                 } else {
                     return value;
                 }
             }
+        }
+
+        /// Bash's `**` binds tighter than `*` but looser than unary operators,
+        /// and groups from the right.
+        fn parsePower(self: *Self) ArithmeticError!i64 {
+            const base = try self.parseUnary();
+            if (self.shell.state.options.mode == .posix) return base;
+            self.skipWhitespace();
+            if (!self.eatString("**")) return base;
+            return arithmeticPower(base, try self.parsePower());
         }
 
         fn parseUnary(self: *Self) ArithmeticError!i64 {
@@ -7505,7 +7527,7 @@ fn ArithmeticParser(comptime ShellType: type) type {
         fn parsePrimary(self: *Self) ArithmeticError!i64 {
             self.skipWhitespace();
             if (self.eat('(')) {
-                const value = try self.parseAssignment();
+                const value = try self.parseComma();
                 self.skipWhitespace();
                 if (!self.eat(')')) return error.InvalidArithmetic;
                 return value;
@@ -7676,6 +7698,18 @@ fn arithmeticRemainder(lhs: i64, rhs: i64) error{InvalidArithmetic}!i64 {
     if (rhs == 0) return error.InvalidArithmetic;
     if (rhs == -1) return 0;
     return @rem(lhs, rhs);
+}
+
+fn arithmeticPower(base: i64, exponent: i64) error{InvalidArithmetic}!i64 {
+    if (exponent < 0) return error.InvalidArithmetic;
+    var power: i64 = 1;
+    var factor = base;
+    var remaining: u64 = @intCast(exponent);
+    while (remaining != 0) : (remaining >>= 1) {
+        if (remaining & 1 != 0) power *%= factor;
+        factor *%= factor;
+    }
+    return power;
 }
 
 fn shiftLeft(value: i64, amount: i64) i64 {
