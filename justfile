@@ -20,7 +20,7 @@ install prefix="~/.local":
 run *ARGS:
     zig build run -- {{ ARGS }}
 
-[doc("Release origin/main as vVERSION, the next patch version by default; CI builds and publishes it")]
+[doc("Release origin/main: VERSION is patch (the default), minor, major, or X.Y.Z; CI builds and publishes it")]
 [group("release")]
 release version="":
     #!/usr/bin/env bash
@@ -37,21 +37,32 @@ release version="":
         echo "CI for origin/main ${sha:0:8} is $ci, not success" >&2
         exit 1
     fi
-    # The tags are the versions: the newest's patch, one up, unless told.
+    # The tags are the versions, by semver: the newest one bumped, its patch
+    # unless told minor or major, or the version given.
     last=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
     version="{{ version }}"
-    if [ -z "$version" ]; then
+    if [[ $version =~ ^(|patch|minor|major)$ ]]; then
         IFS=. read -r major minor patch <<<"${last:-v0.0.0}"
-        version=${major#v}.$minor.$((patch + 1))
+        major=${major#v}
+        case $version in
+            major) version=$((major + 1)).0.0 ;;
+            minor) version=$major.$((minor + 1)).0 ;;
+            *) version=$major.$minor.$((patch + 1)) ;;
+        esac
     fi
     if ! [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        echo "version $version is not X.Y.Z" >&2
+        echo "version $version is not patch, minor, major, or X.Y.Z" >&2
         exit 1
     fi
-    if [ -n "$last" ] && [ "$(printf '%s\n' "$last" "v$version" | sort -V | tail -1)" != "v$version" ]; then
+    if [ -n "$last" ] && { [ "$last" = "v$version" ] ||
+        [ "$(printf '%s\n' "$last" "v$version" | sort -V | tail -1)" != "v$version" ]; }; then
         echo "v$version is not newer than $last" >&2
         exit 1
     fi
+    # For checking the bump: patch for fixes, minor for features, major for
+    # what breaks.
+    echo "releasing as v$version what came since ${last:-the start}:"
+    git log --format='  %h %s' "${last:+$last..}$sha"
     # The release commit records the version in build.zig.zon for builds from a
     # source archive. It is written with a scratch index, so this checkout and
     # its branch stay as they are.

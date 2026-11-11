@@ -155,8 +155,9 @@ GitHub Actions runs these checks for every pull request and push to `main`.
 
 ## Releases
 
-Release tags are the versions. `just release` tags `origin/main` as the next
-patch version (`just release 0.3.0` picks one) once its CI has passed, and the
+Release tags are the versions, by semver. `just release` tags `origin/main` as
+the next patch version (`just release minor`, `just release major`, or
+`just release 0.3.0` picks another) once its CI has passed, and the
 Release workflow builds and publishes it, then updates the `rush-shell-bin` AUR
 package. Builds of other commits report the next patch version as a
 prerelease, such as `0.1.1-dev.7+gcb8aa2c5`.
