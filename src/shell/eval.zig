@@ -1183,7 +1183,10 @@ fn conditionalParameterIsSet(shell: anytype, name: []const u8) EvalError!bool {
 fn conditionalArrayParameterIsSet(shell: anytype, parameter: ast.ArrayParameter) EvalError!bool {
     if (shell.state.getArray(parameter.name)) |array| {
         return switch (parameter.subscript) {
-            .index => |word| array.elementValue(try expandArrayIndexForArray(shell, word, array)) != null,
+            .index => |word| if (try expandArrayIndexForArray(shell, word, array)) |index|
+                array.elementValue(index) != null
+            else
+                false,
             .all => array.elements.len != 0,
         };
     }
@@ -1201,7 +1204,7 @@ fn conditionalArrayParameterIsSet(shell: anytype, parameter: ast.ArrayParameter)
 fn scalarElementValue(shell: anytype, name: []const u8, value: []const u8, word: ast.Word) EvalError!?[]const u8 {
     const index = try expandArrayIndexValue(shell, word);
     if (index < 0) {
-        try shell.host.writeAll(.stderr, try shell.scratchAllocator().print("{s}: bad array subscript\n", .{name}));
+        try writeBadArraySubscript(shell, name, index, .read);
         return null;
     }
     return if (index == 0) value else null;
@@ -5407,33 +5410,53 @@ fn expandAssignmentValue(
     return std.mem.concat(shell.scratchAllocator(), u8, &.{ existing, value });
 }
 
+/// Resolves the subscript of an element assignment. A negative subscript
+/// that reaches before the first element fails the assignment.
 fn expandArrayIndexForName(shell: anytype, name: []const u8, word: ast.Word) !usize {
     const value = try expandArrayIndexValue(shell, word);
     if (value >= 0) return @intCast(value);
-    return resolveNegativeArrayIndex(value, shell.state.getArray(name), shell.state.getVariable(name) != null);
+    return resolveNegativeArrayIndex(value, shell.state.getArray(name), shell.state.getVariable(name) != null) orelse {
+        try writeBadArraySubscript(shell, name, value, .assignment);
+        return error.ExpansionError;
+    };
 }
 
-fn expandArrayIndexForArray(shell: anytype, word: ast.Word, array: state_mod.ArrayVariable) !usize {
+/// Resolves the subscript of an element read. A negative subscript that
+/// reaches before the first element is reported and reads as unset.
+fn expandArrayIndexForArray(shell: anytype, word: ast.Word, array: state_mod.ArrayVariable) !?usize {
     const value = try expandArrayIndexValue(shell, word);
     if (value >= 0) return @intCast(value);
-    return resolveNegativeArrayIndex(value, array, false);
+    return resolveNegativeArrayIndex(value, array, false) orelse {
+        try writeBadArraySubscript(shell, array.name, value, .read);
+        return null;
+    };
 }
 
-fn resolveNegativeArrayIndex(value: i64, maybe_array: ?state_mod.ArrayVariable, scalar_is_set: bool) !usize {
+/// Counts a negative subscript back from one past the last element. Returns
+/// null when it reaches before the first element or nothing is set.
+fn resolveNegativeArrayIndex(value: i64, maybe_array: ?state_mod.ArrayVariable, scalar_is_set: bool) ?usize {
     std.debug.assert(value < 0);
     const max_index = if (maybe_array) |array| max: {
-        if (array.elements.len == 0) return error.InvalidArithmetic;
+        if (array.elements.len == 0) return null;
         break :max array.elements[array.elements.len - 1].index;
     } else if (scalar_is_set)
         0
     else
-        return error.InvalidArithmetic;
-    const magnitude: u64 = if (value == std.math.minInt(i64))
-        @as(u64, 1) << 63
-    else
-        @intCast(-value);
-    if (magnitude > max_index + 1) return error.InvalidArithmetic;
-    return max_index + 1 - @as(usize, @intCast(magnitude));
+        return null;
+    if (@abs(value) > max_index + 1) return null;
+    return max_index + 1 - @as(usize, @intCast(@abs(value)));
+}
+
+/// Bash names the array when a read has a bad subscript, and the element
+/// when an assignment does.
+const ArrayAccess = enum { read, assignment };
+
+fn writeBadArraySubscript(shell: anytype, name: []const u8, subscript: i64, access: ArrayAccess) !void {
+    const diagnostic = switch (access) {
+        .read => try shell.scratchAllocator().print("{s}: bad array subscript\n", .{name}),
+        .assignment => try shell.scratchAllocator().print("{s}[{}]: bad array subscript\n", .{ name, subscript }),
+    };
+    try shell.host.writeAll(.stderr, diagnostic);
 }
 
 fn expandArrayIndex(shell: anytype, word: ast.Word) !usize {
@@ -7579,6 +7602,8 @@ fn ArithmeticParser(comptime ShellType: type) type {
         const Operand = struct {
             name: []const u8,
             index: ?usize = null,
+            /// A negative subscript that reaches before the first element.
+            bad_subscript: ?i64 = null,
         };
 
         /// Parses a variable name and any Bash subscript, evaluating the
@@ -7591,11 +7616,11 @@ fn ArithmeticParser(comptime ShellType: type) type {
             self.skipWhitespace();
             if (!self.eat(']')) return error.InvalidArithmetic;
             if (!self.evaluating) return .{ .name = name, .index = 0 };
-            const index: usize = if (subscript >= 0) @intCast(subscript) else try resolveNegativeArrayIndex(
-                subscript,
-                self.shell.state.getArray(name),
-                self.shell.state.getVariable(name) != null,
-            );
+            if (subscript >= 0) return .{ .name = name, .index = @intCast(subscript) };
+            const array = self.shell.state.getArray(name);
+            const scalar_is_set = self.shell.state.getVariable(name) != null;
+            const index = resolveNegativeArrayIndex(subscript, array, scalar_is_set) orelse
+                return .{ .name = name, .bad_subscript = subscript };
             return .{ .name = name, .index = index };
         }
 
@@ -7622,6 +7647,10 @@ fn ArithmeticParser(comptime ShellType: type) type {
 
         fn operandValue(self: *Self, operand: Operand) ArithmeticError!i64 {
             if (!self.evaluating) return 0;
+            if (operand.bad_subscript) |subscript| {
+                try self.reportBadSubscript(operand.name, subscript, .read);
+                return 0;
+            }
             const maybe_value = if (operand.index) |index|
                 if (self.shell.state.getArray(operand.name)) |array|
                     array.elementValue(index)
@@ -7655,8 +7684,20 @@ fn ArithmeticParser(comptime ShellType: type) type {
             return std.fmt.parseInt(i64, trimmed, 10) catch error.InvalidArithmetic;
         }
 
+        fn reportBadSubscript(self: *Self, name: []const u8, subscript: i64, access: ArrayAccess) ArithmeticError!void {
+            // A diagnostic that cannot be written does not change the result.
+            writeBadArraySubscript(self.shell, name, subscript, access) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {},
+            };
+        }
+
         fn assignOperand(self: *Self, operand: Operand, value: i64) ArithmeticError!void {
             if (!self.evaluating) return;
+            // Bash reports the element and skips the assignment, keeping the value.
+            if (operand.bad_subscript) |subscript| {
+                return self.reportBadSubscript(operand.name, subscript, .assignment);
+            }
             const text = try self.shell.scratchAllocator().print("{}", .{value});
             // An array's name alone assigns its element 0.
             const array_index: ?usize = operand.index orelse
@@ -8348,7 +8389,7 @@ fn arrayParameterValue(shell: anytype, parameter: ast.ArrayParameter) !?[]const 
     };
     return switch (parameter.subscript) {
         .index => |word| value: {
-            const index = try expandArrayIndexForArray(shell, word, array);
+            const index = try expandArrayIndexForArray(shell, word, array) orelse break :value null;
             break :value array.elementValue(index);
         },
         .all => |special| if (array.elements.len == 0) null else switch (special) {

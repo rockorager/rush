@@ -138,6 +138,28 @@
             .status = 0,
         },
         .{
+            .name = "negative subscripts before the first element fail assignments but read as unset",
+            .script =
+            \\arr=(1)
+            \\[[ -v arr[-2] ]]; echo "test status=$?"
+            \\echo "<${arr[-2]}> <$((arr[-2]))> status=$?"
+            \\(( arr[-2] = 5 )); echo "arithmetic status=$?"
+            \\arr[-2]=x; echo not-reached
+            \\echo "assignment status=$?"
+            \\declare -p arr
+            ,
+            .stdout =
+            \\test status=1
+            \\<> <0> status=0
+            \\arithmetic status=0
+            \\assignment status=1
+            \\declare -a arr=([0]="1")
+            \\
+            ,
+            .stderr_match = .nonempty,
+            .status = 0,
+        },
+        .{
             .name = "indexed array compound assignments preserve sparse indices and append",
             .script =
             \\arr=([2]=two three [7]=seven)
