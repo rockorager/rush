@@ -612,6 +612,31 @@
             .status = 0,
         },
         .{
+            .name = "substring offsets before the start select nothing and negative lengths before the offset fail",
+            .script =
+            \\value=abcde
+            \\arr=(a b c d)
+            \\printf '<%s>\n' "${value: -6}" "${value: -6:2}" "${value:2:-3}" "${value:7:-1}"
+            \\printf '[%s]\n' "${arr[@]: -5}" "${arr[@]:9:-1}" x
+            \\printf '%s\n' "${value:2:-4}"
+            \\echo "string status=$?"
+            \\printf '%s\n' "${arr[@]:1:-1}"
+            \\echo "array status=$?"
+            ,
+            .stdout =
+            \\<>
+            \\<>
+            \\<>
+            \\<>
+            \\[x]
+            \\string status=1
+            \\array status=1
+            \\
+            ,
+            .stderr_match = .nonempty,
+            .status = 0,
+        },
+        .{
             .name = "parameter pattern substitution supports bash operators",
             .script =
             \\value=abcabc

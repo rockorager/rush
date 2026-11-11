@@ -1755,21 +1755,11 @@ fn listParameterValues(shell: anytype, parameter: ast.ParameterExpansion) EvalEr
 /// offset 0, and a negative offset counts back from one past the last
 /// parameter, selecting nothing when it reaches before $0.
 fn positionalSubstringValues(shell: anytype, parameter: ast.ParameterExpansion) EvalError![]const []const u8 {
-    std.debug.assert(parameter.op.? == .substring);
-    const offset = try parameterArithmeticValue(shell, parameter.word.?);
-    const maybe_length = if (parameter.second_word) |word| try parameterArithmeticValue(shell, word) else null;
-    if (maybe_length) |length| if (length < 0) return error.ExpansionError;
-
     const positionals = shell.state.positionals;
     const count = positionals.len + 1;
-    const start: usize = if (offset >= 0)
-        @min(count, @as(u64, @intCast(offset)))
-    else if (@abs(offset) > count)
-        count
-    else
-        count - @as(usize, @intCast(@abs(offset)));
-    const selected_len = if (maybe_length) |length| @min(count - start, @as(u64, @intCast(length))) else count - start;
-    if (start != 0) return positionals[start - 1 ..][0..selected_len];
+    const bounds = try parameterSubstringBounds(shell, parameter, count, .reject_negative_length) orelse return &.{};
+    const selected_len = @min(count - bounds.start, bounds.length orelse count);
+    if (bounds.start != 0) return positionals[bounds.start - 1 ..][0..selected_len];
     if (selected_len == 0) return &.{};
 
     const values = try shell.scratchAllocator().alloc([]const u8, selected_len);
@@ -8247,31 +8237,16 @@ fn arrayExpansionElements(shell: anytype, expansion: ast.ParameterExpansion) Eva
     };
     if (expansion.op == null or expansion.op.? == .transform_prompt) return elements;
     std.debug.assert(expansion.op.? == .substring);
-    const offset = try parameterArithmeticValue(shell, expansion.word.?);
-    const maybe_length = if (expansion.second_word) |word| try parameterArithmeticValue(shell, word) else null;
-    return arraySubstringElements(elements, offset, maybe_length) catch |err| switch (err) {
-        error.NegativeArraySubstringLength => return error.ExpansionError,
-    };
-}
-
-const ArraySubstringError = error{NegativeArraySubstringLength};
-
-fn arraySubstringElements(
-    elements: []const state_mod.ArrayElement,
-    offset: i64,
-    maybe_length: ?i64,
-) ArraySubstringError![]const state_mod.ArrayElement {
     if (elements.len == 0) return elements;
-    if (maybe_length) |length| if (length < 0) return error.NegativeArraySubstringLength;
 
+    // Offsets index the possibly sparse array, while the length counts elements.
     const max_index_plus_one = elements[elements.len - 1].index + 1;
-    const start_index = normalizeSubstringIndex(offset, max_index_plus_one);
+    const bounds = try parameterSubstringBounds(shell, expansion, max_index_plus_one, .reject_negative_length) orelse
+        return &.{};
     var start_position: usize = 0;
-    while (start_position < elements.len and elements[start_position].index < start_index) : (start_position += 1) {}
-
-    const length = maybe_length orelse return elements[start_position..];
-    const selected_len = @min(elements.len - start_position, @as(usize, @intCast(length)));
-    return elements[start_position .. start_position + selected_len];
+    while (start_position < elements.len and elements[start_position].index < bounds.start) : (start_position += 1) {}
+    const selected_len = @min(elements.len - start_position, bounds.length orelse elements.len);
+    return elements[start_position..][0..selected_len];
 }
 
 fn arrayIndicesParameterValue(shell: anytype, parameter: ast.ArrayParameter) !?[]const u8 {
@@ -8417,10 +8392,58 @@ fn expandParameterSubstring(shell: anytype, parameter: ast.ParameterExpansion) E
         .star => return joinValues(shell, try positionalSubstringValues(shell, parameter), ifsFirstCharacter(shell)),
         else => {},
     };
-    const value = (try parameterCurrentValue(shell, parameter.parameter)) orelse "";
+    const value = (try parameterCurrentValue(shell, parameter.parameter)) orelse return "";
+    const count = utf8CodepointCount(value);
+    const bounds = try parameterSubstringBounds(shell, parameter, count, .count_back_from_end) orelse return "";
+    const end = bounds.start + @min(count - bounds.start, bounds.length orelse count);
+    return value[substringIndex(value, bounds.start)..substringIndex(value, end)];
+}
+
+const SubstringBounds = struct {
+    start: usize,
+    /// Null selects through the end.
+    length: ?usize,
+};
+
+const NegativeSubstringLength = enum {
+    /// Strings: a negative length marks the end, counted back from the end.
+    count_back_from_end,
+    /// Lists: a negative length is an error.
+    reject_negative_length,
+};
+
+/// Evaluates a substring expansion's offset and length against `count`
+/// positions, as Bash does. Returns null when the offset falls outside the
+/// positions, which selects nothing before any length is checked; a negative
+/// offset counts back from `count`. Reports an invalid length as an
+/// expansion error.
+fn parameterSubstringBounds(
+    shell: anytype,
+    parameter: ast.ParameterExpansion,
+    count: usize,
+    negative_length: NegativeSubstringLength,
+) EvalError!?SubstringBounds {
+    std.debug.assert(parameter.op.? == .substring);
     const offset = try parameterArithmeticValue(shell, parameter.word.?);
     const maybe_length = if (parameter.second_word) |word| try parameterArithmeticValue(shell, word) else null;
-    return substringValue(value, offset, maybe_length);
+
+    if (@abs(offset) > count) return null;
+    const start: usize = if (offset >= 0)
+        @intCast(offset)
+    else
+        count - @as(usize, @intCast(@abs(offset)));
+    const length = maybe_length orelse return .{ .start = start, .length = null };
+    if (length >= 0) return .{ .start = start, .length = @intCast(@min(@as(u64, @intCast(length)), count)) };
+    if (negative_length == .count_back_from_end and @abs(length) <= count - start) {
+        return .{ .start = start, .length = count - start - @as(usize, @intCast(@abs(length))) };
+    }
+    try writeExpansionDiagnostic(
+        shell,
+        parameter,
+        try shell.scratchAllocator().print("{}", .{length}),
+        "substring expression < 0",
+    );
+    return error.ExpansionError;
 }
 
 fn parameterArithmeticValue(shell: anytype, word: ast.Word) EvalError!i64 {
@@ -8429,27 +8452,6 @@ fn parameterArithmeticValue(shell: anytype, word: ast.Word) EvalError!i64 {
         error.InvalidArithmetic, error.FatalExpansionError => return error.ExpansionError,
         else => return err,
     };
-}
-
-fn substringValue(value: []const u8, offset: i64, maybe_length: ?i64) []const u8 {
-    const count = utf8CodepointCount(value);
-    const start_index = substringIndex(value, normalizeSubstringIndex(offset, count));
-    const end_count = if (maybe_length) |length| if (length < 0)
-        normalizeSubstringIndex(length, count)
-    else
-        @min(count, normalizeSubstringIndex(offset, count) + @as(usize, @intCast(length))) else count;
-    const end_index = substringIndex(value, @max(normalizeSubstringIndex(offset, count), end_count));
-    return value[start_index..end_index];
-}
-
-fn normalizeSubstringIndex(value: i64, count: usize) usize {
-    if (value >= 0) return @min(count, @as(usize, @intCast(value)));
-    const magnitude: u64 = if (value == std.math.minInt(i64))
-        @as(u64, 1) << 63
-    else
-        @intCast(-value);
-    if (magnitude >= count) return 0;
-    return count - @as(usize, @intCast(magnitude));
 }
 
 fn substringIndex(value: []const u8, codepoint_count: usize) usize {
