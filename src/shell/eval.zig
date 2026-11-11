@@ -8109,10 +8109,7 @@ fn expandParameter(
             }
             return "";
         },
-        .array => parameterCurrentValue(shell, parameter.parameter) catch |err| switch (err) {
-            error.InvalidArithmetic => return error.ExpansionError,
-            else => return err,
-        } orelse {
+        .array => try parameterCurrentValue(shell, parameter.parameter) orelse {
             if (shell.state.options.nounset) {
                 try writeExpansionDiagnostic(shell, parameter.*, "parameter", "parameter not set");
                 return if (shell.state.options.mode == .bash) error.FatalExpansionError else error.ExpansionError;
@@ -8664,11 +8661,7 @@ fn parameterSubstringBounds(
 }
 
 fn parameterArithmeticValue(shell: anytype, word: ast.Word) EvalError!i64 {
-    const text = try expandWord(shell, word);
-    return evalArithmeticValue(shell, text) catch |err| switch (err) {
-        error.InvalidArithmetic, error.FatalExpansionError => return error.ExpansionError,
-        else => return err,
-    };
+    return evalArithmeticValue(shell, try expandWord(shell, word));
 }
 
 fn substringIndex(value: []const u8, codepoint_count: usize) usize {

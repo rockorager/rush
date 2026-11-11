@@ -189,6 +189,22 @@
             .status = 0,
         },
         .{
+            .name = "arithmetic errors in substring offsets and subscripts are reported",
+            .script =
+            \\x=abc
+            \\arr=(1 2)
+            \\echo "${x:1/0}" not-reached
+            \\echo "offset status=$?"
+            \\echo "${arr[1/0]}" not-reached
+            ,
+            .stdout =
+            \\offset status=1
+            \\
+            ,
+            .stderr_match = .nonempty,
+            .status = 1,
+        },
+        .{
             .name = "arithmetic supports bash base#digits constants",
             .script =
             \\day=08
