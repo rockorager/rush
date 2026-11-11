@@ -1707,6 +1707,47 @@
             .status = 0,
         },
         .{
+            .name = "field splitting applies to unquoted expansions in words with quoted parts",
+            .script =
+            \\mkdir d
+            \\: >d/a.t
+            \\: >d/b.u
+            \\: >zb
+            \\x='b c'
+            \\lead=' b'
+            \\pattern='*.t'
+            \\set -- "a"$x $x'a' 'p q'$x "a"$lead "$x"$x "*"$x
+            \\printf '<%s>\n' "$#" "$@"
+            \\for word in "d/"$pattern; do printf 'for:%s\n' "$word"; done
+            \\IFS=:
+            \\y='e:f'
+            \\set -- "x"$y:
+            \\printf '<%s>\n' "$#" "$@"
+            ,
+            .stdout =
+            \\<12>
+            \\<ab>
+            \\<c>
+            \\<b>
+            \\<ca>
+            \\<p qb>
+            \\<c>
+            \\<a>
+            \\<b>
+            \\<b cb>
+            \\<c>
+            \\<*b>
+            \\<c>
+            \\for:d/a.t
+            \\<2>
+            \\<xe>
+            \\<f:>
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "field splitting applies after command substitution and arithmetic expansion",
             .script = "unset IFS\nset -- $(printf 'a b\\nc') $((1 + 2))x\nprintf '<%s>\\n' \"$#\" \"$@\"\n",
             .stdout =

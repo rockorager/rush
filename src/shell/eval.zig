@@ -1348,8 +1348,7 @@ fn expandForWordFields(shell: anytype, words: []const ast.Word) ![]const []const
                         try expandQuotedDynamicWordPathnamePattern(shell, word, null),
                     );
                 } else {
-                    const expanded = try expandWordTracking(shell, word, null);
-                    try fields.append(allocator, expanded);
+                    try appendWordFieldsWithProvenance(shell, &fields, word, null);
                 }
             } else if (wordExpandsLeadingTilde(shell, word)) {
                 try appendWordFieldsWithProvenance(shell, &fields, word, null);
@@ -5490,13 +5489,7 @@ fn appendExpandedWordFields(
                     try expandQuotedDynamicWordPathnamePattern(shell, word, substitution_status),
                 );
             } else {
-                const expanded = try expandWordTracking(shell, word, substitution_status);
-                const ifs = parameterValue(shell, "IFS") orelse " \t\n";
-                if (ifs.len == 0) {
-                    try appendPathnameExpandedField(shell, fields, expanded);
-                } else {
-                    try fields.append(allocator, expanded);
-                }
+                try appendWordFieldsWithProvenance(shell, fields, word, substitution_status);
             }
         } else if (wordExpandsLeadingTilde(shell, word)) {
             try appendWordFieldsWithProvenance(shell, fields, word, substitution_status);
