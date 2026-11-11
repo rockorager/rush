@@ -7268,17 +7268,30 @@ fn ArithmeticParser(comptime ShellType: type) type {
         fn parseAssignment(self: *Self) ArithmeticError!i64 {
             self.skipWhitespace();
             const rewind = self.index;
-            if (self.parseName()) |name| {
-                self.skipWhitespace();
-                if (self.parseAssignmentOperator()) |operator| {
-                    const rhs = try self.parseAssignment();
-                    const value = try self.applyAssignmentOperator(name, operator, rhs);
-                    try self.assignVariable(name, value);
-                    return value;
-                }
-            }
+            if (!try self.atAssignment()) return self.parseConditional();
             self.index = rewind;
-            return self.parseConditional();
+            const operand = (try self.parseOperand()).?;
+            self.skipWhitespace();
+            const operator = self.parseAssignmentOperator().?;
+            const rhs = try self.parseAssignment();
+            const value = try self.applyAssignmentOperator(operand, operator, rhs);
+            try self.assignOperand(operand, value);
+            return value;
+        }
+
+        /// Whether an assignment starts here. The lookahead parses any
+        /// subscript without evaluating it, so its side effects happen once.
+        fn atAssignment(self: *Self) ArithmeticError!bool {
+            const rewind = self.index;
+            const outer_evaluating = self.evaluating;
+            self.evaluating = false;
+            defer {
+                self.evaluating = outer_evaluating;
+                self.index = rewind;
+            }
+            if (try self.parseOperand() == null) return false;
+            self.skipWhitespace();
+            return self.parseAssignmentOperator() != null;
         }
 
         const AssignmentOperator = enum {
@@ -7316,9 +7329,14 @@ fn ArithmeticParser(comptime ShellType: type) type {
             }
         }
 
-        fn applyAssignmentOperator(self: *Self, name: []const u8, operator: AssignmentOperator, rhs: i64) ArithmeticError!i64 {
+        fn applyAssignmentOperator(
+            self: *Self,
+            operand: Operand,
+            operator: AssignmentOperator,
+            rhs: i64,
+        ) ArithmeticError!i64 {
             if (operator == .assign) return rhs;
-            const lhs = try self.variableValue(name);
+            const lhs = try self.operandValue(operand);
             return switch (operator) {
                 .assign => unreachable,
                 .add => lhs +% rhs,
@@ -7519,9 +7537,9 @@ fn ArithmeticParser(comptime ShellType: type) type {
 
         fn parsePrefixUpdate(self: *Self, delta: i64) ArithmeticError!i64 {
             self.skipWhitespace();
-            const name = self.parseName() orelse return error.InvalidArithmetic;
-            const value = try self.variableValue(name) +% delta;
-            try self.assignVariable(name, value);
+            const operand = try self.parseOperand() orelse return error.InvalidArithmetic;
+            const value = try self.operandValue(operand) +% delta;
+            try self.assignOperand(operand, value);
             return value;
         }
 
@@ -7536,26 +7554,49 @@ fn ArithmeticParser(comptime ShellType: type) type {
             if (self.peek() == '$') {
                 self.index += 1;
                 const name = self.parseName() orelse return error.InvalidArithmetic;
-                return self.variableValue(name);
+                return self.operandValue(.{ .name = name });
             }
-            if (isArithmeticNameStart(self.peek())) {
-                const name = self.parseName().?;
+            if (try self.parseOperand()) |operand| {
                 if (self.shell.state.options.mode == .bash) {
                     const rewind = self.index;
                     self.skipWhitespace();
-                    if (self.eatString("++")) return self.applyPostfixUpdate(name, 1);
-                    if (self.eatString("--")) return self.applyPostfixUpdate(name, -1);
+                    if (self.eatString("++")) return self.applyPostfixUpdate(operand, 1);
+                    if (self.eatString("--")) return self.applyPostfixUpdate(operand, -1);
                     self.index = rewind;
                 }
-                return self.variableValue(name);
+                return self.operandValue(operand);
             }
             return self.parseNumber();
         }
 
-        fn applyPostfixUpdate(self: *Self, name: []const u8, delta: i64) ArithmeticError!i64 {
-            const value = try self.variableValue(name);
-            try self.assignVariable(name, value +% delta);
+        fn applyPostfixUpdate(self: *Self, operand: Operand, delta: i64) ArithmeticError!i64 {
+            const value = try self.operandValue(operand);
+            try self.assignOperand(operand, value +% delta);
             return value;
+        }
+
+        /// A variable or, in Bash mode, an array element such as `a[i + 1]`.
+        const Operand = struct {
+            name: []const u8,
+            index: ?usize = null,
+        };
+
+        /// Parses a variable name and any Bash subscript, evaluating the
+        /// subscript when the parser evaluates. Returns null without
+        /// consuming input when no name starts here.
+        fn parseOperand(self: *Self) ArithmeticError!?Operand {
+            const name = self.parseName() orelse return null;
+            if (self.shell.state.options.mode == .posix or !self.eat('[')) return .{ .name = name };
+            const subscript = try self.parseComma();
+            self.skipWhitespace();
+            if (!self.eat(']')) return error.InvalidArithmetic;
+            if (!self.evaluating) return .{ .name = name, .index = 0 };
+            const index: usize = if (subscript >= 0) @intCast(subscript) else try resolveNegativeArrayIndex(
+                subscript,
+                self.shell.state.getArray(name),
+                self.shell.state.getVariable(name) != null,
+            );
+            return .{ .name = name, .index = index };
         }
 
         fn parseNumber(self: *Self) ArithmeticError!i64 {
@@ -7579,9 +7620,18 @@ fn ArithmeticParser(comptime ShellType: type) type {
             return self.text[start..self.index];
         }
 
-        fn variableValue(self: *Self, name: []const u8) ArithmeticError!i64 {
+        fn operandValue(self: *Self, operand: Operand) ArithmeticError!i64 {
             if (!self.evaluating) return 0;
-            const value = parameterValue(self.shell, name) orelse {
+            const maybe_value = if (operand.index) |index|
+                if (self.shell.state.getArray(operand.name)) |array|
+                    array.elementValue(index)
+                else if (index == 0)
+                    parameterValue(self.shell, operand.name)
+                else
+                    null
+            else
+                parameterValue(self.shell, operand.name);
+            const value = maybe_value orelse {
                 if (self.shell.state.options.nounset) return if (self.shell.state.options.mode == .bash)
                     error.FatalExpansionError
                 else
@@ -7605,14 +7655,21 @@ fn ArithmeticParser(comptime ShellType: type) type {
             return std.fmt.parseInt(i64, trimmed, 10) catch error.InvalidArithmetic;
         }
 
-        fn assignVariable(self: *Self, name: []const u8, value: i64) ArithmeticError!void {
+        fn assignOperand(self: *Self, operand: Operand, value: i64) ArithmeticError!void {
             if (!self.evaluating) return;
             const text = try self.shell.scratchAllocator().print("{}", .{value});
-            self.shell.state.putVariable(.{
-                .name = name,
-                .value = text,
-                .exported = assignmentExported(self.shell, name),
-            }) catch |err| switch (err) {
+            // An array's name alone assigns its element 0.
+            const array_index: ?usize = operand.index orelse
+                if (self.shell.state.getArray(operand.name) != null) 0 else null;
+            const stored = if (array_index) |index|
+                self.shell.state.putArrayElement(operand.name, index, text)
+            else
+                self.shell.state.putVariable(.{
+                    .name = operand.name,
+                    .value = text,
+                    .exported = assignmentExported(self.shell, operand.name),
+                });
+            stored catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 error.ReadonlyVariable => return error.InvalidArithmetic,
             };
