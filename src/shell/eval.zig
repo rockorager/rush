@@ -1351,10 +1351,12 @@ fn expandForWordFields(shell: anytype, words: []const ast.Word) ![]const []const
                     const expanded = try expandWordTracking(shell, word, null);
                     try fields.append(allocator, expanded);
                 }
+            } else if (wordExpandsLeadingTilde(shell, word)) {
+                try appendWordFieldsWithProvenance(shell, &fields, word, null);
             } else {
                 const expanded = try expandWordTracking(shell, word, null);
                 if (wordHasFieldSplittingExpansion(word)) {
-                    try appendSplitFields(shell, &fields, expanded, !wordExpandsLeadingTilde(shell, word));
+                    try appendSplitFields(shell, &fields, expanded);
                 } else {
                     try appendPathnameExpandedField(shell, &fields, expanded);
                 }
@@ -1716,7 +1718,7 @@ fn appendEmbeddedUnquotedPositionalFields(shell: anytype, fields: *std.ArrayList
         else => unreachable,
     };
 
-    for (logical_fields.items) |field| try appendSplitFields(shell, fields, field, true);
+    for (logical_fields.items) |field| try appendSplitFields(shell, fields, field);
     return true;
 }
 
@@ -1733,7 +1735,7 @@ fn appendUnquotedPositionalFields(shell: anytype, fields: *std.ArrayList([]const
         if (positional.len == 0 and preserve_empty) {
             try fields.append(shell.scratchAllocator(), "");
         } else {
-            try appendSplitFields(shell, fields, positional, true);
+            try appendSplitFields(shell, fields, positional);
         }
     }
 }
@@ -5496,10 +5498,12 @@ fn appendExpandedWordFields(
                     try fields.append(allocator, expanded);
                 }
             }
+        } else if (wordExpandsLeadingTilde(shell, word)) {
+            try appendWordFieldsWithProvenance(shell, fields, word, substitution_status);
         } else {
             const expanded = try expandWordTracking(shell, word, substitution_status);
             if (wordHasFieldSplittingExpansion(word)) {
-                try appendSplitFields(shell, fields, expanded, !wordExpandsLeadingTilde(shell, word));
+                try appendSplitFields(shell, fields, expanded);
             } else {
                 try appendPathnameExpandedField(shell, fields, expanded);
             }
@@ -5519,13 +5523,24 @@ fn appendUnquotedParameterOperatorWordFields(
             (part.parameter.op == .default_value or part.parameter.op == .alternate_value)) break;
     } else return false;
 
+    try appendWordFieldsWithProvenance(shell, fields, word, substitution_status);
+    return true;
+}
+
+/// Expands an unquoted word, splitting and globbing only the bytes that
+/// expansions and unquoted literals allow, so a tilde expansion stays whole.
+fn appendWordFieldsWithProvenance(
+    shell: anytype,
+    fields: *std.ArrayList([]const u8),
+    word: ast.Word,
+    substitution_status: ?*?result.ExitStatus,
+) EvalError!void {
     var expanded: ParameterWordFields = .{};
     try expanded.appendWord(shell, word, false, false, substitution_status);
     try appendSplitPatternFields(shell, fields, .{
         .text = expanded.text.items,
         .special = expanded.glob.items,
     }, expanded.split.items, expanded.empty_fields.items);
-    return true;
 }
 
 // Selected parameter words are expansions: their unquoted literal bytes can
@@ -5997,13 +6012,11 @@ fn braceAtomsText(shell: anytype, atoms: []const BraceAtom) ![]const u8 {
 }
 
 fn appendStaticWordField(shell: anytype, fields: *std.ArrayList([]const u8), word: ast.Word) !void {
-    const expanded = try expandWordTracking(shell, word, null);
-    if (wordExpandsLeadingTilde(shell, word)) {
-        try fields.append(shell.scratchAllocator(), expanded);
-    } else if (word.quoted) {
-        try appendPathnameExpandedPattern(shell, fields, try staticWordPathnamePattern(shell, word));
+    if (word.quoted or wordExpandsLeadingTilde(shell, word)) {
+        const pattern = try staticWordPathnamePattern(shell, word);
+        try appendPathnameExpandedPattern(shell, fields, try expandLeadingTildePattern(shell, word, pattern));
     } else {
-        try appendPathnameExpandedField(shell, fields, expanded);
+        try appendPathnameExpandedField(shell, fields, try expandWordTracking(shell, word, null));
     }
 }
 
@@ -6138,11 +6151,12 @@ fn expandQuotedDynamicWordPathnamePattern(
 
 fn expandLeadingTildePattern(shell: anytype, word: ast.Word, pattern: PathnamePattern) !PathnamePattern {
     const prefix = switch (word.data) {
+        .literal => |literal| LeadingLiteral{ .text = literal, .complete = true },
         .parts => |parts| if (parts.len != 0) switch (parts[0]) {
             .literal => |literal| LeadingLiteral{ .text = literal, .complete = parts.len == 1 },
             else => return pattern,
         } else return pattern,
-        else => return pattern,
+        .declaration_array_assignment => return pattern,
     };
     const expansion = tildeExpansion(shell, prefix.text, false, prefix.complete) orelse return pattern;
     const allocator = shell.scratchAllocator();
@@ -6198,11 +6212,10 @@ fn appendSplitFields(
     shell: anytype,
     fields: *std.ArrayList([]const u8),
     text: []const u8,
-    pathname_expansion: bool,
 ) !void {
     const ifs = parameterValue(shell, "IFS") orelse " \t\n";
     if (ifs.len == 0) {
-        if (text.len != 0) try appendMaybePathnameExpandedField(shell, fields, text, pathname_expansion);
+        if (text.len != 0) try appendPathnameExpandedField(shell, fields, text);
         return;
     }
 
@@ -6216,12 +6229,7 @@ fn appendSplitFields(
     while (index < text.len) {
         if (ifsDelimiter(ifs, text, index)) |delimiter| {
             if (delimiter.whitespace) {
-                if (field_start < index) try appendMaybePathnameExpandedField(
-                    shell,
-                    fields,
-                    text[field_start..index],
-                    pathname_expansion,
-                );
+                if (field_start < index) try appendPathnameExpandedField(shell, fields, text[field_start..index]);
                 index += delimiter.len;
                 while (ifsDelimiter(ifs, text, index)) |next| {
                     if (!next.whitespace) break;
@@ -6240,7 +6248,7 @@ fn appendSplitFields(
                 continue;
             }
 
-            try appendMaybePathnameExpandedField(shell, fields, text[field_start..index], pathname_expansion);
+            try appendPathnameExpandedField(shell, fields, text[field_start..index]);
             index += delimiter.len;
             while (ifsDelimiter(ifs, text, index)) |next| {
                 if (!next.whitespace) break;
@@ -6252,7 +6260,7 @@ fn appendSplitFields(
 
         index += utf8SequenceLength(text[index..]);
     }
-    if (field_start < text.len) try appendMaybePathnameExpandedField(shell, fields, text[field_start..], pathname_expansion);
+    if (field_start < text.len) try appendPathnameExpandedField(shell, fields, text[field_start..]);
 }
 
 fn appendSplitPatternFields(
@@ -6328,19 +6336,6 @@ fn patternIfsDelimiter(ifs: []const u8, pattern: PathnamePattern, index: usize) 
         for (special[index..][0..delimiter.len]) |active| if (!active) return null;
     }
     return delimiter;
-}
-
-fn appendMaybePathnameExpandedField(
-    shell: anytype,
-    fields: *std.ArrayList([]const u8),
-    field: []const u8,
-    pathname_expansion: bool,
-) !void {
-    if (!pathname_expansion) {
-        try fields.append(shell.scratchAllocator(), field);
-        return;
-    }
-    try appendPathnameExpandedField(shell, fields, field);
 }
 
 const PathnamePattern = pattern_mod.Pattern;

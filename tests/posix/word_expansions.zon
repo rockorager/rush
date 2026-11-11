@@ -669,6 +669,28 @@
             .status = 0,
         },
         .{
+            .name = "pathname expansion applies to the rest of a word after a tilde prefix",
+            .script =
+            \\mkdir 'home*' homeX
+            \\: >'home*/a.txt'
+            \\: >'home*/b.txt'
+            \\: >homeX/a.txt
+            \\HOME='home*'
+            \\suffix=a
+            \\printf '<%s>\n' ~/*.txt ~/$suffix*
+            \\for file in ~/b*; do printf 'for:%s\n' "$file"; done
+            ,
+            .stdout =
+            \\<home*/a.txt>
+            \\<home*/b.txt>
+            \\<home*/a.txt>
+            \\for:home*/b.txt
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "tilde expansion applies after equals and colon in assignment words",
             .script =
             \\home=~
