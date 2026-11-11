@@ -1330,8 +1330,8 @@ fn expandForWordFields(shell: anytype, words: []const ast.Word) ![]const []const
         if (try appendUnquotedAtFields(shell, &fields, word) or
             try appendUnquotedStarFields(shell, &fields, word) or
             try appendUnquotedArrayIndexFields(shell, &fields, word) or
-            try appendEmbeddedUnquotedPositionalFields(shell, &fields, word) or
             try appendSpecialQuotedFields(shell, &fields, word) or
+            try appendUnquotedListWordFields(shell, &fields, word, null) or
             try appendUnquotedParameterOperatorWordFields(shell, &fields, word, null))
         {
             continue;
@@ -1684,47 +1684,45 @@ fn appendUnquotedArrayIndexFields(shell: anytype, fields: *std.ArrayList([]const
     return true;
 }
 
-fn appendEmbeddedUnquotedPositionalFields(shell: anytype, fields: *std.ArrayList([]const u8), word: ast.Word) !bool {
-    const parts = switch (word.data) {
-        .literal => return false,
-        .parts => |parts| parts,
-        .declaration_array_assignment => return false,
-    };
-    if (parts.len < 2) return false;
+/// Expands a word with an unquoted `$@`, `$*`, `${name[@]}`, or `${name[*]}`
+/// beside other parts, such as `pre$@`, keeping its values separate fields.
+fn appendUnquotedListWordFields(
+    shell: anytype,
+    fields: *std.ArrayList([]const u8),
+    word: ast.Word,
+    substitution_status: ?*?result.ExitStatus,
+) EvalError!bool {
+    if (word.data != .parts) return false;
+    for (word.data.parts) |part| {
+        if (part == .parameter and isListParameterExpansion(part.parameter.*)) break;
+    } else return false;
 
-    var has_positional = false;
-    for (parts) |part| switch (part) {
-        .literal => {},
-        .parameter => |parameter| {
-            if (!isUnquotedPositionalListParameter(parameter.*)) return false;
-            has_positional = true;
-        },
-        else => return false,
-    };
-    if (!has_positional) return false;
-
-    const allocator = shell.scratchAllocator();
-    var logical_fields: std.ArrayList([]const u8) = .empty;
-    try logical_fields.append(allocator, "");
-    for (parts) |part| switch (part) {
-        .literal => |literal| try appendTextToLastField(shell, &logical_fields, literal),
-        .parameter => {
-            const positionals = shell.state.positionals;
-            if (positionals.len == 0) continue;
-            try appendTextToLastField(shell, &logical_fields, positionals[0]);
-            if (positionals.len > 1) try logical_fields.appendSlice(allocator, positionals[1..]);
-        },
-        else => unreachable,
-    };
-
-    for (logical_fields.items) |field| try appendSplitFields(shell, fields, field);
+    try appendWordFieldsWithProvenance(shell, fields, word, substitution_status);
     return true;
 }
 
-fn isUnquotedPositionalListParameter(parameter: ast.ParameterExpansion) bool {
-    return parameter.op == null and parameter.parameter == .special and switch (parameter.parameter.special) {
-        .at, .star => true,
+fn isListParameterExpansion(parameter: ast.ParameterExpansion) bool {
+    if (parameter.length or parameter.array_indices or parameter.op != null) return false;
+    return switch (parameter.parameter) {
+        .special => |special| special == .at or special == .star,
+        .array => |array| array.subscript == .all,
         else => false,
+    };
+}
+
+/// Returns the values of a list parameter expansion, or null when the
+/// expansion is not a list or names a variable that is not an array.
+fn listParameterValues(shell: anytype, parameter: ast.ParameterExpansion) !?[]const []const u8 {
+    if (!isListParameterExpansion(parameter)) return null;
+    return switch (parameter.parameter) {
+        .special => shell.state.positionals,
+        .array => |array_parameter| values: {
+            const array = shell.state.getArray(array_parameter.name) orelse return null;
+            const values = try shell.scratchAllocator().alloc([]const u8, array.elements.len);
+            for (array.elements, values) |element, *value| value.* = element.value;
+            break :values values;
+        },
+        else => unreachable,
     };
 }
 
@@ -5471,8 +5469,8 @@ fn appendExpandedWordFields(
     if (try appendUnquotedAtFields(shell, fields, word) or
         try appendUnquotedStarFields(shell, fields, word) or
         try appendUnquotedArrayIndexFields(shell, fields, word) or
-        try appendEmbeddedUnquotedPositionalFields(shell, fields, word) or
         try appendSpecialQuotedFields(shell, fields, word) or
+        try appendUnquotedListWordFields(shell, fields, word, substitution_status) or
         try appendUnquotedParameterOperatorWordFields(shell, fields, word, substitution_status))
     {
         return;
@@ -5533,7 +5531,7 @@ fn appendWordFieldsWithProvenance(
     try appendSplitPatternFields(shell, fields, .{
         .text = expanded.text.items,
         .special = expanded.glob.items,
-    }, expanded.split.items, expanded.empty_fields.items);
+    }, expanded.split.items, expanded.empty_fields.items, expanded.breaks.items);
 }
 
 // Selected parameter words are expansions: their unquoted literal bytes can
@@ -5544,6 +5542,7 @@ const ParameterWordFields = struct {
     glob: std.ArrayList(bool) = .empty,
     split: std.ArrayList(bool) = .empty,
     empty_fields: std.ArrayList(usize) = .empty,
+    breaks: std.ArrayList(FieldBreak) = .empty,
 
     fn append(self: *ParameterWordFields, shell: anytype, bytes: []const u8, quoted: bool, split: bool) !void {
         const allocator = shell.scratchAllocator();
@@ -5608,6 +5607,9 @@ const ParameterWordFields = struct {
                 if (self.text.items.len == start) try self.append(shell, "", true, false);
             },
             .parameter => |parameter| {
+                if (!quoted) {
+                    if (try listParameterValues(shell, parameter.*)) |values| return self.appendList(shell, values);
+                }
                 if (parameter.op == .default_value or parameter.op == .alternate_value) {
                     const value = try parameterCurrentValue(shell, parameter.parameter);
                     const set = isParameterSet(parameter.*, value);
@@ -5622,6 +5624,35 @@ const ParameterWordFields = struct {
             },
         }
     }
+
+    /// Unquoted list values are separate fields that are then split. Joining
+    /// them with the first IFS character lets splitting separate them, which
+    /// matches Bash, including the empty fields it keeps for non-whitespace
+    /// IFS. An empty IFS splits nothing, so the values end in field breaks.
+    fn appendList(self: *ParameterWordFields, shell: anytype, values: []const []const u8) !void {
+        const separator = ifsFirstCharacter(shell);
+        for (values, 0..) |value, index| {
+            if (index != 0) {
+                if (separator.len != 0) {
+                    try self.append(shell, separator, false, true);
+                } else {
+                    try self.breaks.append(shell.scratchAllocator(), .{
+                        .offset = self.text.items.len,
+                        .empty_fields = self.empty_fields.items.len,
+                    });
+                }
+            }
+            try self.append(shell, value, false, true);
+        }
+    }
+};
+
+/// A field boundary that IFS cannot express. `empty_fields` counts the
+/// quoted empty markers recorded before the boundary, which places a marker
+/// at the same offset on the correct side.
+const FieldBreak = struct {
+    offset: usize,
+    empty_fields: usize,
 };
 
 const BraceAtom = union(enum) {
@@ -6262,12 +6293,25 @@ fn appendSplitPatternFields(
     pattern: PathnamePattern,
     split: []const bool,
     empty_fields: []const usize,
+    breaks: []const FieldBreak,
 ) !void {
     std.debug.assert(pattern.text.len == split.len);
     const splitting: PathnamePattern = .{ .text = pattern.text, .special = split };
     const ifs = parameterValue(shell, "IFS") orelse " \t\n";
     if (ifs.len == 0) {
-        if (pattern.text.len != 0 or empty_fields.len != 0) try appendPathnameExpandedPattern(shell, fields, pattern);
+        var start: usize = 0;
+        var markers: usize = 0;
+        for (breaks) |field_break| {
+            std.debug.assert(field_break.offset >= start and field_break.empty_fields >= markers);
+            if (field_break.offset > start or field_break.empty_fields > markers) {
+                try appendPathnameExpandedPattern(shell, fields, pattern.slice(start, field_break.offset));
+            }
+            start = field_break.offset;
+            markers = field_break.empty_fields;
+        }
+        if (pattern.text.len > start or empty_fields.len > markers) {
+            try appendPathnameExpandedPattern(shell, fields, pattern.slice(start, pattern.text.len));
+        }
         return;
     }
 

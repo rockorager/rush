@@ -27,6 +27,31 @@
             .status = 0,
         },
         .{
+            .name = "unquoted array lists in a word stay separate fields with any IFS",
+            .script =
+            \\arr=('p q' 'r:s')
+            \\IFS=:
+            \\printf '<%s>\n' "a"${arr[@]} ${arr[*]}"z"
+            \\IFS=
+            \\printf '[%s]\n' "a"${arr[@]} a${arr[*]}
+            ,
+            .stdout =
+            \\<ap q>
+            \\<r>
+            \\<s>
+            \\<p q>
+            \\<r>
+            \\<sz>
+            \\[ap q]
+            \\[r:s]
+            \\[ap q]
+            \\[r:s]
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "arithmetic expansion recursively evaluates variable contents",
             .script =
             \\x='1+2'

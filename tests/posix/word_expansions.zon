@@ -1748,6 +1748,44 @@
             .status = 0,
         },
         .{
+            .name = "unquoted positional lists in a word stay separate fields with any IFS",
+            .script =
+            \\set -- 'p q' 'r:s'
+            \\IFS=:
+            \\printf '<%s>\n' "a"$@"z" pre$*
+            \\IFS=
+            \\printf '[%s]\n' "a"$@ a$*
+            \\set -- x '' y
+            \\printf '{%s}\n' "a"$@ ""$@
+            \\IFS=:
+            \\printf '(%s)\n' "a"$@
+            ,
+            // Like Bash, an empty value between non-whitespace IFS fields stays a field, as it does for a bare $@;
+            // dash discards it, which POSIX also allows.
+            .stdout =
+            \\<ap q>
+            \\<r>
+            \\<sz>
+            \\<prep q>
+            \\<r>
+            \\<s>
+            \\[ap q]
+            \\[r:s]
+            \\[ap q]
+            \\[r:s]
+            \\{ax}
+            \\{y}
+            \\{x}
+            \\{y}
+            \\(ax)
+            \\()
+            \\(y)
+            \\
+            ,
+            .stderr = "",
+            .status = 0,
+        },
+        .{
             .name = "field splitting applies after command substitution and arithmetic expansion",
             .script = "unset IFS\nset -- $(printf 'a b\\nc') $((1 + 2))x\nprintf '<%s>\\n' \"$#\" \"$@\"\n",
             .stdout =
